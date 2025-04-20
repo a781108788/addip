@@ -1,136 +1,125 @@
 #!/bin/bash
-# Debian 12 别名 IP 批量添加脚本 —— 交互式选择自动/手动模式
-# 依赖: ipcalc
-# 用法: sudo bash auto_alias.sh
+# ==============================================================================
+# Debian 12 永久化别名 IP 批量添加脚本
+#
+# 用法: sudo bash auto_alias_perm.sh START_IP END_IP
+# 例如: sudo bash auto_alias_perm.sh 192.168.1.100 192.168.1.150
+#
+# 功能：
+#   1. 自动检测系统主网卡（默认路由所用接口）。
+#   2. 自动检测主 IP 对应的子网掩码（与主 IP/CIDR 相同）。
+#   3. 在 /etc/network/interfaces 中永久添加从 START_IP 到 END_IP 范围内
+#      的所有地址（每个别名接口一个 IP），跳过已存在的和主 IP。
+#   4. 重启 networking 服务，使配置立即生效且重启后保留。
+#
+# 依赖：ipcalc（请先 apt-get install -y ipcalc）
+# ==============================================================================
 
 set -euo pipefail
 
-CONFIG_FILE="/etc/network/interfaces"
+# —— 参数校验 ——  
+if [ "$#" -ne 2 ]; then
+    echo "用法: $0 START_IP END_IP"
+    exit 1
+fi
+START_IP="$1"
+END_IP="$2"
 
-# ─── 0. 初始化 /etc/network/interfaces ───
-if [ ! -f "$CONFIG_FILE" ]; then
-  echo "检测到 $CONFIG_FILE 不存在，正在初始化…"
-  cat <<'EOF' > "$CONFIG_FILE"
-# /etc/network/interfaces — 自动化别名 IP 脚本所需
+CONFIG="/etc/network/interfaces"
+
+# —— 如果不存在，初始化最简模板 ——  
+if [ ! -f "$CONFIG" ]; then
+    echo "检测到 $CONFIG 不存在，正在创建简易模板…"
+    cat <<'EOF' > "$CONFIG"
+# /etc/network/interfaces — 基本网络配置
 source /etc/network/interfaces.d/*
 
 auto lo
 iface lo inet loopback
 EOF
-  echo "$CONFIG_FILE 已创建。"
+    echo "$CONFIG 已创建。"
 fi
 
-# ─── 1. 环境 & 依赖检查 ───
+# —— 检查 ipcalc ——  
 if ! command -v ipcalc &>/dev/null; then
-  echo "错误：未安装 ipcalc，请先运行 apt-get install -y ipcalc" >&2
-  exit 1
-fi
-
-# ─── 2. 探测主接口 & 主 IP/CIDR ───
-route_info=$(ip -4 route show default | head -n1)
-main_iface=$(awk '/^default/ {print $5}' <<< "$route_info")
-cidr_info=$(ip -4 -o addr show dev "$main_iface" scope global \
-            | awk '{print $4}' | head -n1)
-
-if [ -z "$main_iface" ] || [ -z "$cidr_info" ]; then
-  echo "错误：无法检测到主网卡或主 IP/CIDR" >&2
-  exit 1
-fi
-
-echo "主接口: $main_iface    主IP/CIDR: $cidr_info"
-
-# ─── 3. 选择模式 ───
-echo
-echo "请选择添加模式："
-echo "  1) 自动模式（根据 $cidr_info 自动计算整个可用范围）"
-echo "  2) 手动模式（自定义起始 IP 和结束 IP）"
-read -p "输入 1 或 2: " mode
-echo
-
-case "$mode" in
-  1)
-    # 自动模式，提取 HostMin/HostMax/Netmask
-    read network_address broadcast_address netmask host_min host_max < <(
-      ipcalc "$cidr_info" \
-        | awk '/HostMin:/ {hmin=$2} /HostMax:/ {hmax=$2} /Netmask:/ {mask=$2} END{print hmin, hmax, mask}'
-    )
-    echo "自动模式：可用 IP 范围 $host_min — $host_max    掩码 $netmask"
-    ;;
-  2)
-    # 手动模式，提示输入
-    read -p "请输入起始 IP: " host_min
-    read -p "请输入结束 IP: " host_max
-    # 子网掩码仍沿用主IP的 Netmask
-    netmask=$(ipcalc "$cidr_info" | awk '/Netmask:/ {print $2}')
-    echo "手动模式：添加 IP 范围 $host_min — $host_max    掩码 $netmask"
-    ;;
-  *)
-    echo "无效选择，退出。" >&2
+    echo "错误：未安装 ipcalc，请先执行：apt-get update && apt-get install -y ipcalc" >&2
     exit 1
-    ;;
-esac
+fi
 
-main_ip=${cidr_info%/*}
+# —— 自动检测主网卡和主 IP/CIDR ——  
+route_info=$(ip -4 route show default | head -n1)
+IFACE=$(awk '/^default/ {print $5}' <<< "$route_info")
+CIDR=$(ip -4 -o addr show dev "$IFACE" scope global \
+        | awk '{print $4}' | head -n1)
 
-# ─── 4. 临时添加别名 IP ───
-ip2int(){ local IFS=.; read -r a b c d <<<"$1"; echo $(( (a<<24)|(b<<16)|(c<<8)|d )); }
-int2ip(){ local u=$1; echo "$((u>>24&255)).$((u>>16&255)).$((u>>8&255)).$((u&255))"; }
+if [ -z "$IFACE" ] || [ -z "$CIDR" ]; then
+    echo "错误：无法检测到主网卡或主 IP/CIDR。" >&2
+    exit 1
+fi
 
-start_int=$(ip2int "$host_min")
-end_int=$(ip2int "$host_max")
+# —— 提取子网掩码 ——  
+NETMASK=$(ipcalc "$CIDR" | awk '/Netmask:/ {print $2}')
 
-mapfile -t existing < <(grep -E '^\s*address\s+([0-9]{1,3}\.){3}' "$CONFIG_FILE" | awk '{print $2}')
+echo "主网卡：$IFACE"
+echo "主 IP/CIDR：$CIDR"
+echo "使用子网掩码：$NETMASK"
+echo "准备永久化添加：$START_IP 至 $END_IP"
 
-added=0
-echo; echo "开始临时添加别名 IP…"
-for ((i=start_int; i<=end_int; i++)); do
-  ip_addr=$(int2ip "$i")
-  [ "$ip_addr" = "$main_ip" ] && continue
-  if printf '%s\n' "${existing[@]}" | grep -qx "$ip_addr"; then
-    continue
-  fi
-  ip addr add "$ip_addr"/"$netmask" dev "$main_iface" &>/dev/null \
-    && { echo "  添加 $ip_addr"; added=$((added+1)); }
+# —— 备份原配置 ——  
+BACKUP="${CONFIG}.bak_$(date +%Y%m%d%H%M%S)"
+cp "$CONFIG" "$BACKUP"
+echo "已备份 $CONFIG 到 $BACKUP"
+
+# —— IP 转换函数 ——  
+ip2int()  { local IFS=.; read -r a b c d <<<"$1"; echo $(( (a<<24)|(b<<16)|(c<<8)|d )); }
+int2ip()  { local u=$1; echo "$((u>>24&255)).$((u>>16&255)).$((u>>8&255)).$((u&255))"; }
+
+START_INT=$(ip2int "$START_IP")
+END_INT=$(ip2int "$END_IP")
+MAIN_IP="${CIDR%/*}"
+
+# —— 收集已存在的 address ——  
+mapfile -t EXISTING < <(grep -E '^\s*address\s+([0-9]{1,3}\.){3}' "$CONFIG" | awk '{print $2}')
+
+# —— 找到可用 alias 序号 ——  
+mapfile -t USED_IDX < <(grep -oP "^iface ${IFACE}:\K[0-9]+" "$CONFIG")
+NEXT_IDX=1
+while printf '%s\n' "${USED_IDX[@]}" | grep -qx "$NEXT_IDX"; do
+    NEXT_IDX=$((NEXT_IDX+1))
 done
-echo "共添加 $added 个别名 IP（临时）。"
 
-# ─── 5. 永久化写入 /etc/network/interfaces ───
-bak="${CONFIG_FILE}.bak_$(date +%Y%m%d%H%M%S)"
-cp "$CONFIG_FILE" "$bak"
-echo "已备份原配置到 $bak"
-
-mapfile -t used_idx < <(grep -oP "^iface ${main_iface}:\K[0-9]+" "$CONFIG_FILE")
-next_idx=0
-
+# —— 写入永久化配置 ——  
 {
   echo ""
-  echo "# --- 脚本添加的别名 IP （$(date '+%F %T')') ---"
-} >> "$CONFIG_FILE"
+  echo "# --- 自动添加别名 IP: $(date '+%Y-%m-%d %H:%M:%S') ---"
+} >> "$CONFIG"
 
-for ((i=start_int; i<=end_int; i++)); do
-  ip_addr=$(int2ip "$i")
-  [ "$ip_addr" = "$main_ip" ] && continue
-  if printf '%s\n' "${existing[@]}" | grep -qx "$ip_addr"; then
-    continue
-  fi
-  while printf '%s\n' "${used_idx[@]}" | grep -qx "$next_idx"; do
-    next_idx=$((next_idx+1))
-  done
-  alias_if="${main_iface}:$next_idx"
-  cat <<EOF >> "$CONFIG_FILE"
+ADDED=0
+for (( i=START_INT; i<=END_INT; i++ )); do
+    IP_ADDR=$(int2ip "$i")
+    # 跳过主 IP 和重复
+    [ "$IP_ADDR" = "$MAIN_IP" ] && continue
+    if printf '%s\n' "${EXISTING[@]}" | grep -qx "$IP_ADDR"; then
+        continue
+    fi
+    cat <<EOF >> "$CONFIG"
 
-auto $alias_if
-iface $alias_if inet static
-    address $ip_addr
-    netmask $netmask
+auto ${IFACE}:$NEXT_IDX
+iface ${IFACE}:$NEXT_IDX inet static
+    address $IP_ADDR
+    netmask $NETMASK
 EOF
-  used_idx+=("$next_idx")
-  next_idx=$((next_idx+1))
+    echo "已写入永久化: ${IFACE}:$NEXT_IDX → $IP_ADDR"
+    EXISTING+=("$IP_ADDR")
+    USED_IDX+=("$NEXT_IDX")
+    NEXT_IDX=$((NEXT_IDX+1))
+    ADDED=$((ADDED+1))
 done
 
-echo "/etc/network/interfaces 更新完成。"
+echo "共永久化添加 $ADDED 个别名 IP。"
 
-# ─── 6. 重启网络 ───
-echo; echo "重启 networking 服务…"
+# —— 重启网络服务 ——  
+echo "重启 networking 服务…"
 systemctl restart networking
-echo "操作完毕，所有别名 IP 已永久生效。"
+
+echo "完成：${IFACE} 已永久化添加 $ADDED 个别名 IP。"
