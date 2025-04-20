@@ -1,5 +1,5 @@
 #!/bin/bash
-# Debian 12 动态网段别名 IP 批量添加脚本 —— 自动/手动 + 跳过主IP和网关 + 永久化 + 激活
+# Debian 12 网段别名 IP 批量添加脚本 —— 自动/手动 + 跳过主IP和网关 + 永久化 + 激活
 # 依赖：ipcalc, ifupdown
 # 用法：sudo bash auto_alias.sh
 #   1) 自动模式：根据当前主IP/CIDR添加所有可用主机
@@ -68,31 +68,32 @@ case "$mode" in
   *) echo "无效模式，退出。"; exit 1;;
 esac
 
-main_ip=${cidr_info%/*}
-echo "跳过 主IP: $main_ip 和 网关IP: $default_gw"
-
-# ─── 4. 临时添加别名 IP ───
+# ─── 4. 定义IP转换 & 计算整数值 ───
 ip2int(){ local IFS=.; read -r a b c d <<<"$1"; echo $(( (a<<24)|(b<<16)|(c<<8)|d )); }
 int2ip(){ local u=$1; echo "$((u>>24&255)).$((u>>16&255)).$((u>>8&255)).$((u&255))"; }
-
+main_ip=${cidr_info%/*}
+main_ip_int=$(ip2int "$main_ip")
+default_gw_int=$(ip2int "$default_gw")
 start_i=$(ip2int "$start_ip")
 end_i=$(ip2int "$end_ip")
 
-# 收集已存在的 address
-mapfile -t existing < <(grep -E '^[[:space:]]*address[[:space:]]+'"$network"'\\.(|[0-9]+)' "$CONFIG_FILE" | awk '{print $2}')
+# 收集已存在的 address 条目
+mapfile -t existing < <(grep -E '^[[:space:]]*address[[:space:]]+'"$network"'\\.[0-9]+' "$CONFIG_FILE" | awk '{print $2}')
 
+# ─── 5. 临时添加别名 IP ───
 echo; echo "开始临时添加别名 IP…"
 added_tmp=0
 for ((i=start_i; i<=end_i; i++)); do
-  ip_addr=$(int2ip "$i")
   # 跳过主IP和网关IP
-  [ "$ip_addr" = "$main_ip" ] && continue
-  [ "$ip_addr" = "$default_gw" ] && continue
-  # 跳过已有
-  if printf '%s
-' "${existing[@]}" | grep -qx "$ip_addr"; then
+  if [ "$i" -eq "$main_ip_int" ] || [ "$i" -eq "$default_gw_int" ]; then
     continue
   fi
+  ip_addr=$(int2ip "$i")
+  # 跳过已有配置
+  if printf '%s\n' "${existing[@]}" | grep -qx "$ip_addr"; then
+    continue
+  fi
+  # 临时添加
   if ip addr add "$ip_addr"/"$prefix_len" dev "$main_iface" &>/dev/null; then
     echo "  + $ip_addr/$prefix_len"
     added_tmp=$((added_tmp+1))
@@ -100,32 +101,30 @@ for ((i=start_i; i<=end_i; i++)); do
 done
 echo "共临时添加 $added_tmp 个别名 IP。"
 
-# ─── 5. 永久化写入 ───
+# ─── 6. 永久化写入 ───
 bak="${CONFIG_FILE}.bak_$(date +%Y%m%d%H%M%S)"
 cp "$CONFIG_FILE" "$bak"
 echo "已备份原配置到 $bak"
 
 mapfile -t used_idx < <(grep -oP "^iface ${main_iface}:\\K[0-9]+" "$CONFIG_FILE")
 next_idx=0
-while printf '%s
-' "${used_idx[@]}" | grep -qx "$next_idx"; do
+while printf '%s\n' "${used_idx[@]}" | grep -qx "$next_idx"; do
   next_idx=$((next_idx+1))
 done
 
 new_aliases=()
-
-{
-  echo ""
-  echo "# --- 添加别名 IP ($(date '+%F %T')) ---"
-} >> "$CONFIG_FILE"
+echo >> "$CONFIG_FILE"
+echo "# --- 添加别名 IP ($(date '+%F %T')) ---" >> "$CONFIG_FILE"
 
 added_perm=0
 for ((i=start_i; i<=end_i; i++)); do
+  # 跳过主IP和网关IP
+  if [ "$i" -eq "$main_ip_int" ] || [ "$i" -eq "$default_gw_int" ]; then
+    continue
+  fi
   ip_addr=$(int2ip "$i")
-  [ "$ip_addr" = "$main_ip" ] && continue
-  [ "$ip_addr" = "$default_gw" ] && continue
-  if printf '%s
-' "${existing[@]}" | grep -qx "$ip_addr"; then
+  # 跳过已有
+  if printf '%s\n' "${existing[@]}" | grep -qx "$ip_addr"; then
     continue
   fi
   alias_if="${main_iface}:$next_idx"
@@ -146,13 +145,13 @@ done
 
 echo "共永久化写入 $added_perm 个别名 IP。"
 
-# ─── 6. 激活新别名 ───
+# ─── 7. 激活别名接口 ───
 echo; echo "激活别名接口…"
 for alias_if in "${new_aliases[@]}"; do
   ifup "$alias_if" &>/dev/null && echo "  ifup $alias_if 成功"
 done
 
-# ─── 7. 列出所有 IPv4 ───
+# ─── 8. 列出所有 IPv4 ───
 echo; echo "当前 $main_iface IPv4 列表："
 ip -4 addr show dev "$main_iface" | awk '/inet / {print "  "$2}'
 
