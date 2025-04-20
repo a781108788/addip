@@ -34,7 +34,7 @@ if ! command -v ifup &>/dev/null; then
   exit 1
 fi
 
-# ─── 2. 检测主网卡 & 主 IP/CIDR ───
+# ─── 2. 检测主网卡 & 主 IP/CIDR & 前缀长度 ───
 route_info=$(ip -4 route show default | head -n1)
 main_iface=$(awk '/^default/ {print $5}' <<<"$route_info")
 cidr_info=$(ip -4 -o addr show dev "$main_iface" scope global \
@@ -43,9 +43,14 @@ if [ -z "$main_iface" ] || [ -z "$cidr_info" ]; then
   echo "错误：无法检测到主网卡或主 IP/CIDR。" >&2
   exit 1
 fi
-echo "主接口: $main_iface    主IP/CIDR: $cidr_info"
+# 提取前缀长度和点分子网掩码
+prefix_len=${cidr_info#*/}
+netmask=$(ipcalc "$cidr_info" | awk '/Netmask:/ {print $2}')
 
-# ─── 3. 选择模式 ───
+echo "主接口: $main_iface"
+echo "主IP/CIDR: $cidr_info  (前缀: /$prefix_len, 掩码: $netmask)"
+
+# ─── 3. 选择自动或手动模式 ───
 echo
 echo "请选择添加模式："
 echo "  1) 自动模式 — 根据 $cidr_info 计算整个可用范围"
@@ -55,20 +60,21 @@ echo
 
 case "$mode" in
   1)
-    read host_min host_max netmask < <(
+    read host_min host_max _dummy netmask_dummy < <(
       ipcalc "$cidr_info" \
         | awk '/HostMin:/ {hmin=$2}
                /HostMax:/ {hmax=$2}
                /Netmask:/ {mask=$2}
                END{print hmin, hmax, mask}'
     )
-    echo "自动模式：范围 $host_min — $host_max，掩码 $netmask"
+    host_min=${host_min}
+    host_max=${host_max}
+    echo "自动模式：范围 $host_min — $host_max，使用前缀长度 /$prefix_len"
     ;;
   2)
     read -p "请输入起始 IP: " host_min
     read -p "请输入结束 IP: " host_max
-    netmask=$(ipcalc "$cidr_info" | awk '/Netmask:/ {print $2}')
-    echo "手动模式：范围 $host_min — $host_max，掩码 $netmask"
+    echo "手动模式：范围 $host_min — $host_max，使用前缀长度 /$prefix_len"
     ;;
   *)
     echo "无效选择，退出。" >&2
@@ -85,6 +91,7 @@ int2ip(){ local u=$1; echo "$((u>>24&255)).$((u>>16&255)).$((u>>8&255)).$((u&255
 start_int=$(ip2int "$host_min")
 end_int=$(ip2int "$host_max")
 
+# 已存在的 address 条目
 mapfile -t existing < <(grep -E '^\s*address\s+([0-9]{1,3}\.){3}' "$CONFIG_FILE" | awk '{print $2}')
 
 added=0
@@ -95,8 +102,9 @@ for ((i=start_int; i<=end_int; i++)); do
   if printf '%s\n' "${existing[@]}" | grep -qx "$ip_addr"; then
     continue
   fi
-  if ip addr add "$ip_addr"/"$netmask" dev "$main_iface" &>/dev/null; then
-    echo "  添加 $ip_addr"
+  # 这里用 /前缀长度 而不是 /点分掩码
+  if ip addr add "$ip_addr"/"$prefix_len" dev "$main_iface" &>/dev/null; then
+    echo "  添加 $ip_addr/$prefix_len"
     added=$((added+1))
   fi
 done
@@ -113,9 +121,7 @@ while printf '%s\n' "${used_idx[@]}" | grep -qx "$next_idx"; do
   next_idx=$((next_idx+1))
 done
 
-# 记录本次新建的 alias 索引，后面激活时用
 new_alias=()
-
 {
   echo ""
   echo "# --- 脚本添加的别名 IP （$(date '+%F %T')） ---"
@@ -136,7 +142,7 @@ iface $alias_if inet static
     address $ip_addr
     netmask $netmask
 EOF
-  echo "  永久化写入: $alias_if → $ip_addr"
+  echo "  永久化写入: $alias_if → $ip_addr (掩码 $netmask)"
   new_alias+=("$next_idx")
   existing+=("$ip_addr")
   used_idx+=("$next_idx")
@@ -154,9 +160,8 @@ for idx in "${new_alias[@]}"; do
     || echo "  警告: ifup $alias_if 失败"
 done
 
-# ─── 7. 列出当前主网卡所有地址 ───
+# ─── 7. 列出当前主网卡所有 IPv4 地址 ───
 echo; echo "当前 $main_iface 地址列表："
-ip addr show dev "$main_iface" | awk '/inet / {print "  "$2}'
+ip -4 addr show dev "$main_iface" | awk '/inet / {print "  "$2}'
 
-echo
-echo "操作完成，新增 IP 均已永久化并已激活。"
+echo; echo "操作完成，新增 IP 均已永久化并已激活。"
