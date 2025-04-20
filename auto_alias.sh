@@ -1,19 +1,19 @@
 #!/bin/bash
-# Debian 12 别名 IP 批量添加脚本 —— 交互式 + 临时添加 + 永久化 + ifup 激活
+# Debian 12 动态网段别名 IP 批量添加脚本 —— 根据实际掩码自动或手动选择范围
 # 依赖：ipcalc, ifupdown
-# 用法：
-#   sudo bash auto_alias.sh
-#   或 bash <(curl -sL <your-link>)
+# 用法：sudo bash auto_net_alias.sh
+#   1) 自动模式：整个网络（/22、/23、/24……任意前缀）范围内所有可用主机
+#   2) 手动模式：自定义起始 IP 和结束 IP
 
 set -euo pipefail
 
 CONFIG_FILE="/etc/network/interfaces"
 
-# ─── 0. 初始化 /etc/network/interfaces ───
+# ─── 0. 初始化 interfaces ───
 if [ ! -f "$CONFIG_FILE" ]; then
-  echo "检测到 $CONFIG_FILE 不存在，正在初始化…"
+  echo "初始化 $CONFIG_FILE…"
   cat <<'EOF' > "$CONFIG_FILE"
-# /etc/network/interfaces — 自动化别名 IP 脚本所需
+# /etc/network/interfaces — 基本网络配置
 source /etc/network/interfaces.d/*
 
 auto lo
@@ -22,19 +22,15 @@ EOF
   echo "$CONFIG_FILE 已创建。"
 fi
 
-# ─── 1. 环境 & 依赖检查 ───
-if ! command -v ipcalc &>/dev/null; then
-  echo "错误：未安装 ipcalc，请先运行："
-  echo "  sudo apt-get update && sudo apt-get install -y ipcalc"
-  exit 1
-fi
-if ! command -v ifup &>/dev/null; then
-  echo "错误：未安装 ifupdown，请先运行："
-  echo "  sudo apt-get update && sudo apt-get install -y ifupdown"
-  exit 1
-fi
+# ─── 1. 检查依赖 ───
+for cmd in ipcalc ifup; do
+  if ! command -v $cmd &>/dev/null; then
+    echo "错误：未安装 $cmd，请运行：sudo apt-get update && sudo apt-get install -y ipcalc ifupdown" >&2
+    exit 1
+  fi
+done
 
-# ─── 2. 检测主网卡 & 主 IP/CIDR & 前缀长度 ───
+# ─── 2. 探测主网卡 & 主 IP/CIDR ───
 route_info=$(ip -4 route show default | head -n1)
 main_iface=$(awk '/^default/ {print $5}' <<<"$route_info")
 cidr_info=$(ip -4 -o addr show dev "$main_iface" scope global \
@@ -43,38 +39,41 @@ if [ -z "$main_iface" ] || [ -z "$cidr_info" ]; then
   echo "错误：无法检测到主网卡或主 IP/CIDR。" >&2
   exit 1
 fi
-# 提取前缀长度和点分子网掩码
+
+# 从 CIDR 提取网络信息
 prefix_len=${cidr_info#*/}
-netmask=$(ipcalc "$cidr_info" | awk '/Netmask:/ {print $2}')
+read network broadcast netmask hostmin hostmax < <(
+  ipcalc "$cidr_info" \
+    | awk '/Network:/   {nw=$2}
+           /Broadcast:/ {bc=$2}
+           /Netmask:/   {nm=$2}
+           /HostMin:/   {hmin=$2}
+           /HostMax:/   {hmax=$2}
+           END{print nw,bc,nm,hmin,hmax}'
+)
 
 echo "主接口: $main_iface"
-echo "主IP/CIDR: $cidr_info  (前缀: /$prefix_len, 掩码: $netmask)"
-
-# ─── 3. 选择自动或手动模式 ───
+echo "主IP/CIDR: $cidr_info  (前缀长度: /$prefix_len, 子网掩码: $netmask)"
+echo "网络地址: $network   广播地址: $broadcast"
 echo
-echo "请选择添加模式："
-echo "  1) 自动模式 — 根据 $cidr_info 计算整个可用范围"
-echo "  2) 手动模式 — 自定义起始 IP 和结束 IP"
-read -p "请输入 1 或 2: " mode
+
+# ─── 3. 选择模式 ───
+echo "请选择模式："
+echo "  1) 自动 — 添加 $hostmin — $hostmax 全部可用主机"
+echo "  2) 手动 — 自定义起始 IP/结束 IP"
+read -p "输入 1 或 2: " mode
 echo
 
 case "$mode" in
   1)
-    read host_min host_max _dummy netmask_dummy < <(
-      ipcalc "$cidr_info" \
-        | awk '/HostMin:/ {hmin=$2}
-               /HostMax:/ {hmax=$2}
-               /Netmask:/ {mask=$2}
-               END{print hmin, hmax, mask}'
-    )
-    host_min=${host_min}
-    host_max=${host_max}
-    echo "自动模式：范围 $host_min — $host_max，使用前缀长度 /$prefix_len"
+    start_ip=$hostmin
+    end_ip=$hostmax
+    echo "自动模式：范围 $start_ip — $end_ip"
     ;;
   2)
-    read -p "请输入起始 IP: " host_min
-    read -p "请输入结束 IP: " host_max
-    echo "手动模式：范围 $host_min — $host_max，使用前缀长度 /$prefix_len"
+    read -p "请输入起始 IP: " start_ip
+    read -p "请输入结束 IP: " end_ip
+    echo "手动模式：范围 $start_ip — $end_ip"
     ;;
   *)
     echo "无效选择，退出。" >&2
@@ -88,29 +87,28 @@ main_ip=${cidr_info%/*}
 ip2int(){ local IFS=.; read -r a b c d <<<"$1"; echo $(( (a<<24)|(b<<16)|(c<<8)|d )); }
 int2ip(){ local u=$1; echo "$((u>>24&255)).$((u>>16&255)).$((u>>8&255)).$((u&255))"; }
 
-start_int=$(ip2int "$host_min")
-end_int=$(ip2int "$host_max")
+start_i=$(ip2int "$start_ip")
+end_i=$(ip2int "$end_ip")
 
-# 已存在的 address 条目
-mapfile -t existing < <(grep -E '^\s*address\s+([0-9]{1,3}\.){3}' "$CONFIG_FILE" | awk '{print $2}')
+# 收集已存在的 address
+mapfile -t existing < <(grep -E '^\s*address\s+'"$network_prefix"'\.[0-9]+' "$CONFIG_FILE" | awk '{print $2}')
 
-added=0
 echo; echo "开始临时添加别名 IP…"
-for ((i=start_int; i<=end_int; i++)); do
+added_tmp=0
+for ((i=start_i; i<=end_i; i++)); do
   ip_addr=$(int2ip "$i")
   [ "$ip_addr" = "$main_ip" ] && continue
   if printf '%s\n' "${existing[@]}" | grep -qx "$ip_addr"; then
     continue
   fi
-  # 这里用 /前缀长度 而不是 /点分掩码
   if ip addr add "$ip_addr"/"$prefix_len" dev "$main_iface" &>/dev/null; then
-    echo "  添加 $ip_addr/$prefix_len"
-    added=$((added+1))
+    echo "  + ${ip_addr}/${prefix_len}"
+    added_tmp=$((added_tmp+1))
   fi
 done
-echo "共临时添加 $added 个别名 IP。"
+echo "共临时添加 $added_tmp 个别名 IP。"
 
-# ─── 5. 永久化写入 /etc/network/interfaces ───
+# ─── 5. 永久化写入 ───
 bak="${CONFIG_FILE}.bak_$(date +%Y%m%d%H%M%S)"
 cp "$CONFIG_FILE" "$bak"
 echo "已备份原配置到 $bak"
@@ -121,14 +119,12 @@ while printf '%s\n' "${used_idx[@]}" | grep -qx "$next_idx"; do
   next_idx=$((next_idx+1))
 done
 
-new_alias=()
-{
-  echo ""
-  echo "# --- 脚本添加的别名 IP （$(date '+%F %T')） ---"
-} >> "$CONFIG_FILE"
+new_aliases=()
+echo >> "$CONFIG_FILE"
+echo "# --- 脚本添加别名 IP ($(date '+%F %T')) ---" >> "$CONFIG_FILE"
 
-count=0
-for ((i=start_int; i<=end_int; i++)); do
+added_perm=0
+for ((i=start_i; i<=end_i; i++)); do
   ip_addr=$(int2ip "$i")
   [ "$ip_addr" = "$main_ip" ] && continue
   if printf '%s\n' "${existing[@]}" | grep -qx "$ip_addr"; then
@@ -142,26 +138,24 @@ iface $alias_if inet static
     address $ip_addr
     netmask $netmask
 EOF
-  echo "  永久化写入: $alias_if → $ip_addr (掩码 $netmask)"
-  new_alias+=("$next_idx")
+  echo "  写入: ${alias_if} → $ip_addr  (掩码 $netmask)"
+  new_aliases+=("$alias_if")
   existing+=("$ip_addr")
   used_idx+=("$next_idx")
   next_idx=$((next_idx+1))
-  count=$((count+1))
+  added_perm=$((added_perm+1))
 done
 
-echo "共永久化写入 $count 个别名 IP。"
+echo "共永久化写入 $added_perm 个别名 IP。"
 
-# ─── 6. 激活别名接口 ───
+# ─── 6. 激活新别名───
 echo; echo "激活别名接口…"
-for idx in "${new_alias[@]}"; do
-  alias_if="${main_iface}:$idx"
-  ifup "$alias_if" 2>/dev/null && echo "  ifup $alias_if 成功" \
-    || echo "  警告: ifup $alias_if 失败"
+for alias_if in "${new_aliases[@]}"; do
+  ifup "$alias_if" &>/dev/null && echo "  ifup $alias_if 成功"
 done
 
-# ─── 7. 列出当前主网卡所有 IPv4 地址 ───
-echo; echo "当前 $main_iface 地址列表："
+# ─── 7. 列出所有 IPv4 ───
+echo; echo "当前 $main_iface IPv4 列表："
 ip -4 addr show dev "$main_iface" | awk '/inet / {print "  "$2}'
 
-echo; echo "操作完成，新增 IP 均已永久化并已激活。"
+echo; echo "完成：所有指定范围 IP 均已临时添加并永久化。"
