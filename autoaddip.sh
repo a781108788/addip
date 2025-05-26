@@ -1,4 +1,3 @@
-```bash
 #!/bin/bash
 # Debian 12 网段别名 IP 批量添加脚本 —— 交互式模式 + 单一接口 post-up/pre-down 添加删除
 # 依赖：ipcalc
@@ -96,4 +95,3 @@ cat <<MSG
 或
   sudo ifdown $IFACE && sudo ifup $IFACE
 MSG
-```
