@@ -35,8 +35,7 @@ BROADCAST=$(ipcalc "$CIDR" | awk '/Broadcast:/ {print $2}')
 NETMASK=$(ipcalc "$CIDR" | awk '/Netmask:/ {print $2}')
 HOST_MIN=$(ipcalc "$CIDR" | awk '/HostMin:/ {print $2}')
 HOST_MAX=$(ipcalc "$CIDR" | awk '/HostMax:/ {print $2}')
-
-# 如果 HostMin 等于网关，则跳过网关
+# 跳过网关
 if [ "$HOST_MIN" = "$GATEWAY" ]; then
   HOST_MIN=$(python3 - <<EOF
 import ipaddress
@@ -44,6 +43,9 @@ print(ipaddress.IPv4Address("$HOST_MIN")+1)
 EOF
 )
 fi
+
+# 计算前三段前缀
+PREFIX3=${NETWORK%.*}
 
 echo "网络地址: $NETWORK"
 echo "广播地址: $BROADCAST"
@@ -98,7 +100,7 @@ iface $IFACE inet static
 
     # 在接口启动后添加指定范围内 IP
     post-up for ip in \$(seq \${START_IP##*.} \${END_IP##*.}); do
-        ipaddr="\${NETWORK%/*}.\$ip"
+        ipaddr="$PREFIX3.\$ip"
         if ! ip addr show dev $IFACE | grep -qw "\$ipaddr"; then
             ip addr add \$ipaddr/$PREFIX_LEN dev $IFACE
         fi
@@ -106,7 +108,7 @@ iface $IFACE inet static
 
     # 在接口关闭前删除这些 IP
     pre-down for ip in \$(seq \${START_IP##*.} \${END_IP##*.}); do
-        ipaddr="\${NETWORK%/*}.\$ip"
+        ipaddr="$PREFIX3.\$ip"
         ip addr del \$ipaddr/$PREFIX_LEN dev $IFACE || true
     done
 EOF
