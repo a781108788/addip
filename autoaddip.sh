@@ -1,4 +1,3 @@
-
 #!/bin/bash
 # Debian 12 网段别名 IP 批量添加脚本 —— 交互式模式 + 单一接口 post-up/pre-down 添加删除
 # 依赖：ipcalc
@@ -45,7 +44,7 @@ EOF
 )
 fi
 
-# 计算前三段前缀
+# 取前三段前缀
 PREFIX3=${NETWORK%.*}
 
 echo "网络地址: $NETWORK"
@@ -100,16 +99,16 @@ iface $IFACE inet static
     dns-nameservers 8.8.8.8 1.1.1.1
 
     # 在接口启动后添加指定范围内 IP
-    post-up for ip in \$(seq \${START_IP##*.} \${END_IP##*.}); do
-        ipaddr="$PREFIX3.\$ip"
+    post-up for ip in \$(seq ${START_IP##*.} ${END_IP##*.}); do
+        ipaddr="${PREFIX3}.\$ip"
         if ! ip addr show dev $IFACE | grep -qw "\$ipaddr"; then
             ip addr add \$ipaddr/$PREFIX_LEN dev $IFACE
         fi
     done
 
     # 在接口关闭前删除这些 IP
-    pre-down for ip in \$(seq \${START_IP##*.} \${END_IP##*.}); do
-        ipaddr="$PREFIX3.\$ip"
+    pre-down for ip in \$(seq ${START_IP##*.} ${END_IP##*.}); do
+        ipaddr="${PREFIX3}.\$ip"
         ip addr del \$ipaddr/$PREFIX_LEN dev $IFACE || true
     done
 EOF
@@ -123,4 +122,3 @@ IP 范围：${START_IP##*.} 到 ${END_IP##*.} (/ $PREFIX_LEN)
 或
   sudo ifdown $IFACE && sudo ifup $IFACE
 MSG
-
