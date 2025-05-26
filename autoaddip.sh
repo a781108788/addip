@@ -31,7 +31,6 @@ echo "默认网关: $GATEWAY"
 # 3. 提取网络参数
 PREFIX_LEN=${CIDR#*/}
 NETWORK=$(ipcalc "$CIDR" | awk '/Network:/ {print $2}')
-BROADCAST=$(ipcalc "$CIDR" | awk '/Broadcast:/ {print $2}')
 NETMASK=$(ipcalc "$CIDR" | awk '/Netmask:/ {print $2}')
 HOST_MIN=$(ipcalc "$CIDR" | awk '/HostMin:/ {print $2}')
 HOST_MAX=$(ipcalc "$CIDR" | awk '/HostMax:/ {print $2}')
@@ -48,7 +47,6 @@ fi
 PREFIX3=${NETWORK%.*}
 
 echo "网络地址: $NETWORK"
-echo "广播地址: $BROADCAST"
 echo "子网掩码: $NETMASK"
 echo "可用主机范围: $HOST_MIN — $HOST_MAX"
 
@@ -100,7 +98,7 @@ iface $IFACE inet static
 
     # 在接口启动后添加指定范围内 IP
     post-up for ip in $(seq ${START_IP##*.} ${END_IP##*.}); do
-        ipaddr="$PREFIX3.$ip"
+        ipaddr="${PREFIX3}.$ip"
         if ! ip addr show dev $IFACE | grep -qw "$ipaddr"; then
             ip addr add $ipaddr/$PREFIX_LEN dev $IFACE
         fi
@@ -108,7 +106,7 @@ iface $IFACE inet static
 
     # 在接口关闭前删除这些 IP
     pre-down for ip in $(seq ${START_IP##*.} ${END_IP##*.}); do
-        ipaddr="$PREFIX3.$ip"
+        ipaddr="${PREFIX3}.$ip"
         ip addr del $ipaddr/$PREFIX_LEN dev $IFACE || true
     done
 EOF
