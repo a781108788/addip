@@ -1,3 +1,4 @@
+
 #!/bin/bash
 # Debian 12 网段别名 IP 批量添加脚本 —— 交互式模式 + 单一接口 post-up/pre-down 添加删除
 # 依赖：ipcalc
@@ -116,9 +117,10 @@ EOF
 # 7. 提示下一步操作
 cat <<MSG
 已追加接口 $IFACE 的配置到 $CONFIG_FILE。
-IP 范围：\${START_IP##*.} 到 \${END_IP##*.} (/ \$PREFIX_LEN)
+IP 范围：${START_IP##*.} 到 ${END_IP##*.} (/ $PREFIX_LEN)
 请运行：
   sudo systemctl restart networking
 或
   sudo ifdown $IFACE && sudo ifup $IFACE
 MSG
+
