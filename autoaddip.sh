@@ -1,40 +1,29 @@
 #!/bin/bash
-# Debian 12 网段别名 IP 批量添加脚本 —— 交互式 + 单一接口 post-up/pre-down 添加删除
-# 依赖：ipcalc
-# 用法：sudo bash auto_alias.sh
+# Debian 12 别名 IP 批量添加脚本 —— 交互 + 固定 post-up/pre-down 块格式
+# 依赖: ipcalc
+# 用法: sudo bash auto_alias.sh
 
 set -euo pipefail
 
-CONFIG_FILE="/etc/network/interfaces"
-TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
-
-# 1. 检查依赖
+# 1. 检查 ipcalc
 if ! command -v ipcalc &>/dev/null; then
-  echo "错误：请先安装 ipcalc：sudo apt-get update && sudo apt-get install -y ipcalc" >&2
+  echo "请先安装 ipcalc：sudo apt-get update && sudo apt-get install -y ipcalc"
   exit 1
 fi
 
-# 2. 探测主网卡、网关和主 IP/CIDR
+# 2. 探测主接口、网关、主IP/CIDR、掩码
 route_info=$(ip -4 route show default | head -n1)
 IFACE=$(awk '/^default/ {print $5}' <<<"$route_info")
 GATEWAY=$(awk '/^default/ {print $3}' <<<"$route_info")
-CIDR=$(ip -4 -o addr show dev "$IFACE" scope global | awk '{print $4}' | head -n1)
-if [ -z "$IFACE" ] || [ -z "$CIDR" ]; then
-  echo "错误：无法检测到主网卡或主 IP/CIDR。" >&2
-  exit 1
-fi
-
-echo "主接口: $IFACE"
-echo "主 IP/CIDR: $CIDR"
-echo "默认网关: $GATEWAY"
-
-# 3. 提取网络参数
+CIDR=$(ip -4 -o addr show dev "$IFACE" scope global \
+        | awk '{print $4}' | head -n1)
+MAIN_IP=${CIDR%/*}
 PREFIX_LEN=${CIDR#*/}
-NETWORK=$(ipcalc "$CIDR" | awk '/Network:/ {print $2}')
 NETMASK=$(ipcalc "$CIDR" | awk '/Netmask:/ {print $2}')
+
+# 3. 计算可用范围 HostMin, HostMax（跳过网关）
 HOST_MIN=$(ipcalc "$CIDR" | awk '/HostMin:/ {print $2}')
 HOST_MAX=$(ipcalc "$CIDR" | awk '/HostMax:/ {print $2}')
-# 跳过网关
 if [ "$HOST_MIN" = "$GATEWAY" ]; then
   HOST_MIN=$(python3 - <<EOF
 import ipaddress
@@ -43,81 +32,56 @@ EOF
 )
 fi
 
-# 取前三段前缀
-PREFIX3=${NETWORK%.*}
-
-echo "网络地址: $NETWORK"
-echo "子网掩码: $NETMASK"
-echo "可用主机范围: $HOST_MIN — $HOST_MAX"
+# 前缀 A.B.C
+PREFIX3=${MAIN_IP%.*}
 
 # 4. 交互模式选择
-while true; do
-  echo
-  echo "请选择添加范围模式："
-  echo "  1) 自动 — 添加 $HOST_MIN 到 $HOST_MAX 全部可用IP"
-  echo "  2) 手动 — 自定义起始 IP 和结束 IP"
-  read -p "输入 1 或 2: " mode
-  case "$mode" in
-    1)
-      START_IP="$HOST_MIN"
-      END_IP="$HOST_MAX"
-      echo "您选择了自动模式，范围：$START_IP — $END_IP"
-      break
-      ;;
-    2)
-      read -p "请输入起始 IP: " START_IP
-      read -p "请输入结束 IP: " END_IP
-      echo "您选择了手动模式，范围：$START_IP — $END_IP"
-      break
-      ;;
-    *)
-      echo "输入无效，请重新输入"
-      ;;
-  esac
-done
+echo "请选择添加范围模式："
+echo "  1) 自动 — 添加 $HOST_MIN 到 $HOST_MAX"
+echo "  2) 手动 — 自定义起始 IP 和结束 IP"
+read -p "输入 1 或 2: " mode
+case "$mode" in
+  1)
+    START_IP=$HOST_MIN
+    END_IP=$HOST_MAX
+    ;;
+  2)
+    read -p "请输入起始 IP: " START_IP
+    read -p "请输入结束 IP: " END_IP
+    ;;
+  *)
+    echo "无效选择，退出。" >&2
+    exit 1
+    ;;
+esac
 
-# 5. 初始化配置文件（如果不存在）
-if [ ! -f "$CONFIG_FILE" ]; then
-  cat <<'EOF' > "$CONFIG_FILE"
-source /etc/network/interfaces.d/*
-auto lo
-iface lo inet loopback
-EOF
-fi
+START_HOST=${START_IP##*.}
+END_HOST=${END_IP##*.}
 
-# 6. 追加配置段到 /etc/network/interfaces
-# 注意：此处将 seq 和 $ip 保留为文本，实际在 ifup/down 时执行
-cat <<EOF >> "$CONFIG_FILE"
+# 5. 备份原配置
+cp /etc/network/interfaces /etc/network/interfaces.bak_$(date +%Y%m%d%H%M%S)
 
-# --- 添加别名 IP ($TIMESTAMP) ---
-auto $IFACE
-iface $IFACE inet static
-    address ${CIDR%/*}
-    netmask $NETMASK
-    gateway $GATEWAY
-    dns-nameservers 8.8.8.8 1.1.1.1
+# 6. 追加固定格式的配置块
+{
+  echo ""
+  echo "# --- 添加别名 IP ($(date '+%Y-%m-%d %H:%M:%S')) ---"
+  echo "auto $IFACE"
+  echo "iface $IFACE inet static"
+  echo "    address $MAIN_IP"
+  echo "    netmask $NETMASK"
+  echo "    gateway $GATEWAY"
+  echo "    dns-nameservers 8.8.8.8 1.1.1.1"
+  echo ""
+  echo "    # 在接口启动后添加 IP"
+  echo "    post-up for i in \`seq $START_HOST $END_HOST\`; do ip addr add $PREFIX3.\$i/$PREFIX_LEN dev $IFACE; done"
+  echo ""
+  echo "    # 在接口关闭前删除 IP（可选）"
+  echo "    pre-down for i in \`seq $START_HOST $END_HOST\`; do ip addr del $PREFIX3.\$i/$PREFIX_LEN dev $IFACE; done"
+} >> /etc/network/interfaces
 
-    # 在接口启动后添加指定范围内 IP
-    post-up for ip in \$(seq ${START_IP##*.} ${END_IP##*.}); do
-        ipaddr="${PREFIX3}.\$ip"
-        if ! ip addr show dev $IFACE | grep -qw "\$ipaddr"; then
-            ip addr add \$ipaddr/$PREFIX_LEN dev $IFACE
-        fi
-    done
-
-    # 在接口关闭前删除这些 IP
-    pre-down for ip in \$(seq ${START_IP##*.} ${END_IP##*.}); do
-        ipaddr="${PREFIX3}.\$ip"
-        ip addr del \$ipaddr/$PREFIX_LEN dev $IFACE || true
-    done
-EOF
-
-# 7. 提示下一步操作
-cat <<MSG
-已追加接口 $IFACE 的配置到 $CONFIG_FILE。
-IP 范围：${START_IP##*.} 到 ${END_IP##*.} (/$PREFIX_LEN)
-请运行：
-  sudo systemctl restart networking
-或
-  sudo ifdown $IFACE && sudo ifup $IFACE
-MSG
+echo "已追加接口 $IFACE 的配置到 /etc/network/interfaces。"
+echo "IP 范围：$START_HOST 到 $END_HOST (/ $PREFIX_LEN)"
+echo "请运行："
+echo "  sudo systemctl restart networking"
+echo "或"
+echo "  sudo ifdown $IFACE && sudo ifup $IFACE"
