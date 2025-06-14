@@ -865,5 +865,12 @@ echo "Web管理用户名: $ADMINUSER"
 echo "Web管理密码:  $ADMINPASS"
 echo "如需自启，已自动设置 systemd 服务"
 echo "3proxy日志每3天会自动清空一次"
-echo -e "\n如需卸载：bash $0 uninstall"
-echo -e "如需重装：bash $0 reinstall"
+SCRIPT_URL="https://raw.githubusercontent.com/a781108788/addip/refs/heads/main/ipdda.sh"
+if [[ "$0" == "/dev/fd/"* || "$0" == "bash" ]]; then
+  SCMD="bash <(curl -fsSL $SCRIPT_URL)"
+else
+  SCMD="bash $0"
+fi
+echo -e "\n如需卸载：$SCMD uninstall"
+echo -e "如需重装：$SCMD reinstall"
+
