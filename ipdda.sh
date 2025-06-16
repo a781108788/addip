@@ -887,15 +887,26 @@ document.getElementById('exportSelected').onclick = function(){
     if(selected.length==0) { alert("请选择C段"); return; }
     let form = new FormData();
     selected.forEach(c=>form.append('csegs[]',c));
+    // 获取user_prefix
+    let user_prefix = '';
+    if(selected.length){
+        let firstC = selected[0];
+        let cProxies = proxyData.filter(p => p.ip.startsWith(firstC + "."));
+        if(cProxies.length > 0){
+            user_prefix = cProxies[0].user_prefix || '';
+        }
+    }
     fetch('/export_selected', {method:'POST', body:form})
         .then(resp=>resp.blob())
         .then(blob=>{
             let a = document.createElement('a');
+            let name = (user_prefix ? user_prefix : 'proxy') + '_' + selected.join('_') + '.txt';
             a.href = URL.createObjectURL(blob);
-            a.download = 'export_'+selected.join('_')+'.txt';
+            a.download = name;
             a.click();
         });
 };
+
 document.getElementById('exportSelectedProxy').onclick = function(){
     let ids = Array.from(document.querySelectorAll('#proxyTableBody input[name="ids"]:checked')).map(cb=>cb.value);
     if(ids.length === 0) { alert("请选择代理"); return; }
