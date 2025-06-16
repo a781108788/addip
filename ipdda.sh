@@ -445,6 +445,8 @@ open("/usr/local/etc/3proxy/3proxy.cfg", "w").write('\n'.join(cfg))
 EOF
 
 cat > $WORKDIR/init_db.py << 'EOF'
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
 import sqlite3
 from werkzeug.security import generate_password_hash
 import os
