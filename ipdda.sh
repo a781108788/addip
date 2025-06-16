@@ -445,8 +445,6 @@ open("/usr/local/etc/3proxy/3proxy.cfg", "w").write('\n'.join(cfg))
 EOF
 
 cat > $WORKDIR/init_db.py << 'EOF'
-import sys
-sys.stdout.reconfigure(encoding='utf-8')
 import sqlite3
 from werkzeug.security import generate_password_hash
 import os
@@ -478,7 +476,7 @@ cat > $WORKDIR/templates/login.html << 'EOF'
 </head>
 <body class="bg-light">
 <div class="container" style="max-width:400px;margin-top:100px;">
-    <div class="card shadow animated fadeInDown">
+    <div class="card shadow">
         <div class="card-body">
             <h3 class="mb-4 text-center">3proxy 管理登录</h3>
             <form method="post">
@@ -513,40 +511,25 @@ cat > $WORKDIR/templates/index.html << 'EOF'
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        html,body{background:#f7f7fa;transition:background .3s;}
-        .card { border-radius: 1.1rem; box-shadow: 0 8px 36px rgba(44,62,80,.11); transition: box-shadow .18s, background .18s;}
-        .card:hover { box-shadow: 0 12px 36px rgba(22,90,180,0.11);}
+        html,body{background:#f7f7fa;}
         .tab-pane{padding-top:1.5rem;}
-        .ip-group-header{background:#e5e9f2;font-weight:bold;cursor:pointer;transition:background 0.25s;}
+        .ip-group-header{background:#e5e9f2;font-weight:bold;cursor:pointer;transition:background 0.2s;}
         .ip-group-header:hover{background:#b5c5e3;}
-        .ip-group-header .me-2 {transition: transform .28s;}
-        .c-collapsed .ip-group-body{animation:fadeout 0.22s; display:none;}
-        .c-expanded .ip-group-body{animation:fadein 0.32s;}
-        @keyframes fadein { from{opacity:0} to{opacity:1} }
-        @keyframes fadeout { from{opacity:1} to{opacity:0} }
-        .group-select{margin-left:14px;}
-        .table th,.table td {vertical-align:middle;}
-        .table tr:hover { background: #e6f0ff; transition: background .18s;}
-        .table .ip-group-body.selected { background:#aee7ff; }
-        .table thead th { position: sticky; top: 0; background: #f3f3fa; z-index:1;}
-        .animated { animation-duration:.7s; animation-fill-mode:both;}
-        .fadeInDown { animation-name: fadeInDown;}
-        @keyframes fadeInDown {0%{opacity:0;transform:translate3d(0,-60px,0)}100%{opacity:1;transform:translate3d(0,0,0)}}
-        .btn { transition: box-shadow 0.21s, background .14s;}
-        .btn:active { box-shadow: 0 4px 16px rgba(33,110,255,0.13);}
+        .c-collapsed .ip-group-body{display:none;}
+        .c-expanded .ip-group-body{display:table-row-group;}
+        .group-select{margin-left:12px;}
+        .dark-mode{background:#222;color:#eee;}
+        .dark-mode .card{background:#1a1a1a;color:#eee;}
+        .dark-mode .ip-group-header{background:#292f42;}
+        .dark-mode .ip-group-header:hover{background:#1f2230;}
+        .dark-mode .table th,.dark-mode .table td{background:#222;}
+        .dark-mode .form-control{background:#1a1a1a;color:#eee;}
         .switch-mode{position:fixed;top:18px;right:26px;z-index:10;}
-        .dark-mode{background:#181a24;}
-        .dark-mode .card{background:#232334;color:#f0f2fa;}
-        .dark-mode .ip-group-header{background:#2a303c;}
-        .dark-mode .ip-group-header:hover{background:#364060;}
-        .dark-mode .table th,.dark-mode .table td{background:#232334;color:#ddd;}
-        .dark-mode .form-control{background:#1c1f2a;color:#eee;}
-        .dark-mode .table tr:hover {background:#292f43;}
     </style>
 </head>
 <body>
 <button class="btn btn-outline-dark btn-sm switch-mode">🌙</button>
-<div class="container py-3 animated fadeInDown">
+<div class="container py-3">
     <ul class="nav nav-tabs" id="mainTabs" role="tablist">
       <li class="nav-item" role="presentation">
         <button class="nav-link active" id="proxy-tab" data-bs-toggle="tab" data-bs-target="#proxy-pane" type="button" role="tab" aria-controls="proxy-pane" aria-selected="true">代理管理</button>
@@ -560,7 +543,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
         <div class="tab-pane fade show active" id="proxy-pane" role="tabpanel" aria-labelledby="proxy-tab">
             <div class="row mt-4 gy-4">
                 <div class="col-lg-6">
-                    <div class="card shadow-sm p-4 mb-2 animated fadeInDown">
+                    <div class="card shadow-sm p-4 mb-2">
                         <h5 class="fw-bold mb-3 text-success">批量添加代理</h5>
                         <form method="post" action="/batchaddproxy" id="rangeAddForm" class="mb-3">
                             <div class="row g-2">
@@ -585,7 +568,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     </div>
                 </div>
                 <div class="col-lg-6">
-                    <div class="card shadow-sm p-4 mb-2 animated fadeInDown">
+                    <div class="card shadow-sm p-4 mb-2">
                         <h5 class="fw-bold mb-3 text-primary">新增单个代理</h5>
                         <form class="row g-2 align-items-center" method="post" action="/addproxy">
                             <div class="col"><input name="ip" class="form-control" placeholder="IP" required></div>
@@ -597,7 +580,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     </div>
                 </div>
                 <div class="col-12">
-                    <div class="card shadow-sm p-4 animated fadeInDown">
+                    <div class="card shadow-sm p-4">
                         <div class="d-flex mb-2 align-items-center">
                             <h5 class="fw-bold flex-grow-1">代理列表（按C段分组）</h5>
                             <select id="exportCseg" class="form-select form-select-sm ms-2" multiple style="width:240px;max-height:38px;overflow:auto;"></select>
@@ -617,9 +600,9 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                             <tbody id="proxyTableBody"></tbody>
                         </table>
                         </div>
-                        <button type="submit" class="btn btn-danger mt-2 animated" onclick="return confirm('确定批量删除选中项?')">批量删除</button>
-                        <button type="button" class="btn btn-warning ms-2 animated" id="batchEnable">批量启用</button>
-                        <button type="button" class="btn btn-secondary ms-2 animated" id="batchDisable">批量禁用</button>
+                        <button type="submit" class="btn btn-danger mt-2" onclick="return confirm('确定批量删除选中项?')">批量删除</button>
+                        <button type="button" class="btn btn-warning ms-2" id="batchEnable">批量启用</button>
+                        <button type="button" class="btn btn-secondary ms-2" id="batchDisable">批量禁用</button>
                         </form>
                     </div>
                 </div>
@@ -627,7 +610,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
         </div>
         <!-- 用户管理tab -->
         <div class="tab-pane fade" id="user-pane" role="tabpanel" aria-labelledby="user-tab">
-            <div class="card shadow-sm p-4 mt-4 animated fadeInDown">
+            <div class="card shadow-sm p-4 mt-4">
                 <h5 class="fw-bold mb-3 text-warning">Web用户管理</h5>
                 <form class="row g-2 align-items-center mb-3" method="post" action="/adduser">
                     <div class="col"><input name="username" class="form-control" placeholder="用户名" required></div>
@@ -655,7 +638,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
     </div>
     {% with messages = get_flashed_messages() %}
       {% if messages %}
-        <div class="alert alert-success mt-3 fs-5 animated fadeInDown">{{ messages[0] }}</div>
+        <div class="alert alert-success mt-3 fs-5">{{ messages[0] }}</div>
       {% endif %}
     {% endwith %}
 </div>
@@ -687,7 +670,7 @@ function buildTable(data, filterVal="") {
         th.className = "ip-group-header c-expanded";
         th.setAttribute("data-cgroup",gid);
         th.innerHTML = `<td colspan="8" class="pointer">
-            <span class="me-2" style="display:inline-block;transition:transform .28s;">▶</span>${cseg}.x 段 <small class="ms-2 text-primary">共${groups[cseg].length}条</small>
+            <span class="me-2">▶</span>${cseg}.x 段 <small class="ms-2 text-primary">共${groups[cseg].length}条</small>
             <span class="badge bg-info ms-3 cnet-traffic" data-cseg="${cseg}">统计中...</span>
             <input type="checkbox" class="group-select ms-3" data-gid="${gid}" title="全选本组">
         </td>`;
@@ -744,9 +727,6 @@ document.getElementById('proxyTableBody').onclick = function(e){
         let opened = row.classList.contains('c-expanded');
         row.classList.toggle('c-expanded', !opened);
         row.classList.toggle('c-collapsed', opened);
-        // 新增icon旋转
-        let icon = row.querySelector('span.me-2');
-        if(icon) icon.style.transform = opened ? 'rotate(0deg)' : 'rotate(90deg)';
         document.querySelectorAll('.ip-group-body.'+gid).forEach(tr=>{
             tr.style.display = opened ? "none" : "";
         });
@@ -807,7 +787,6 @@ document.getElementById('batchDisable').onclick = function(){
     ids.forEach(id=>form.append('ids[]',id));
     fetch('/batch_disable', {method:'POST', body:form}).then(()=>location.reload());
 };
-// 动态模式切换
 const btn = document.querySelector('.switch-mode');
 btn.onclick = ()=>{
     document.body.classList.toggle('dark-mode');
@@ -867,12 +846,5 @@ echo "Web管理用户名: $ADMINUSER"
 echo "Web管理密码:  $ADMINPASS"
 echo "如需自启，已自动设置 systemd 服务"
 echo "3proxy日志每3天会自动清空一次"
-SCRIPT_URL="https://raw.githubusercontent.com/a781108788/addip/refs/heads/main/ipdda.sh"
-if [[ "$0" == "/dev/fd/"* || "$0" == "bash" ]]; then
-  SCMD="bash <(curl -fsSL $SCRIPT_URL)"
-else
-  SCMD="bash $0"
-fi
-echo -e "\n如需卸载：$SCMD uninstall"
-echo -e "如需重装：$SCMD reinstall"
-
+echo -e "\n如需卸载：bash $0 uninstall"
+echo -e "如需重装：bash $0 reinstall"
