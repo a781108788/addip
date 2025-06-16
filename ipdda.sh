@@ -85,9 +85,9 @@ python3 -m venv venv
 source venv/bin/activate
 pip install flask flask_login flask_wtf wtforms Werkzeug --break-system-packages
 
-# --- manage.py ---
+# manage.py
 cat > $WORKDIR/manage.py << 'EOF'
-import os, sqlite3, random, string, re, collections
+import os, sqlite3, random, string, re, collections, ipaddress
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file
 from flask_login import LoginManager, login_user, login_required, logout_user, UserMixin
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -207,7 +207,7 @@ def batchaddproxy():
             uname = userprefix + ''.join(random.choices(string.ascii_lowercase+string.digits, k=4))
             pw = ''.join(random.choices(string.ascii_letters+string.digits, k=12))
             db.execute('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, userprefix) VALUES (?,?,?,?,1,?,?,?)',
-                (ip, port, uname, pw, iprange.strip(), portrange.strip(), userprefix))
+                (ip, port, uname, pw, iprange, portrange, userprefix))
             count += 1
         db.commit()
         db.close()
@@ -355,6 +355,7 @@ def export():
     db.close()
     return f"<pre>{result}</pre>"
 
+# --- 修正版导出，文件名为 用户前缀+ip段.txt ---
 @app.route('/export_selected', methods=['POST'])
 @login_required
 def export_selected():
@@ -366,16 +367,16 @@ def export_selected():
     row = db.execute("SELECT userprefix FROM proxy WHERE ip LIKE ? LIMIT 1", (cseg+'.%',)).fetchone()
     userprefix = row[0] if row and row[0] else 'proxy'
     rows = db.execute("SELECT ip,port,username,password FROM proxy WHERE ip LIKE ? ORDER BY ip,port", (cseg+'.%',)).fetchall()
-    output = ""
-    for ip, port, user, pw in rows:
-        output += f"{ip}:{port}:{user}:{pw}\n"
     db.close()
+    output = ''
+    for ip,port,user,pw in rows:
+        output += f"{ip}:{port}:{user}:{pw}\n"
     from io import BytesIO
     mem = BytesIO()
     mem.write(output.encode('utf-8'))
     mem.seek(0)
-    filename = f"{userprefix}_{cseg.replace('.', '_')}.txt"
-    return send_file(mem, as_attachment=True, download_name=filename, mimetype="text/plain")
+    fname = f"{userprefix}_{cseg.replace('.', '_')}.txt"
+    return send_file(mem, as_attachment=True, download_name=fname, mimetype="text/plain")
 
 @app.route('/export_selected_proxy', methods=['POST'])
 @login_required
@@ -421,7 +422,7 @@ if __name__ == '__main__':
     app.run('0.0.0.0', port, debug=False)
 EOF
 
-# --- config_gen.py ---
+# config_gen.py
 cat > $WORKDIR/config_gen.py << 'EOF'
 import sqlite3
 db = sqlite3.connect('3proxy.db')
@@ -449,7 +450,7 @@ for ip, port, user, pw, en in db2.execute('SELECT ip, port, username, password, 
 open("/usr/local/etc/3proxy/3proxy.cfg", "w").write('\n'.join(cfg))
 EOF
 
-# --- init_db.py ---
+# init_db.py
 cat > $WORKDIR/init_db.py << 'EOF'
 import sqlite3
 from werkzeug.security import generate_password_hash
@@ -469,11 +470,11 @@ db.execute('''CREATE TABLE IF NOT EXISTS users (
 )''')
 db.execute('INSERT OR IGNORE INTO users (username, password) VALUES (?,?)', (user, generate_password_hash(passwd)))
 db.commit()
-print("WebAdmin: "+user)
-print("Webpassword:  "+passwd)
+print("Web管理登录用户名: "+user)
+print("Web管理登录密码:  "+passwd)
 EOF
 
-# --- login.html ---
+# login.html
 cat > $WORKDIR/templates/login.html << 'EOF'
 <!DOCTYPE html>
 <html lang="zh">
@@ -510,7 +511,7 @@ cat > $WORKDIR/templates/login.html << 'EOF'
 </html>
 EOF
 
-# --- index.html ---
+# index.html 美化/分组参数显示
 cat > $WORKDIR/templates/index.html << 'EOF'
 <!DOCTYPE html>
 <html lang="zh">
@@ -534,14 +535,9 @@ cat > $WORKDIR/templates/index.html << 'EOF'
         .dark-mode .table th,.dark-mode .table td{background:#222;}
         .dark-mode .form-control{background:#1a1a1a;color:#eee;}
         .switch-mode{position:fixed;top:18px;right:26px;z-index:10;}
-        .form-label {font-weight: 500;}
-        .proxy-card-label {width:100px;text-align:right;}
-        .form-section-title {border-left: 4px solid #3880ff;padding-left: .8em;font-weight:bold;}
-        .exportCseg-large {min-height:80px;font-size:1rem;}
-        .proxy-batch-input {font-family:monospace;font-size:.96em;min-height:90px;max-height:200px;}
-        @media (max-width: 991px) {
-          .form-section-title{margin-top:24px;}
-        }
+        .textarea-vertical{height:250px;resize:vertical;display:block;width:100%;font-family:monospace;}
+        .select-big{min-height:90px;}
+        .badge-param{background:#e3eef8;color:#205481;border-radius:6px;padding:2px 8px;margin-right:5px;font-size:1em;}
     </style>
 </head>
 <body>
@@ -561,66 +557,46 @@ cat > $WORKDIR/templates/index.html << 'EOF'
             <div class="row mt-4 gy-4">
                 <div class="col-lg-6">
                     <div class="card shadow-sm p-4 mb-2">
-                        <div class="form-section-title mb-3 text-success">批量添加代理</div>
-                        <form method="post" action="/batchaddproxy" id="rangeAddForm">
-                            <div class="row mb-3 g-2 align-items-end">
-                                <div class="col-12 col-md-4">
-                                    <label class="form-label proxy-card-label">IP范围</label>
-                                    <input type="text" class="form-control" name="iprange" placeholder="192.168.1.2-254">
+                        <h5 class="fw-bold mb-3 text-success">批量添加代理</h5>
+                        <form method="post" action="/batchaddproxy" id="rangeAddForm" class="mb-3">
+                            <div class="row g-2">
+                                <div class="col-12 col-md-4 mb-2">
+                                    <input type="text" class="form-control" name="iprange" placeholder="IP范围, 如 192.168.1.2-254">
                                 </div>
-                                <div class="col-12 col-md-4">
-                                    <label class="form-label proxy-card-label">端口范围</label>
-                                    <input type="text" class="form-control" name="portrange" placeholder="20000-30000">
+                                <div class="col-12 col-md-4 mb-2">
+                                    <input type="text" class="form-control" name="portrange" placeholder="端口范围, 如 20000-30000">
                                 </div>
-                                <div class="col-12 col-md-3">
-                                    <label class="form-label proxy-card-label">用户前缀</label>
-                                    <input type="text" class="form-control" name="userprefix" placeholder="如: tin">
+                                <div class="col-12 col-md-4 mb-2">
+                                    <input type="text" class="form-control" name="userprefix" placeholder="用户名前缀">
                                 </div>
-                                <div class="col-12 col-md-1 d-grid">
-                                    <button type="submit" class="btn btn-success">范围添加</button>
+                                <div class="col-12">
+                                    <button type="submit" class="btn btn-success w-100">范围添加</button>
                                 </div>
                             </div>
                         </form>
                         <form method="post" action="/batchaddproxy">
-                            <div class="mb-3">
-                                <label class="form-label">批量文本添加</label>
-                                <textarea name="batchproxy" class="form-control proxy-batch-input" rows="7" style="resize:vertical;" placeholder="每行: ip,端口 或 ip:端口&#10;也支持 ip,端口,用户名,密码"></textarea>
-                            </div>
+                            <textarea name="batchproxy" class="form-control textarea-vertical mb-3" rows="8" placeholder="每行一个：ip,端口 或 ip:端口&#10;也支持 ip,端口,用户名,密码"></textarea>
                             <button type="submit" class="btn btn-success w-100">批量添加</button>
                         </form>
                     </div>
                 </div>
                 <div class="col-lg-6">
                     <div class="card shadow-sm p-4 mb-2">
-                        <div class="form-section-title mb-3 text-primary">新增单个代理</div>
-                        <form class="row g-2 align-items-end" method="post" action="/addproxy">
-                            <div class="col-12 col-md-3">
-                                <label class="form-label proxy-card-label">IP</label>
-                                <input name="ip" class="form-control" placeholder="IP" required>
-                            </div>
-                            <div class="col-12 col-md-3">
-                                <label class="form-label proxy-card-label">端口</label>
-                                <input name="port" class="form-control" placeholder="端口" required>
-                            </div>
-                            <div class="col-12 col-md-3">
-                                <label class="form-label proxy-card-label">用户名</label>
-                                <input name="username" class="form-control" placeholder="用户名" required>
-                            </div>
-                            <div class="col-12 col-md-3">
-                                <label class="form-label proxy-card-label">密码</label>
-                                <input name="password" class="form-control" placeholder="密码(留空随机)">
-                            </div>
-                            <div class="col-12 d-grid mt-2">
-                                <button class="btn btn-primary" type="submit">新增</button>
-                            </div>
+                        <h5 class="fw-bold mb-3 text-primary">新增单个代理</h5>
+                        <form class="row g-2 align-items-center" method="post" action="/addproxy">
+                            <div class="col"><input name="ip" class="form-control" placeholder="IP" required></div>
+                            <div class="col"><input name="port" class="form-control" placeholder="端口" required></div>
+                            <div class="col"><input name="username" class="form-control" placeholder="用户名" required></div>
+                            <div class="col"><input name="password" class="form-control" placeholder="密码(留空随机)"></div>
+                            <div class="col-auto"><button class="btn btn-primary" type="submit">新增</button></div>
                         </form>
                     </div>
                 </div>
                 <div class="col-12">
                     <div class="card shadow-sm p-4">
-                        <div class="d-flex flex-wrap align-items-center mb-2">
-                            <div class="form-section-title flex-grow-1 mb-2 mb-md-0">代理列表（按C段分组）</div>
-                            <select id="exportCseg" class="form-select exportCseg-large ms-2" multiple style="width:320px;max-width:50vw;"></select>
+                        <div class="d-flex mb-2 align-items-center">
+                            <h5 class="fw-bold flex-grow-1">代理列表（按C段分组）</h5>
+                            <select id="exportCseg" class="form-select select-big form-select-sm ms-2" multiple style="width:240px;max-height:180px;overflow:auto;"></select>
                             <button id="exportSelected" class="btn btn-outline-info btn-sm ms-2">导出所选C段</button>
                             <button type="button" id="exportSelectedProxy" class="btn btn-outline-success btn-sm ms-2">导出选中代理</button>
                             <input id="searchBox" class="form-control form-control-sm ms-2" style="width:180px" placeholder="搜索IP/端口/用户">
@@ -630,18 +606,16 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                         <table class="table table-bordered table-hover align-middle mb-0" id="proxyTable">
                             <thead class="table-light sticky-top">
                                 <tr>
-                                    <th style="width:38px"><input type="checkbox" id="selectAll"></th>
+                                    <th><input type="checkbox" id="selectAll"></th>
                                     <th>ID</th><th>IP</th><th>端口</th><th>用户名</th><th>密码</th><th>状态</th><th>操作</th>
                                 </tr>
                             </thead>
                             <tbody id="proxyTableBody"></tbody>
                         </table>
                         </div>
-                        <div class="mt-2 d-flex flex-wrap align-items-center">
-                            <button type="submit" class="btn btn-danger me-2 mb-2" onclick="return confirm('确定批量删除选中项?')">批量删除</button>
-                            <button type="button" class="btn btn-warning me-2 mb-2" id="batchEnable">批量启用</button>
-                            <button type="button" class="btn btn-secondary me-2 mb-2" id="batchDisable">批量禁用</button>
-                        </div>
+                        <button type="submit" class="btn btn-danger mt-2" onclick="return confirm('确定批量删除选中项?')">批量删除</button>
+                        <button type="button" class="btn btn-warning ms-2" id="batchEnable">批量启用</button>
+                        <button type="button" class="btn btn-secondary ms-2" id="batchDisable">批量禁用</button>
                         </form>
                     </div>
                 </div>
@@ -650,11 +624,11 @@ cat > $WORKDIR/templates/index.html << 'EOF'
         <!-- 用户管理tab -->
         <div class="tab-pane fade" id="user-pane" role="tabpanel" aria-labelledby="user-tab">
             <div class="card shadow-sm p-4 mt-4">
-                <div class="form-section-title mb-3 text-warning">Web用户管理</div>
-                <form class="row g-2 align-items-end mb-3" method="post" action="/adduser">
-                    <div class="col-12 col-md-4"><input name="username" class="form-control" placeholder="用户名" required></div>
-                    <div class="col-12 col-md-4"><input name="password" class="form-control" placeholder="密码" required></div>
-                    <div class="col-12 col-md-2 d-grid"><button class="btn btn-outline-primary" type="submit">添加用户</button></div>
+                <h5 class="fw-bold mb-3 text-warning">Web用户管理</h5>
+                <form class="row g-2 align-items-center mb-3" method="post" action="/adduser">
+                    <div class="col"><input name="username" class="form-control" placeholder="用户名" required></div>
+                    <div class="col"><input name="password" class="form-control" placeholder="密码" required></div>
+                    <div class="col-auto"><button class="btn btn-outline-primary" type="submit">添加用户</button></div>
                 </form>
                 <div class="table-responsive">
                 <table class="table table-bordered table-sm mb-0">
@@ -706,17 +680,22 @@ function buildTable(data, filterVal="") {
     Object.keys(groups).sort().forEach((cseg,i)=>{
         let gid = "cgroup"+i;
         let th = document.createElement('tr');
-        th.className = "ip-group-header c-collapsed";
+        th.className = "ip-group-header c-collapsed"; // 默认折叠
         th.setAttribute("data-cgroup",gid);
 
-        // 取本组的ip_range, port_range, userprefix（仅显示第一条）
-        let ip_range = groups[cseg][0]?.ip_range || '';
-        let port_range = groups[cseg][0]?.port_range || '';
-        let userprefix = groups[cseg][0]?.userprefix || '';
+        // 取本组第一个的参数信息
+        let ip_range = groups[cseg][0]?.ip_range||'--';
+        let port_range = groups[cseg][0]?.port_range||'--';
+        let userprefix = groups[cseg][0]?.userprefix||'--';
+
         th.innerHTML = `<td colspan="8" class="pointer">
             <span class="me-2">▶</span>${cseg}.x 段 <small class="ms-2 text-primary">共${groups[cseg].length}条</small>
             <span class="badge bg-info ms-3 cnet-traffic" data-cseg="${cseg}">统计中...</span>
-            <span class="ms-4 text-muted small">IP范围: ${ip_range||'--'} 端口: ${port_range||'--'} 用户前缀: ${userprefix||'--'}</span>
+            <span class="ms-3">
+                <span class="badge badge-param">IP范围:<b>${ip_range}</b></span>
+                <span class="badge badge-param">端口:<b>${port_range}</b></span>
+                <span class="badge badge-param">前缀:<b>${userprefix}</b></span>
+            </span>
             <input type="checkbox" class="group-select ms-3" data-gid="${gid}" title="全选本组">
         </td>`;
         tbody.appendChild(th);
@@ -724,7 +703,7 @@ function buildTable(data, filterVal="") {
         groups[cseg].forEach(p=>{
             let tr = document.createElement('tr');
             tr.className = "ip-group-body "+gid;
-            tr.style.display = "none"; // 默认折叠
+            tr.style.display = "none";
             tr.innerHTML = `<td><input type="checkbox" name="ids" value="${p.id}"></td>
             <td>${p.id}</td>
             <td>${p.ip}</td>
@@ -792,7 +771,7 @@ document.getElementById('searchBox').oninput = function() {
 document.getElementById('exportSelected').onclick = function(){
     let sel = document.getElementById('exportCseg');
     let selected = Array.from(sel.selectedOptions).map(o=>o.value);
-    if(selected.length!==1) { alert("请选择一个C段"); return; }
+    if(selected.length != 1) { alert("请只选择一个C段"); return; }
     let form = new FormData();
     form.append('cseg', selected[0]);
     fetch('/export_selected', {method:'POST', body:form})
@@ -800,7 +779,7 @@ document.getElementById('exportSelected').onclick = function(){
         .then(blob=>{
             let a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
-            a.download = ''; // 让服务端定文件名
+            a.download = ""; // 文件名已由后端控制
             a.click();
         });
 };
@@ -844,6 +823,7 @@ btn.onclick = ()=>{
 </html>
 EOF
 
+# systemd
 cat > /etc/systemd/system/3proxy-web.service <<EOF
 [Unit]
 Description=3proxy Web管理后台
