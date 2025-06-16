@@ -462,8 +462,8 @@ db.execute('''CREATE TABLE IF NOT EXISTS users (
 )''')
 db.execute('INSERT OR IGNORE INTO users (username, password) VALUES (?,?)', (user, generate_password_hash(passwd)))
 db.commit()
-print("Web管理登录用户名: "+user)
-print("Web管理登录密码:  "+passwd)
+print("WebAdmin: "+user)
+print("Webpassword:  "+passwd)
 EOF
 
 cat > $WORKDIR/templates/login.html << 'EOF'
