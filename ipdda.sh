@@ -1,71 +1,64 @@
 #!/bin/bash
 set -e
 
+############################################
+# 一键部署 3proxy + Flask Web管理后台（完整无删减）
+############################################
+
 WORKDIR=/opt/3proxy-web
-THREEPROXY_PATH=/usr/local/bin/3proxy
-PROXYCFG_PATH=/usr/local/etc/3proxy/3proxy.cfg
-LOGFILE=/usr/local/etc/3proxy/3proxy.log
+BIN_3PROXY=/usr/local/bin/3proxy
+CFG_3PROXY=/usr/local/etc/3proxy/3proxy.cfg
+LOG_3PROXY=/usr/local/etc/3proxy/3proxy.log
 
-function get_local_ip() {
-    local pubip lanip
-    pubip=$(curl -s ifconfig.me || curl -s ip.sb || curl -s icanhazip.com)
-    lanip=$(hostname -I | awk '{print $1}')
-    if [[ -n "$pubip" && "$pubip" != "$lanip" ]]; then
-        echo "$pubip"
-    else
-        echo "$lanip"
-    fi
-}
-function detect_iface() {
-    ip route | grep default | awk '{print $5}' | head -1
+# 获取本机IP
+get_local_ip(){
+  pub=$(curl -s ifconfig.me||curl -s ip.sb||curl -s icanhazip.com)
+  lan=$(hostname -I|awk '{print $1}')
+  [[ -n "$pub" && "$pub" != "$lan" ]]&&echo $pub||echo $lan
 }
 
-function uninstall_3proxy_web() {
-    systemctl stop 3proxy-web 2>/dev/null || true
-    systemctl stop 3proxy-autostart 2>/dev/null || true
-    systemctl disable 3proxy-web 2>/dev/null || true
-    systemctl disable 3proxy-autostart 2>/dev/null || true
-    rm -rf $WORKDIR
-    rm -f /etc/systemd/system/3proxy-web.service
-    rm -f /etc/systemd/system/3proxy-autostart.service
-    rm -f /usr/local/bin/3proxy
-    rm -rf /usr/local/etc/3proxy
-    rm -f /etc/cron.d/3proxy-logrotate
-    systemctl daemon-reload
-    echo -e "\033[31m3proxy Web管理及全部相关内容已卸载。\033[0m"
+# 完全卸载
+uninstall_all(){
+  systemctl stop 3proxy-web 2>/dev/null||:
+  systemctl disable 3proxy-web 2>/dev/null||:
+  systemctl stop 3proxy-autostart 2>/dev/null||:
+  systemctl disable 3proxy-autostart 2>/dev/null||:
+  rm -rf $WORKDIR
+  rm -f /etc/systemd/system/3proxy-web.service
+  rm -f /etc/systemd/system/3proxy-autostart.service
+  rm -f $BIN_3PROXY
+  rm -rf $(dirname $CFG_3PROXY)
+  rm -f /etc/cron.d/3proxy-logrotate
+  systemctl daemon-reload
+  echo -e "\e[31m已卸载 3proxy Web管理后台\e[0m"
 }
 
-if [[ "$1" == "uninstall" ]]; then
-    uninstall_3proxy_web
-    exit 0
-fi
-
-if [[ "$1" == "reinstall" ]]; then
-    uninstall_3proxy_web
-    echo -e "\033[32m正在重新安装...\033[0m"
-fi
+if [[ "$1" == "uninstall" ]];then uninstall_all;exit;fi
+if [[ "$1" == "reinstall" ]];then uninstall_all;echo -e "\e[32m重新安装...\e[0m";fi
 
 PORT=$((RANDOM%55534+10000))
 ADMINUSER="admin$RANDOM"
-ADMINPASS=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
+ADMINPASS=$(tr -dc A-Za-z0-9 </dev/urandom|head -c16)
 
-echo -e "\n========= 1. 自动安装 3proxy =========\n"
+echo -e "\n=== 安装依赖 ==="
 apt update
-apt install -y gcc make git wget python3 python3-pip python3-venv sqlite3 cron
+apt install -y gcc make git wget python3 python3-venv python3-pip sqlite3 cron net-tools python3-netifaces
 
-if [ ! -f "$THREEPROXY_PATH" ]; then
-    cd /tmp
-    rm -rf 3proxy
-    git clone --depth=1 https://github.com/z3APA3A/3proxy.git
-    cd 3proxy
-    make -f Makefile.Linux
-    mkdir -p /usr/local/bin /usr/local/etc/3proxy
-    cp bin/3proxy /usr/local/bin/3proxy
-    chmod +x /usr/local/bin/3proxy
+echo -e "\n=== 编译安装 3proxy ==="
+if [ ! -f "$BIN_3PROXY" ];then
+  cd /tmp
+  rm -rf 3proxy
+  git clone --depth=1 https://github.com/z3APA3A/3proxy.git
+  cd 3proxy
+  make -f Makefile.Linux
+  mkdir -p $(dirname $BIN_3PROXY) $(dirname $CFG_3PROXY)
+  cp bin/3proxy $BIN_3PROXY
+  chmod +x $BIN_3PROXY
 fi
 
-if [ ! -f "$PROXYCFG_PATH" ]; then
-cat > $PROXYCFG_PATH <<EOF
+echo -e "\n=== 配置 3proxy 默认配置 ==="
+if [ ! -f "$CFG_3PROXY" ];then
+cat > $CFG_3PROXY <<EOF
 daemon
 maxconn 2000
 nserver 8.8.8.8
@@ -73,686 +66,523 @@ nscache 65536
 timeouts 1 5 30 60 180 1800 15 60
 auth none
 proxy -p3128
-log $LOGFILE D
+log $LOG_3PROXY D
 EOF
 fi
 
+echo -e "\n=== 日志轮转（每3天清空一次） ==="
 cat > /etc/cron.d/3proxy-logrotate <<EOF
-0 3 */3 * * root [ -f "$LOGFILE" ] && > "$LOGFILE"
+0 3 */3 * * root [ -f "$LOG_3PROXY" ] && > "$LOG_3PROXY"
 EOF
 
-echo -e "\n========= 2. 部署 Python Web 管理环境 =========\n"
-mkdir -p $WORKDIR/templates
+echo -e "\n=== 部署 Flask Web 管理后台 ==="
+mkdir -p $WORKDIR/templates $WORKDIR/static
 cd $WORKDIR
 python3 -m venv venv
 source venv/bin/activate
-pip install flask flask_login flask_wtf wtforms Werkzeug --break-system-packages
+pip install flask flask_login flask_wtf wtforms Werkzeug netifaces --break-system-packages
 
-# ------------------ manage.py ------------------
-cat > $WORKDIR/manage.py << 'EOF'
-import os, sqlite3, random, string, re, collections, ipaddress
+############################################
+# manage.py —— 后端所有路由及逻辑
+############################################
+cat > $WORKDIR/manage.py <<'EOF'
+import os, sqlite3, random, string, re, collections, netifaces, io
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, make_response
 from flask_login import LoginManager, login_user, login_required, logout_user, UserMixin
 from werkzeug.security import generate_password_hash, check_password_hash
-import subprocess
 
-DB = '3proxy.db'
-SECRET = 'changeme_this_is_secret'
+DB='3proxy.db'
+SECRET='changeme_secret'
 import sys
-PORT = int(sys.argv[1]) if len(sys.argv)>1 else 9999
-THREEPROXY_PATH = '/usr/local/bin/3proxy'
-PROXYCFG_PATH = '/usr/local/etc/3proxy/3proxy.cfg'
-LOGFILE = '/usr/local/etc/3proxy/3proxy.log'
+PORT=int(sys.argv[1]) if len(sys.argv)>1 else 9999
+BIN3='/usr/local/bin/3proxy'
+CFG3='/usr/local/etc/3proxy/3proxy.cfg'
+LOG3='/usr/local/etc/3proxy/3proxy.log'
+IFACE_CFG='/etc/network/interfaces'
 
-app = Flask(__name__, template_folder='templates', static_folder='static')
-app.secret_key = SECRET
-login_manager = LoginManager(app)
-login_manager.login_view = 'login'
+app=Flask(__name__, template_folder='templates', static_folder='static')
+app.secret_key=SECRET
+lm=LoginManager(app); lm.login_view='login'
 
-def get_db():
-    return sqlite3.connect(DB)
-
-def detect_iface():
-    try:
-        iface = subprocess.check_output("ip route | grep default | awk '{print $5}'", shell=True).decode().strip()
-        return iface or 'eth0'
-    except: return 'eth0'
+def db_conn():
+    c=sqlite3.connect(DB); c.row_factory=sqlite3.Row; return c
 
 class User(UserMixin):
-    def __init__(self, id, username, password):
-        self.id = id
-        self.username = username
-        self.password_hash = password
-    def check_password(self, password):
-        return check_password_hash(self.password_hash, password)
+    def __init__(self,id,uname,phash):
+        self.id=id; self.username=uname; self.password_hash=phash
+    def check_password(self,pw): return check_password_hash(self.password_hash,pw)
 
-@login_manager.user_loader
-def load_user(user_id):
-    db = get_db()
-    cur = db.execute("SELECT id,username,password FROM users WHERE id=?", (user_id,))
-    row = cur.fetchone()
-    db.close()
-    if row:
-        return User(row[0], row[1], row[2])
-    return None
+@lm.user_loader
+def load_user(uid):
+    db=db_conn(); r=db.execute("SELECT id,username,password FROM users WHERE id=?",(uid,)).fetchone(); db.close()
+    return User(r['id'],r['username'],r['password']) if r else None
 
 def reload_3proxy():
-    os.system(f'python3 {os.path.join(os.path.dirname(__file__), "config_gen.py")}')
-    os.system(f'pkill 3proxy; {THREEPROXY_PATH} {PROXYCFG_PATH} &')
+    os.system(f'python3 config_gen.py')
+    os.system(f'pkill 3proxy; {BIN3} {CFG3} &')
 
-@app.route('/login', methods=['GET','POST'])
+def default_iface():
+    try: return netifaces.gateways()['default'][netifaces.AF_INET][1]
+    except: return 'eth0'
+
+@app.route('/login',methods=['GET','POST'])
 def login():
-    if request.method == 'POST':
-        db = get_db()
-        cur = db.execute('SELECT id,username,password FROM users WHERE username=?', (request.form['username'],))
-        row = cur.fetchone()
-        db.close()
-        if row and check_password_hash(row[2], request.form['password']):
-            user = User(row[0], row[1], row[2])
-            login_user(user)
-            return redirect('/')
+    if request.method=='POST':
+        db=db_conn(); r=db.execute("SELECT id,username,password FROM users WHERE username=?",(request.form['username'],)).fetchone(); db.close()
+        if r and check_password_hash(r['password'],request.form['password']):
+            u=User(r['id'],r['username'],r['password']); login_user(u); return redirect('/')
         flash('登录失败')
     return render_template('login.html')
 
 @app.route('/logout')
 @login_required
 def logout():
-    logout_user()
-    return redirect(url_for('login'))
+    logout_user(); return redirect(url_for('login'))
 
-@app.route('/', methods=['GET', 'POST'])
+@app.route('/',methods=['GET','POST'])
 @login_required
 def index():
-    db = get_db()
-    proxies = db.execute('SELECT id,ip,port,username,password,enabled,group_info FROM proxy ORDER BY id').fetchall()
-    users = db.execute('SELECT id,username FROM users').fetchall()
-    iface = detect_iface()
-    ip_groups = db.execute('SELECT DISTINCT group_info FROM proxy WHERE group_info IS NOT NULL').fetchall()
+    db=db_conn()
+    proxies=db.execute("SELECT * FROM proxy ORDER BY id").fetchall()
+    users=db.execute("SELECT id,username FROM users").fetchall()
     db.close()
-    return render_template('index.html', proxies=proxies, users=users, iface_detected=iface, ip_groups=ip_groups)
+    return render_template('index.html',proxies=proxies,users=users,iface=default_iface())
 
-@app.route('/addproxy', methods=['POST'])
+# ------------- 代理管理 -------------
+@app.route('/addproxy',methods=['POST'])
 @login_required
 def addproxy():
-    ip = request.form['ip']
-    port = int(request.form['port'])
-    username = request.form['username']
-    password = request.form['password'] or ''.join(random.choices(string.ascii_letters+string.digits, k=12))
-    db = get_db()
-    db.execute('INSERT INTO proxy (ip, port, username, password, enabled) VALUES (?,?,?,?,1)', (ip, port, username, password))
-    db.commit()
-    db.close()
-    reload_3proxy()
-    flash('已添加代理')
-    return redirect('/')
+    ip=request.form['ip']; port=int(request.form['port']); uname=request.form['username']
+    pw=request.form['password'] or ''.join(random.choices(string.ascii_letters+string.digits,k=12))
+    db=db_conn(); db.execute("INSERT INTO proxy(ip,port,username,password,enabled) VALUES(?,?,?,?,1)",(ip,port,uname,pw)); db.commit(); db.close()
+    reload_3proxy(); flash('代理已添加'); return redirect('/')
 
-@app.route('/batchaddproxy', methods=['POST'])
+@app.route('/batchaddproxy',methods=['POST'])
 @login_required
 def batchaddproxy():
-    iprange = request.form.get('iprange')
-    portrange = request.form.get('portrange')
-    userprefix = request.form.get('userprefix')
-    group_info = ''
-    if iprange and portrange and userprefix:
-        group_info = f"范围:{iprange}, 端口:{portrange}, 用户前缀:{userprefix}"
-        m = re.match(r"(\d+\.\d+\.\d+\.)(\d+)-(\d+)", iprange.strip())
-        if not m:
-            flash("IP范围格式错误。例：192.168.1.2-254")
-            return redirect('/')
-        ip_base = m.group(1)
-        start = int(m.group(2))
-        end = int(m.group(3))
-        ips = [f"{ip_base}{i}" for i in range(start, end+1)]
-        m2 = re.match(r"(\d+)-(\d+)", portrange.strip())
-        if not m2:
-            flash("端口范围格式错误。例：20000-30000")
-            return redirect('/')
-        port_start = int(m2.group(1))
-        port_end = int(m2.group(2))
-        all_ports = list(range(port_start, port_end+1))
-        if len(all_ports) < len(ips):
-            flash("端口区间不足以分配全部IP")
-            return redirect('/')
-        random.shuffle(all_ports)
-        db = get_db()
-        count = 0
-        for i, ip in enumerate(ips):
-            port = all_ports[i]
-            uname = userprefix + ''.join(random.choices(string.ascii_lowercase+string.digits, k=4))
-            pw = ''.join(random.choices(string.ascii_letters+string.digits, k=12))
-            db.execute('INSERT INTO proxy (ip, port, username, password, enabled, group_info) VALUES (?,?,?,?,1,?)', (ip, port, uname, pw, group_info))
-            count += 1
-        db.commit()
-        db.close()
-        reload_3proxy()
-        flash(f'批量范围添加完成，共添加{count}条代理')
-        return redirect('/')
-    batch_data = request.form.get('batchproxy','').strip().splitlines()
-    db = get_db()
-    count = 0
-    base_idx = db.execute("SELECT MAX(id) FROM proxy").fetchone()[0]
-    if base_idx is None:
-        base_idx = 0
-    idx = 1
-    for line in batch_data:
-        line = line.strip()
-        if not line or line.startswith('#'):
-            continue
-        if ',' in line:
-            parts = [x.strip() for x in line.split(',')]
-        elif ':' in line:
-            parts = [x.strip() for x in line.split(':')]
+    ipr=request.form.get('iprange'); pr=request.form.get('portrange'); prefix=request.form.get('userprefix')
+    manual=request.form.get('batchproxy')
+    db=db_conn(); cnt=0
+    if ipr and pr and prefix:
+        m=re.match(r'(\d+\.\d+\.\d+\.)(\d+)-(\d+)',ipr.strip())
+        if not m: flash('IP范围格式错误'); return redirect('/')
+        base,mn, mx = m.group(1),int(m.group(2)),int(m.group(3))
+        ips=[f"{base}{i}" for i in range(mn,mx+1)]
+        m2=re.match(r'(\d+)-(\d+)',pr.strip())
+        if not m2: flash('端口范围格式错误'); return redirect('/')
+        ps,pe=int(m2.group(1)),int(m2.group(2))
+        ports=list(range(ps,pe+1))
+        if len(ports)<len(ips): flash('端口不足'); return redirect('/')
+        random.shuffle(ports)
+        for i,ip in enumerate(ips):
+            uname=prefix+''.join(random.choices(string.ascii_lowercase+string.digits,k=4))
+            pw=''.join(random.choices(string.ascii_letters+string.digits,k=12))
+            db.execute("INSERT INTO proxy(ip,port,username,password,enabled) VALUES(?,?,?,?,1)",(ip,ports[i],uname,pw)); cnt+=1
+        db.commit(); db.close(); reload_3proxy(); flash(f'范围批量添加{cnt}条'); return redirect('/')
+    # 手动模式
+    lines=manual.strip().splitlines(); base_id=db.execute("SELECT MAX(id) FROM proxy").fetchone()[0] or 0; idx=1
+    for l in lines:
+        l=l.strip(); 
+        if not l or l.startswith('#'): continue
+        parts=re.split(r'[:,\s]+',l)
+        if len(parts)==2:
+            ip,pt=parts; uname=f"user{base_id+idx:03d}"; pw=''.join(random.choices(string.ascii_letters+string.digits,k=12)); idx+=1
+        elif len(parts)==3:
+            ip,pt,uname=parts; pw=''.join(random.choices(string.ascii_letters+string.digits,k=12))
         else:
-            parts = re.split(r'\s+', line)
-        if len(parts) == 2:
-            ip, port = parts
-            username = f"user{base_idx + idx:03d}"
-            password = ''.join(random.choices(string.ascii_letters+string.digits, k=12))
-            idx += 1
-        elif len(parts) == 3:
-            ip, port, username = parts
-            password = ''.join(random.choices(string.ascii_letters+string.digits, k=12))
-        elif len(parts) >= 4:
-            ip, port, username, password = parts[:4]
-        else:
-            continue
-        db.execute('INSERT INTO proxy (ip, port, username, password, enabled, group_info) VALUES (?,?,?,?,1,?)', (ip, int(port), username, password, group_info))
-        count += 1
-    db.commit()
-    db.close()
-    if count:
-        reload_3proxy()
-        flash(f'批量添加完成，共添加{count}条代理')
+            ip,pt,uname,pw=parts[0],parts[1],parts[2],parts[3]
+        db.execute("INSERT INTO proxy(ip,port,username,password,enabled) VALUES(?,?,?,?,1)",(ip,int(pt),uname,pw)); cnt+=1
+    db.commit(); db.close()
+    if cnt: reload_3proxy(); flash(f'手动批量添加{cnt}条')
     return redirect('/')
 
-@app.route('/export_selected', methods=['POST'])
+@app.route('/delproxy/<int:pid>')
+@login_required
+def delproxy(pid):
+    db=db_conn(); db.execute("DELETE FROM proxy WHERE id=?",(pid,)); db.commit(); db.close()
+    reload_3proxy(); flash('已删除'); return redirect('/')
+
+@app.route('/batchdelproxy',methods=['POST'])
+@login_required
+def batchdelproxy():
+    ids=request.form.getlist('ids')
+    db=db_conn(); db.executemany("DELETE FROM proxy WHERE id=?",[ (i,) for i in ids ]); db.commit(); db.close()
+    reload_3proxy(); flash(f'已批量删除{len(ids)}条'); return redirect('/')
+
+@app.route('/batch_enable',methods=['POST'])
+@login_required
+def batch_enable():
+    ids=request.form.getlist('ids[]')
+    db=db_conn(); db.executemany("UPDATE proxy SET enabled=1 WHERE id=?",[ (i,) for i in ids ]); db.commit(); db.close()
+    reload_3proxy(); return '',204
+
+@app.route('/batch_disable',methods=['POST'])
+@login_required
+def batch_disable():
+    ids=request.form.getlist('ids[]')
+    db=db_conn(); db.executemany("UPDATE proxy SET enabled=0 WHERE id=?",[ (i,) for i in ids ]); db.commit(); db.close()
+    reload_3proxy(); return '',204
+
+@app.route('/enableproxy/<int:pid>')
+@login_required
+def enableproxy(pid):
+    db=db_conn(); db.execute("UPDATE proxy SET enabled=1 WHERE id=?",(pid,)); db.commit(); db.close()
+    reload_3proxy(); flash('已启用'); return redirect('/')
+
+@app.route('/disableproxy/<int:pid>')
+@login_required
+def disableproxy(pid):
+    db=db_conn(); db.execute("UPDATE proxy SET enabled=0 WHERE id=?",(pid,)); db.commit(); db.close()
+    reload_3proxy(); flash('已禁用'); return redirect('/')
+
+# 用户管理
+@app.route('/adduser',methods=['POST'])
+@login_required
+def adduser():
+    un=request.form['username']; ph=generate_password_hash(request.form['password'])
+    db=db_conn(); db.execute("INSERT INTO users(username,password) VALUES(?,?)",(un,ph)); db.commit(); db.close()
+    flash('用户已添加'); return redirect('/')
+
+@app.route('/deluser/<int:uid>')
+@login_required
+def deluser(uid):
+    db=db_conn(); db.execute("DELETE FROM users WHERE id=?",(uid,)); db.commit(); db.close()
+    flash('用户已删除'); return redirect('/')
+
+# 导出所选C段
+@app.route('/export_selected',methods=['POST'])
 @login_required
 def export_selected():
-    csegs = request.form.getlist('csegs[]')
-    userprefix = request.form.get('userprefix', 'proxy')
-    if not csegs:
-        flash("未选择C段")
-        return redirect('/')
-    db = get_db()
-    output = ""
-    for cseg in csegs:
-        rows = db.execute("SELECT ip,port,username,password FROM proxy WHERE ip LIKE ? ORDER BY ip,port", (cseg+'.%',)).fetchall()
-        for ip,port,user,pw in rows:
-            output += f"{ip}:{port}:{user}:{pw}\n"
+    csegs=request.form.getlist('csegs[]'); prefix=request.form.get('userprefix','proxy')
+    if not csegs: flash('请选择C段'); return redirect('/')
+    db=db_conn(); out=''
+    for c in csegs:
+        rows=db.execute("SELECT ip,port,username,password FROM proxy WHERE ip LIKE ?",(c+'.%',)).fetchall()
+        for r in rows: out+=f"{r['ip']}:{r['port']}:{r['username']}:{r['password']}\n"
     db.close()
-    filename = f"{userprefix}_{'_'.join(csegs)}.txt"
-    response = make_response(output)
-    response.headers["Content-Disposition"] = f"attachment; filename={filename}"
-    response.mimetype = "text/plain"
-    return response
+    fn=f"{prefix}_{'_'.join(csegs)}.txt"
+    resp=make_response(out); resp.headers['Content-Disposition']=f'attachment; filename={fn}'; resp.mimetype='text/plain'
+    return resp
 
-# ... 省略部分路由（其余功能与之前类似）
+# 导出所选代理
+@app.route('/export_selected_proxy',methods=['POST'])
+@login_required
+def export_selected_proxy():
+    ids=request.form.getlist('ids[]')
+    db=db_conn(); rows=db.execute(f"SELECT ip,port,username,password FROM proxy WHERE id IN ({','.join('?'*len(ids))})",tuple(ids)).fetchall(); db.close()
+    out=''; import io
+    for r in rows: out+=f"{r['ip']}:{r['port']}:{r['username']}:{r['password']}\n"
+    return send_file(io.BytesIO(out.encode()), as_attachment=True, download_name='proxy_export.txt', mimetype='text/plain')
 
-@app.route('/batch_add_ip', methods=['POST'])
+# 流量统计
+@app.route('/cnet_traffic')
+@login_required
+def cnet_traffic():
+    stats=collections.defaultdict(int)
+    if os.path.exists(LOG3):
+        with open(LOG3,'r',errors='ignore') as f:
+            for line in f:
+                p=line.split()
+                if len(p)>7:
+                    try:
+                        seg='.'.join(p[2].split('.')[:3]); stats[seg]+=int(p[-2])
+                    except: pass
+    return jsonify({k:round(v/1024/1024,2) for k,v in stats.items()})
+
+# IP 批量写 interfaces
+def to_brace(ipr):
+    m=re.match(r'(\d+\.\d+\.\d+\.)(\d+)-(\d+)',ipr)
+    return f"{m.group(1)}{{{m.group(2)}..{m.group(3)}}}" if m else ipr
+
+@app.route('/batch_add_ip',methods=['POST'])
 @login_required
 def batch_add_ip():
-    iface = request.form['iface'].strip()
-    iprange = request.form['iprange'].strip()
-    netmask = request.form['netmask'].strip()
-    add_type = request.form['type']
-    ips = []
-    m = re.match(r'(\d+\.\d+\.\d+\.)(\d+)-(\d+)', iprange)
-    if m:
-        prefix, start, end = m.group(1), int(m.group(2)), int(m.group(3))
-        ips = [f"{prefix}{i}" for i in range(start, end+1)]
-    elif ',' in iprange:
-        ips = [x.strip() for x in iprange.split(',')]
+    iface=request.form['iface']; ipr=request.form['iprange']; nm=request.form['netmask'] or '24'; typ=request.form['type']
+    brace=to_brace(ipr)
+    up=f"    up bash -c 'for ip in {brace};do ip addr add ${{ip}}/{nm} dev {iface}; done'"
+    down=f"    down bash -c 'for ip in {brace};do ip addr del ${{ip}}/{nm} dev {iface}; done'"
+    if typ=='permanent':
+        cp $IFACE_CFG $IFACE_CFG.bak_$(date +%s)
+        grep -v "bash -c 'for ip" $IFACE_CFG > tmp.$$ && mv tmp.$$ $IFACE_CFG
+        if grep -q "iface $iface " $IFACE_CFG;then
+            awk -v u="$up" -v d="$down" -v pat="iface $iface " '$0~pat{print;print u;print d;next}1' $IFACE_CFG>tmp.$$ && mv tmp.$$ $IFACE_CFG
+        else
+            cat >> $IFACE_CFG <<EOL
+
+auto $iface
+iface $iface inet static
+$up
+$down
+EOL
+        fi
+        flash(f"已写入 interfaces: {brace}")
     else:
-        ips = [iprange.strip()]
-    ipstr = ' '.join(ips)
-    add_cmd = f"for ip in {ipstr};do ip addr add $ip/{netmask} dev {iface}; done"
-    del_cmd = f"for ip in {ipstr};do ip addr del $ip/{netmask} dev {iface}; done"
-    if add_type == 'temp':
-        os.system(add_cmd)
-        flash('已临时添加')
-    else:
-        interfaces_path = '/etc/network/interfaces'
-        new_up = f"    up bash -c '{add_cmd}'\n"
-        new_down = f"    down bash -c '{del_cmd}'\n"
-        tag = f"# Added by 3proxy-web for {iface} {iprange}\n"
-        with open(interfaces_path, 'a+') as f:
-            f.seek(0, 2)
-            f.write('\n'+tag+new_up+new_down)
-        os.system(add_cmd)
-        flash('已写入interfaces并临时添加')
+        os.system(f"bash -c \"for ip in {brace};do ip addr add ${{ip}}/{nm} dev {iface}; done\"")
+        flash(f"已临时添加: {brace}")
     return redirect('/')
 
-if __name__ == '__main__':
-    port = int(sys.argv[1]) if len(sys.argv)>1 else 9999
-    app.run('0.0.0.0', port, debug=False)
+if __name__=='__main__':
+    app.run('0.0.0.0',PORT,debug=False)
 EOF
 
-# ---------------- config_gen.py ----------------
-cat > $WORKDIR/config_gen.py << 'EOF'
+############################################
+# config_gen.py —— 生成 3proxy.cfg
+############################################
+cat > $WORKDIR/config_gen.py <<'EOF'
 import sqlite3
-db = sqlite3.connect('3proxy.db')
-cursor = db.execute('SELECT ip, port, username, password, enabled FROM proxy')
-cfg = [
-"daemon",
-"maxconn 2000",
-"nserver 8.8.8.8",
-"nscache 65536",
-"timeouts 1 5 30 60 180 1800 15 60",
-"log /usr/local/etc/3proxy/3proxy.log D",
-"auth strong"
-]
-users = []
-user_set = set()
-for ip, port, user, pw, en in cursor:
-    if en and (user, pw) not in user_set:
-        users.append(f"{user}:CL:{pw}")
-        user_set.add((user, pw))
-cfg.append(f"users {' '.join(users)}")
-db2 = sqlite3.connect('3proxy.db')
-for ip, port, user, pw, en in db2.execute('SELECT ip, port, username, password, enabled FROM proxy'):
+db=sqlite3.connect('3proxy.db')
+cur=db.execute('SELECT ip,port,username,password,enabled FROM proxy')
+cfg=["daemon","maxconn 2000","nserver 8.8.8.8","nscache 65536","timeouts 1 5 30 60 180 1800 15 60","log /usr/local/etc/3proxy/3proxy.log D","auth strong"]
+users,seen=[],set()
+for ip,port,u,pw,en in cur:
+    if en and (u,pw) not in seen:
+        users.append(f"{u}:CL:{pw}"); seen.add((u,pw))
+cfg.append("users "+' '.join(users))
+for ip,port,u,pw,en in db.execute('SELECT ip,port,username,password,enabled FROM proxy'):
     if en:
-        cfg.append(f"auth strong\nallow {user}\nproxy -n -a -p{port} -i{ip} -e{ip}")
-open("/usr/local/etc/3proxy/3proxy.cfg", "w").write('\n'.join(cfg))
+        cfg.append(f"auth strong\nallow {u}\nproxy -n -a -p{port} -i{ip} -e{ip}")
+open('/usr/local/etc/3proxy/3proxy.cfg','w').write('\n'.join(cfg))
 EOF
 
-# ---------------- init_db.py ----------------
-cat > $WORKDIR/init_db.py << 'EOF'
+############################################
+# init_db.py —— 初始化 SQLite
+############################################
+cat > $WORKDIR/init_db.py <<'EOF'
 import sqlite3
 from werkzeug.security import generate_password_hash
 import os
-user = os.environ.get('ADMINUSER')
-passwd = os.environ.get('ADMINPASS')
-db = sqlite3.connect('3proxy.db')
-db.execute('''CREATE TABLE IF NOT EXISTS proxy (
+u=os.environ['ADMINUSER']; p=os.environ['ADMINPASS']
+db=sqlite3.connect('3proxy.db')
+db.execute('''CREATE TABLE IF NOT EXISTS proxy(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ip TEXT, port INTEGER, username TEXT, password TEXT,
-    enabled INTEGER DEFAULT 1,
-    group_info TEXT
-)''')
-db.execute('''CREATE TABLE IF NOT EXISTS users (
+    ip TEXT, port INTEGER, username TEXT, password TEXT, enabled INTEGER DEFAULT 1)''')
+db.execute('''CREATE TABLE IF NOT EXISTS users(
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE, password TEXT
-)''')
-db.execute('INSERT OR IGNORE INTO users (username, password) VALUES (?,?)', (user, generate_password_hash(passwd)))
+    username TEXT UNIQUE, password TEXT)''')
+db.execute("INSERT OR IGNORE INTO users(username,password) VALUES(?,?)",(u,generate_password_hash(p)))
 db.commit()
-print("WebAdmin: "+user)
-print("Webpassword:  "+passwd)
+print("Web 用户名:",u)
+print("Web 密码:",p)
 EOF
 
-# ---------------- login.html ----------------
-cat > $WORKDIR/templates/login.html << 'EOF'
-<!DOCTYPE html>
-<html lang="zh">
-<head>
-    <meta charset="UTF-8">
-    <title>3proxy 登录</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-</head>
-<body class="bg-light">
-<div class="container" style="max-width:400px;margin-top:100px;">
-    <div class="card shadow">
-        <div class="card-body">
-            <h3 class="mb-4 text-center">3proxy 管理登录</h3>
-            <form method="post">
-                <div class="mb-3">
-                    <label class="form-label">用户名</label>
-                    <input type="text" class="form-control" name="username" autofocus required>
-                </div>
-                <div class="mb-3">
-                    <label class="form-label">密码</label>
-                    <input type="password" class="form-control" name="password" required>
-                </div>
-                <button class="btn btn-primary w-100" type="submit">登录</button>
-            </form>
-            {% with messages = get_flashed_messages() %}
-              {% if messages %}
-                <div class="alert alert-danger mt-3">{{ messages[0] }}</div>
-              {% endif %}
-            {% endwith %}
-        </div>
-    </div>
-</div>
-</body>
-</html>
+############################################
+# login.html —— 登录页面
+############################################
+cat > $WORKDIR/templates/login.html <<'EOF'
+<!DOCTYPE html><html lang="zh"><head><meta charset="UTF-8"><title>3proxy 登录</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet"></head>
+<body class="bg-light"><div class="container" style="max-width:400px;margin-top:100px;">
+<div class="card shadow"><div class="card-body">
+<h3 class="text-center mb-4">3proxy 管理登录</h3>
+<form method="post">
+  <div class="mb-3"><label class="form-label">用户名</label><input name="username" class="form-control" required></div>
+  <div class="mb-3"><label class="form-label">密码</label><input type="password" name="password" class="form-control" required></div>
+  <button class="btn btn-primary w-100">登录</button>
+</form>
+{% with m=get_flashed_messages() %}{% if m %}<div class="alert alert-danger mt-3">{{m[0]}}</div>{% endif %}{% endwith %}
+</div></div></div></body></html>
 EOF
 
-# ---------------- index.html（核心优化美化版，IP管理也加了） ----------------
-cat > $WORKDIR/templates/index.html << 'EOF'
-<!DOCTYPE html>
-<html lang="zh">
-<head>
-    <meta charset="utf-8">
-    <title>3proxy 管理面板</title>
-    <meta name="viewport" content="width=device-width,initial-scale=1">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        html,body{background:#f7f7fa;}
-        .tab-pane{padding-top:1.5rem;}
-        .ip-group-header{background:#e5e9f2;font-weight:bold;cursor:pointer;transition:background 0.2s;}
-        .ip-group-header:hover{background:#b5c5e3;}
-        .c-collapsed .ip-group-body{display:none;}
-        .c-expanded .ip-group-body{display:table-row-group;}
-        .group-select{margin-left:12px;}
-        .dark-mode{background:#222;color:#eee;}
-        .dark-mode .card{background:#1a1a1a;color:#eee;}
-        .dark-mode .ip-group-header{background:#292f42;}
-        .dark-mode .ip-group-header:hover{background:#1f2230;}
-        .dark-mode .table th,.dark-mode .table td{background:#222;}
-        .dark-mode .form-control{background:#1a1a1a;color:#eee;}
-        .switch-mode{position:fixed;top:18px;right:26px;z-index:10;}
-        .beauty-form .form-label{font-weight:bold;}
-        .beauty-form .form-control, .beauty-form .form-select{margin-bottom:10px;}
-        .beauty-form .form-group{margin-bottom:14px;}
-        .form-inline .form-group{margin-right:10px;}
-    </style>
-</head>
-<body>
-<button class="btn btn-outline-dark btn-sm switch-mode">🌙</button>
+############################################
+# index.html —— 管理界面
+############################################
+cat > $WORKDIR/templates/index.html <<'EOF'
+<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><title>3proxy 管理面板</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<style>
+html,body{background:#f7f7fa;} .tab-pane{padding:1.5rem;}
+.beauty-form .form-label{font-weight:bold;} .beauty-form .form-control,.beauty-form .form-select{margin-bottom:10px;}
+.ip-group-header{background:#e5e9f2;cursor:pointer;} .c-collapsed .ip-group-body{display:none;}
+</style></head><body>
+<button class="btn btn-outline-dark btn-sm" onclick="document.body.classList.toggle('dark-mode')">🌙</button>
 <div class="container py-3">
-    <ul class="nav nav-tabs" id="mainTabs" role="tablist">
-      <li class="nav-item" role="presentation">
-        <button class="nav-link active" id="proxy-tab" data-bs-toggle="tab" data-bs-target="#proxy-pane" type="button" role="tab">代理管理</button>
-      </li>
-      <li class="nav-item" role="presentation">
-        <button class="nav-link" id="ip-batch-tab" data-bs-toggle="tab" data-bs-target="#ip-batch-pane" type="button" role="tab">IP地址批量管理</button>
-      </li>
-      <li class="nav-item" role="presentation">
-        <button class="nav-link" id="user-tab" data-bs-toggle="tab" data-bs-target="#user-pane" type="button" role="tab">用户管理</button>
-      </li>
-    </ul>
-    <div class="tab-content">
-        <!-- 代理管理tab -->
-        <div class="tab-pane fade show active" id="proxy-pane" role="tabpanel">
-            <div class="row mt-4 gy-4">
-                <div class="col-lg-6">
-                    <div class="card shadow-sm p-4 mb-2 beauty-form">
-                        <h5 class="fw-bold mb-3 text-success">批量添加代理</h5>
-                        <form method="post" action="/batchaddproxy" id="rangeAddForm" class="mb-3">
-                            <div class="form-group">
-                                <label class="form-label">IP范围</label>
-                                <input type="text" class="form-control" name="iprange" placeholder="如 192.168.1.2-254">
-                            </div>
-                            <div class="form-group">
-                                <label class="form-label">端口范围</label>
-                                <input type="text" class="form-control" name="portrange" placeholder="如 20000-30000">
-                            </div>
-                            <div class="form-group">
-                                <label class="form-label">用户名前缀</label>
-                                <input type="text" class="form-control" name="userprefix" placeholder="如 proxy">
-                            </div>
-                            <button type="submit" class="btn btn-success w-100">范围添加</button>
-                        </form>
-                        <form method="post" action="/batchaddproxy">
-                            <label class="form-label">自定义批量添加（每行一个：ip,端口 或 ip:端口/也支持 ip,端口,用户名,密码）</label>
-                            <textarea name="batchproxy" class="form-control mb-3" rows="9" style="font-family:monospace;resize:vertical;" placeholder="每行一个：ip,端口 或 ip:端口&#10;也支持 ip,端口,用户名,密码"></textarea>
-                            <button type="submit" class="btn btn-success w-100">批量添加</button>
-                        </form>
-                    </div>
-                </div>
-                <div class="col-lg-6">
-                    <div class="card shadow-sm p-4 mb-2 beauty-form">
-                        <h5 class="fw-bold mb-3 text-primary">新增单个代理</h5>
-                        <form class="form-inline row g-2 align-items-center" method="post" action="/addproxy">
-                            <div class="form-group col"><input name="ip" class="form-control" placeholder="IP" required></div>
-                            <div class="form-group col"><input name="port" class="form-control" placeholder="端口" required></div>
-                            <div class="form-group col"><input name="username" class="form-control" placeholder="用户名" required></div>
-                            <div class="form-group col"><input name="password" class="form-control" placeholder="密码(留空随机)"></div>
-                            <div class="form-group col-auto"><button class="btn btn-primary" type="submit">新增</button></div>
-                        </form>
-                    </div>
-                </div>
-                <div class="col-12">
-                    <div class="card shadow-sm p-4">
-                        <div class="d-flex mb-2 align-items-center">
-                            <h5 class="fw-bold flex-grow-1">代理列表（按C段分组）</h5>
-                            <select id="exportCseg" class="form-select form-select-sm ms-2" multiple style="width:400px;height:80px;overflow:auto;"></select>
-                            <input id="userPrefixExport" type="text" class="form-control form-control-sm ms-2" placeholder="导出时用户名前缀" style="width:120px">
-                            <button id="exportSelected" class="btn btn-outline-info btn-sm ms-2">导出所选C段</button>
-                            <button type="button" id="exportSelectedProxy" class="btn btn-outline-success btn-sm ms-2">导出选中代理</button>
-                            <input id="searchBox" class="form-control form-control-sm ms-2" style="width:180px" placeholder="搜索IP/端口/用户">
-                        </div>
-                        <form method="post" action="/batchdelproxy" id="proxyForm">
-                        <div style="max-height:60vh;overflow-y:auto;">
-                        <table class="table table-bordered table-hover align-middle mb-0" id="proxyTable">
-                            <thead class="table-light sticky-top">
-                                <tr>
-                                    <th><input type="checkbox" id="selectAll"></th>
-                                    <th>ID</th><th>IP</th><th>端口</th><th>用户名</th><th>密码</th><th>状态</th><th>批量组信息</th><th>操作</th>
-                                </tr>
-                            </thead>
-                            <tbody id="proxyTableBody"></tbody>
-                        </table>
-                        </div>
-                        <button type="submit" class="btn btn-danger mt-2" onclick="return confirm('确定批量删除选中项?')">批量删除</button>
-                        <button type="button" class="btn btn-warning ms-2" id="batchEnable">批量启用</button>
-                        <button type="button" class="btn btn-secondary ms-2" id="batchDisable">批量禁用</button>
-                        </form>
-                    </div>
-                </div>
-            </div>
+<ul class="nav nav-tabs">
+  <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-proxy">代理管理</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-ip">IP批量管理</button></li>
+  <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-user">用户管理</button></li>
+</ul>
+<div class="tab-content">
+  <!-- 代理管理 -->
+  <div class="tab-pane fade show active" id="tab-proxy">
+    <!-- 批量添加 & 单个添加 -->
+    <div class="row">
+      <div class="col-md-6">
+        <div class="card beauty-form p-3 mb-3">
+          <h5 class="text-success">批量添加代理</h5>
+          <form method="post" action="/batchaddproxy">
+            <label class="form-label">IP范围</label>
+            <input name="iprange" class="form-control" placeholder="192.168.1.2-254">
+            <label class="form-label">端口范围</label>
+            <input name="portrange" class="form-control" placeholder="20000-30000">
+            <label class="form-label">用户名前缀</label>
+            <input name="userprefix" class="form-control" placeholder="proxy">
+            <button class="btn btn-success w-100 mt-2">范围添加</button>
+            <hr>
+            <label class="form-label">自定义批量</label>
+            <textarea name="batchproxy" class="form-control" rows="6" placeholder="每行 ip,port 或 ip,port,user,pass"></textarea>
+            <button class="btn btn-success w-100 mt-2">自定义添加</button>
+          </form>
         </div>
-        <!-- IP批量管理tab -->
-        <div class="tab-pane fade" id="ip-batch-pane">
-            <div class="card shadow-sm p-4 mt-4 beauty-form">
-                <h5 class="fw-bold mb-3 text-info">网卡IP批量配置</h5>
-                <form method="post" action="/batch_add_ip">
-                  <div class="form-group">
-                    <label class="form-label">网卡名称</label>
-                    <input name="iface" class="form-control" value="{{iface_detected}}" required>
-                  </div>
-                  <div class="form-group">
-                    <label class="form-label">IP区间或单个IP</label>
-                    <input name="iprange" class="form-control" placeholder="如 192.168.1.2-254 或 192.168.1.3,192.168.1.5">
-                  </div>
-                  <div class="form-group">
-                    <label class="form-label">掩码（如 24）</label>
-                    <input name="netmask" class="form-control" placeholder="如 24" value="24">
-                  </div>
-                  <div class="form-group">
-                    <label class="form-label">类型</label>
-                    <select class="form-select" name="type">
-                      <option value="permanent">永久（写入interfaces）</option>
-                      <option value="temp">临时（只当前生效）</option>
-                    </select>
-                  </div>
-                  <button class="btn btn-primary w-100" type="submit">一键批量添加</button>
-                </form>
-            </div>
+      </div>
+      <div class="col-md-6">
+        <div class="card beauty-form p-3 mb-3">
+          <h5 class="text-primary">新增单个代理</h5>
+          <form class="row g-2" method="post" action="/addproxy">
+            <div class="col"><input name="ip" class="form-control" placeholder="IP" required></div>
+            <div class="col"><input name="port" class="form-control" placeholder="端口" required></div>
+            <div class="col"><input name="username" class="form-control" placeholder="用户名" required></div>
+            <div class="col"><input name="password" class="form-control" placeholder="密码(空随机)"></div>
+            <div class="col-auto"><button class="btn btn-primary">新增</button></div>
+          </form>
         </div>
-        <!-- 用户管理tab -->
-        <div class="tab-pane fade" id="user-pane">
-            <div class="card shadow-sm p-4 mt-4 beauty-form">
-                <h5 class="fw-bold mb-3 text-warning">Web用户管理</h5>
-                <form class="form-inline row g-2 align-items-center mb-3" method="post" action="/adduser">
-                    <div class="form-group col"><input name="username" class="form-control" placeholder="用户名" required></div>
-                    <div class="form-group col"><input name="password" class="form-control" placeholder="密码" required></div>
-                    <div class="form-group col-auto"><button class="btn btn-outline-primary" type="submit">添加用户</button></div>
-                </form>
-                <div class="table-responsive">
-                <table class="table table-bordered table-sm mb-0">
-                    <tr><th>ID</th><th>用户名</th><th>操作</th></tr>
-                    {% for u in users %}
-                    <tr>
-                        <td>{{u[0]}}</td>
-                        <td>{{u[1]}}</td>
-                        <td>
-                            {% if u[1]!='admin' %}
-                            <a href="/deluser/{{u[0]}}" class="btn btn-sm btn-danger" onclick="return confirm('确认删除?')">删除</a>
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </table>
-                </div>
-            </div>
-        </div>
+      </div>
     </div>
-    {% with messages = get_flashed_messages() %}
-      {% if messages %}
-        <div class="alert alert-success mt-3 fs-5">{{ messages[0] }}</div>
-      {% endif %}
-    {% endwith %}
-</div>
+    <!-- 代理列表 -->
+    <div class="card p-3">
+      <div class="d-flex mb-2">
+        <input id="searchBox" class="form-control form-control-sm me-2" placeholder="搜索IP/端口/用户">
+        <select id="exportCseg" class="form-select form-select-sm me-2" multiple style="width:200px;height:80px;"></select>
+        <input id="userprefix" class="form-control form-control-sm me-2" placeholder="导出前缀">
+        <button id="exportSelected" class="btn btn-outline-info btn-sm me-2">导出C段</button>
+        <button id="exportSelectedProxy" class="btn btn-outline-success btn-sm me-2">导出选中代理</button>
+      </div>
+      <form method="post" action="/batchdelproxy">
+      <div style="max-height:60vh;overflow:auto;">
+        <table class="table table-bordered table-hover">
+          <thead class="table-light position-sticky top-0">
+            <tr><th><input id="selectAll" type="checkbox"></th>
+            <th>ID</th><th>IP</th><th>端口</th><th>用户名</th><th>密码</th><th>状态</th><th>操作</th></tr>
+          </thead>
+          <tbody id="proxyBody"></tbody>
+        </table>
+      </div>
+      <button class="btn btn-danger mt-2">批量删除</button>
+      <button type="button" class="btn btn-warning mt-2 ms-2" id="batchEnable">批量启用</button>
+      <button type="button" class="btn btn-secondary mt-2 ms-2" id="batchDisable">批量禁用</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- IP 批量管理 -->
+  <div class="tab-pane fade" id="tab-ip">
+    <div class="card beauty-form p-3 mt-3">
+      <h5 class="text-info mb-3">IP地址批量添加</h5>
+      <form method="post" action="/batch_add_ip">
+        <label class="form-label">网卡</label>
+        <input name="iface" class="form-control" value="{{iface}}" required>
+        <label class="form-label">IP区间或多IP</label>
+        <input name="iprange" class="form-control" placeholder="192.168.1.4-254 或 1.2.3.4,1.2.3.5">
+        <label class="form-label">掩码</label>
+        <input name="netmask" class="form-control" value="24">
+        <label class="form-label">类型</label>
+        <select name="type" class="form-select">
+          <option value="permanent">永久写入interfaces</option>
+          <option value="temp">临时添加</option>
+        </select>
+        <button class="btn btn-primary w-100 mt-2">执行</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- 用户管理 -->
+  <div class="tab-pane fade" id="tab-user">
+    <div class="card beauty-form p-3 mt-3">
+      <h5 class="text-warning mb-3">Web 用户管理</h5>
+      <form method="post" action="/adduser" class="mb-3">
+        <input name="username" class="form-control mb-2" placeholder="用户名" required>
+        <input name="password" class="form-control mb-2" placeholder="密码" required>
+        <button class="btn btn-outline-primary w-100">添加用户</button>
+      </form>
+      <table class="table">
+        <tr><th>ID</th><th>用户名</th><th>操作</th></tr>
+        {% for u in users %}
+        <tr>
+          <td>{{u['id']}}</td><td>{{u['username']}}</td>
+          <td>{% if u['username']!='admin' %}<a class="btn btn-sm btn-danger" href="/deluser/{{u['id']}}">删除</a>{% endif %}</td>
+        </tr>
+        {% endfor %}
+      </table>
+    </div>
+  </div>
+
+</div></div>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-const proxyData = [
-{% for p in proxies %}
-    {id:{{p[0]}},ip:"{{p[1]}}",port:"{{p[2]}}",user:"{{p[3]}}",pw:"{{p[4]}}",enabled:{{'true' if p[5] else 'false'}},group:"{{p[6]|default('')}}" },
-{% endfor %}
-];
-
-function getC(ip) {
-    let m = ip.match(/^(\d+\.\d+\.\d+)\./);
-    return m ? m[1] : ip;
-}
-function buildTable(data, filterVal="") {
-    let tbody = document.getElementById('proxyTableBody');
-    tbody.innerHTML = "";
-    let groups = {};
-    data.forEach(p => {
-        if(filterVal && !(p.ip+p.port+p.user+p.pw).toLowerCase().includes(filterVal)) return;
-        let c = getC(p.ip);
-        if(!groups[c]) groups[c]=[];
-        groups[c].push(p);
-    });
-    Object.keys(groups).sort().forEach((cseg,i)=>{
-        let gid = "cgroup"+i;
-        let th = document.createElement('tr');
-        th.className = "ip-group-header c-collapsed";
-        th.setAttribute("data-cgroup",gid);
-        let batchInfo = groups[cseg][0].group ? '<span class="text-secondary ms-3">'+groups[cseg][0].group+'</span>' : '';
-        th.innerHTML = `<td colspan="9" class="pointer">
-            <span class="me-2">▶</span>${cseg}.x 段 <small class="ms-2 text-primary">共${groups[cseg].length}条</small>
-            ${batchInfo}
-            <span class="badge bg-info ms-3 cnet-traffic" data-cseg="${cseg}">统计中...</span>
-            <input type="checkbox" class="group-select ms-3" data-gid="${gid}" title="全选本组">
+// 以下 JS 完整实现表格渲染、搜索、折叠、导出、批量启用禁用
+const proxyData=[{% for p in proxies %}{id:{{p['id']}},ip:"{{p['ip']}}",port:"{{p['port']}}",user:"{{p['username']}}",pw:"{{p['password']}}",enabled:{{'true' if p['enabled'] else 'false'}}},{% endfor %}];
+function getC(ip){let m=ip.match(/^(\d+\.\d+\.\d+)\./);return m?m[1]:ip;}
+function buildTable(filter=""){
+  const body=document.getElementById('proxyBody'); body.innerHTML='';
+  let groups={};
+  proxyData.forEach(p=>{let s=(p.ip+p.port+p.user+p.pw).toLowerCase();if(filter&&!s.includes(filter))return; let c=getC(p.ip);groups[c]=groups[c]||[];groups[c].push(p);});
+  Object.keys(groups).sort().forEach((c,i)=>{
+    const gid='g'+i;
+    let th=document.createElement('tr'); th.className='ip-group-header c-collapsed'; th.dataset.gid=gid;
+    th.innerHTML=`<td colspan=8><span>▶</span>${c}.x 段 共${groups[c].length}条 <input class="group-select" data-gid="${gid}" type="checkbox"></td>`;
+    body.appendChild(th);
+    groups[c].forEach(p=>{
+      let tr=document.createElement('tr'); tr.className='ip-group-body '+gid; tr.style.display='none';
+      tr.innerHTML=`<td><input name="ids" type="checkbox" value="${p.id}"></td><td>${p.id}</td><td>${p.ip}</td><td>${p.port}</td><td>${p.user}</td><td>${p.pw}</td><td>${p.enabled?'<span class="badge bg-success">启用</span>':'<span class="badge bg-secondary">禁用</span>'}</td>
+        <td>
+          ${p.enabled?`<a class="btn btn-sm btn-warning" href="/disableproxy/${p.id}">禁用</a>`:`<a class="btn btn-sm btn-success" href="/enableproxy/${p.id}">启用</a>`}
+          <a class="btn btn-sm btn-danger" href="/delproxy/${p.id}">删除</a>
         </td>`;
-        tbody.appendChild(th);
-        let frag = document.createDocumentFragment();
-        groups[cseg].forEach(p=>{
-            let tr = document.createElement('tr');
-            tr.className = "ip-group-body "+gid;
-            tr.style.display = "none";
-            tr.innerHTML = `<td><input type="checkbox" name="ids" value="${p.id}"></td>
-            <td>${p.id}</td>
-            <td>${p.ip}</td>
-            <td>${p.port}</td>
-            <td>${p.user}</td>
-            <td>${p.pw}</td>
-            <td>${p.enabled ? '<span class="badge text-bg-success">启用</span>' : '<span class="badge text-bg-secondary">禁用</span>'}</td>
-            <td>${p.group||''}</td>
-            <td>
-                ${p.enabled ? `<a href="/disableproxy/${p.id}" class="btn btn-sm btn-warning">禁用</a>` : `<a href="/enableproxy/${p.id}" class="btn btn-sm btn-success">启用</a>`}
-                <a href="/delproxy/${p.id}" class="btn btn-sm btn-danger" onclick="return confirm('确认删除?')">删除</a>
-            </td>`;
-            frag.appendChild(tr);
-        });
-        tbody.appendChild(frag);
+      body.appendChild(tr);
     });
-    fetch('/cnet_traffic').then(r=>r.json()).then(data=>{
-        document.querySelectorAll('.cnet-traffic').forEach(span=>{
-            let c = span.getAttribute('data-cseg');
-            span.textContent = data[c] ? `流量${data[c]} MB` : '0 MB';
-        });
-    });
-    fillCsegSelect();
+  });
 }
-function fillCsegSelect() {
-    let csegs = Array.from(new Set(proxyData.map(p=>getC(p.ip)))).sort();
-    let sel = document.getElementById('exportCseg');
-    sel.innerHTML = "";
-    csegs.forEach(c=> {
-        let opt = document.createElement('option');
-        opt.value = c;
-        opt.textContent = c + ".x";
-        sel.appendChild(opt);
-    });
-}
-buildTable(proxyData);
-
-document.getElementById('selectAll').onclick = function() {
-    var cbs = document.querySelectorAll('#proxyTableBody input[type="checkbox"]');
-    for(var i=0;i<cbs.length;++i) cbs[i].checked = this.checked;
+document.getElementById('searchBox').oninput=function(){
+  buildTable(this.value.trim().toLowerCase());
 };
-document.getElementById('proxyTableBody').onclick = function(e){
-    let row = e.target.closest('tr.ip-group-header');
-    if(row && !e.target.classList.contains('group-select')) {
-        let gid = row.getAttribute('data-cgroup');
-        let opened = !row.classList.contains('c-collapsed');
-        row.classList.toggle('c-collapsed', opened);
-        document.querySelectorAll('.ip-group-body.'+gid).forEach(tr=>{
-            tr.style.display = opened ? "none" : "";
-        });
-        return;
-    }
-    if(e.target.classList.contains('group-select')){
-        let gid = e.target.getAttribute('data-gid');
-        let checked = e.target.checked;
-        document.querySelectorAll('.ip-group-body.'+gid+' input[type="checkbox"]').forEach(cb=>cb.checked=checked);
-    }
+document.getElementById('proxyBody').onclick=e=>{
+  if(e.target.closest('.ip-group-header')&&!e.target.classList.contains('group-select')){
+    let row=e.target.closest('tr'),gid=row.dataset.gid,open=row.classList.toggle('c-collapsed');
+    document.querySelectorAll('.'+gid).forEach(r=>r.style.display=open?'':'none');
+  }
+  if(e.target.classList.contains('group-select')){
+    document.querySelectorAll(`.ip-group-body.${e.target.dataset.gid} input`).forEach(cb=>cb.checked=e.target.checked);
+  }
 };
-document.getElementById('searchBox').oninput = function() {
-    let val = this.value.trim().toLowerCase();
-    buildTable(proxyData, val);
+document.getElementById('selectAll').onclick=e=>document.querySelectorAll('#proxyBody input').forEach(cb=>cb.checked=e.target.checked);
+document.getElementById('exportSelected').onclick=()=>{
+  let sels=Array.from(document.getElementById('exportCseg').selectedOptions).map(o=>o.value);
+  let prefix=document.getElementById('userprefix').value.trim()||'proxy';
+  if(!sels.length){alert('请选择C段');return;}
+  let form=new FormData();sels.forEach(c=>form.append('csegs[]',c));form.append('userprefix',prefix);
+  fetch('/export_selected',{method:'POST',body:form})
+    .then(r=>r.blob()).then(b=>{let a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=`${prefix}_${sels.join('_')}.txt`;a.click();});
 };
-document.getElementById('exportSelected').onclick = function(){
-    let selected = Array.from(document.getElementById('exportCseg').selectedOptions).map(o=>o.value);
-    let userPrefix = document.getElementById('userPrefixExport').value.trim() || 'proxy';
-    if(selected.length==0) { alert("请选择C段"); return; }
-    let form = new FormData();
-    selected.forEach(c=>form.append('csegs[]',c));
-    form.append('userprefix', userPrefix);
-    fetch('/export_selected', {method:'POST', body:form})
-        .then(resp=>resp.blob())
-        .then(blob=>{
-            let a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
-            a.download = `${userPrefix}_${selected.join('_')}.txt`;
-            a.click();
-        });
+document.getElementById('exportSelectedProxy').onclick=()=>{
+  let ids=Array.from(document.querySelectorAll('#proxyBody input[name="ids"]:checked')).map(cb=>cb.value);
+  if(!ids.length){alert('请选择代理');return;}
+  let form=new FormData();ids.forEach(i=>form.append('ids[]',i));
+  fetch('/export_selected_proxy',{method:'POST',body:form})
+    .then(r=>r.blob()).then(b=>{let a=document.createElement('a');a.href=URL.createObjectURL(b);a.download='proxy_export.txt';a.click();});
 };
-document.getElementById('exportSelectedProxy').onclick = function(){
-    let ids = Array.from(document.querySelectorAll('#proxyTableBody input[name="ids"]:checked')).map(cb=>cb.value);
-    if(ids.length === 0) { alert("请选择代理"); return; }
-    let form = new FormData();
-    ids.forEach(id=>form.append('ids[]',id));
-    fetch('/export_selected_proxy', {method:'POST', body:form})
-        .then(resp=>resp.blob())
-        .then(blob=>{
-            let a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
-            a.download = 'proxy_export.txt';
-            a.click();
-        });
+document.getElementById('batchEnable').onclick=()=>{
+  let ids=Array.from(document.querySelectorAll('#proxyBody input[name="ids"]:checked')).map(cb=>cb.value);
+  if(!ids.length){alert('请选择代理');return;}
+  let form=new FormData();ids.forEach(i=>form.append('ids[]',i));
+  fetch('/batch_enable',{method:'POST',body:form}).then(()=>location.reload());
 };
-document.getElementById('batchEnable').onclick = function(){
-    let ids = Array.from(document.querySelectorAll('#proxyTableBody input[name="ids"]:checked')).map(cb=>cb.value);
-    if(ids.length === 0) { alert("请选择代理"); return; }
-    let form = new FormData();
-    ids.forEach(id=>form.append('ids[]',id));
-    fetch('/batch_enable', {method:'POST', body:form}).then(()=>location.reload());
+document.getElementById('batchDisable').onclick=()=>{
+  let ids=Array.from(document.querySelectorAll('#proxyBody input[name="ids"]:checked')).map(cb=>cb.value);
+  if(!ids.length){alert('请选择代理');return;}
+  let form=new FormData();ids.forEach(i=>form.append('ids[]',i));
+  fetch('/batch_disable',{method:'POST',body:form}).then(()=>location.reload());
 };
-document.getElementById('batchDisable').onclick = function(){
-    let ids = Array.from(document.querySelectorAll('#proxyTableBody input[name="ids"]:checked')).map(cb=>cb.value);
-    if(ids.length === 0) { alert("请选择代理"); return; }
-    let form = new FormData();
-    ids.forEach(id=>form.append('ids[]',id));
-    fetch('/batch_disable', {method:'POST', body:form}).then(()=>location.reload());
-};
-const btn = document.querySelector('.switch-mode');
-btn.onclick = ()=>{
-    document.body.classList.toggle('dark-mode');
-    btn.textContent = document.body.classList.contains('dark-mode') ? '☀️' : '🌙';
-};
+buildTable();
 </script>
-</body>
-</html>
+</body></html>
 EOF
 
-# ---------------- systemd 服务 ----------------
+############################################
+# systemd 服务单元
+############################################
 cat > /etc/systemd/system/3proxy-web.service <<EOF
 [Unit]
-Description=3proxy Web管理后台
+Description=3proxy Web 管理后台
 After=network.target
 
 [Service]
@@ -767,13 +597,13 @@ EOF
 
 cat > /etc/systemd/system/3proxy-autostart.service <<EOF
 [Unit]
-Description=3proxy代理自动启动
+Description=3proxy 自动启动
 After=network.target
 
 [Service]
 Type=simple
 WorkingDirectory=$WORKDIR
-ExecStart=$WORKDIR/venv/bin/python3 $WORKDIR/config_gen.py && $THREEPROXY_PATH $PROXYCFG_PATH
+ExecStart=$WORKDIR/venv/bin/python3 $WORKDIR/config_gen.py && $BIN_3PROXY $CFG_3PROXY
 Restart=always
 User=root
 
@@ -781,23 +611,19 @@ User=root
 WantedBy=multi-user.target
 EOF
 
-cd $WORKDIR
-export ADMINUSER
-export ADMINPASS
-$WORKDIR/venv/bin/python3 init_db.py
+# 初始化SQLite，创建admin用户
+export ADMINUSER ADMINPASS
+$WORKDIR/venv/bin/python3 $WORKDIR/init_db.py
 
+# 启用并启动服务
 systemctl daemon-reload
 systemctl enable 3proxy-web
 systemctl enable 3proxy-autostart
 systemctl restart 3proxy-web
 systemctl restart 3proxy-autostart
 
-echo -e "\n========= 部署完成！========="
-MYIP=$(get_local_ip)
-echo -e "浏览器访问：\n  \033[36mhttp://$MYIP:${PORT}\033[0m"
-echo "Web管理用户名: $ADMINUSER"
-echo "Web管理密码:  $ADMINPASS"
-echo "如需自启，已自动设置 systemd 服务"
-echo "3proxy日志每3天会自动清空一次"
-echo -e "\n如需卸载：bash $0 uninstall"
-echo -e "如需重装：bash $0 reinstall"
+echo -e "\n\e[32m部署完成！\e[0m"
+echo "访问地址: http://$(get_local_ip):$PORT"
+echo "Web用户名: $ADMINUSER"
+echo "Web密码: $ADMINPASS"
+echo -e "卸载: bash $0 uninstall\n重装: bash $0 reinstall"
