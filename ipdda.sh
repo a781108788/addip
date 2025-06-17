@@ -78,18 +78,20 @@ EOF
 function setup_backup() {
     echo -e "\n========= 设置自动备份 =========\n"
     
-    # 确保目录存在
-    mkdir -p /opt/3proxy-web/backups
+    # 确保工作目录和备份目录存在
+    mkdir -p $WORKDIR
+    mkdir -p $WORKDIR/backups
     
     # 创建备份脚本
-    cat > /opt/3proxy-web/backup.sh <<'EOF'
+    cat > $WORKDIR/backup.sh <<'EOF'
 #!/bin/bash
 BACKUP_DIR="/opt/3proxy-web/backups"
 DB_FILE="/opt/3proxy-web/3proxy.db"
 CONFIG_FILE="/usr/local/etc/3proxy/3proxy.cfg"
 DATE=$(date +%Y%m%d_%H%M%S)
 
-mkdir -p $BACKUP_DIR
+# 确保备份目录存在
+mkdir -p "$BACKUP_DIR"
 
 # 检查文件是否存在
 if [ ! -f "$DB_FILE" ] || [ ! -f "$CONFIG_FILE" ]; then
@@ -97,21 +99,21 @@ if [ ! -f "$DB_FILE" ] || [ ! -f "$CONFIG_FILE" ]; then
     exit 0
 fi
 
-cd $BACKUP_DIR
+cd "$BACKUP_DIR"
 
 # 保留最近7天的备份
-find $BACKUP_DIR -name "backup_*.tar.gz" -mtime +7 -delete 2>/dev/null
+find "$BACKUP_DIR" -name "backup_*.tar.gz" -mtime +7 -delete 2>/dev/null || true
 
 # 创建新备份
-tar -czf "backup_$DATE.tar.gz" $DB_FILE $CONFIG_FILE 2>/dev/null
+tar -czf "backup_$DATE.tar.gz" "$DB_FILE" "$CONFIG_FILE" 2>/dev/null || true
 
 echo "Backup completed: backup_$DATE.tar.gz"
 EOF
     
-    chmod +x /opt/3proxy-web/backup.sh
+    chmod +x $WORKDIR/backup.sh
     
     # 设置定时备份
-    echo "0 2 * * * root /opt/3proxy-web/backup.sh > /dev/null 2>&1" > /etc/cron.d/3proxy-backup
+    echo "0 2 * * * root $WORKDIR/backup.sh > /dev/null 2>&1" > /etc/cron.d/3proxy-backup
     
     echo -e "\033[32m自动备份已设置（每天凌晨2点）\033[0m"
 }
@@ -189,12 +191,13 @@ EOF
 # 执行系统优化
 optimize_system
 
-# 设置自动备份
+echo -e "\n========= 2. 部署 Python Web 管理环境 =========\n"
+mkdir -p $WORKDIR/templates $WORKDIR/static $WORKDIR/backups
+cd $WORKDIR
+
+# 设置自动备份（在创建目录之后）
 setup_backup
 
-echo -e "\n========= 2. 部署 Python Web 管理环境 =========\n"
-mkdir -p $WORKDIR/templates $WORKDIR/static
-cd $WORKDIR
 python3 -m venv venv
 source venv/bin/activate
 pip install flask flask_login flask_wtf wtforms Werkzeug psutil --break-system-packages
