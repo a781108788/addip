@@ -87,12 +87,14 @@ echo -e "\n${BLUE}========= 2. 编译安装 3proxy =========${NC}\n"
 if [ ! -f "$THREEPROXY_PATH" ]; then
     cd /tmp
     rm -rf 3proxy
+    # 使用3proxy的官方仓库
     git clone --depth=1 https://github.com/3proxy/3proxy.git
     cd 3proxy
     make -f Makefile.Linux
     mkdir -p /usr/local/bin /usr/local/etc/3proxy $LOGDIR
     cp bin/3proxy /usr/local/bin/
     chmod +x /usr/local/bin/3proxy
+    cd /
 fi
 
 echo -e "\n${BLUE}========= 3. 系统性能优化 =========${NC}\n"
@@ -110,10 +112,6 @@ cat > /etc/sysctl.d/99-proxy-optimize.conf <<'EOF'
 net.core.somaxconn = 65535
 net.ipv4.tcp_max_syn_backlog = 65535
 net.core.netdev_max_backlog = 65535
-
-# Connection tracking
-net.netfilter.nf_conntrack_max = 1000000
-net.ipv4.netfilter.ip_conntrack_max = 1000000
 
 # TCP optimizations
 net.ipv4.tcp_fin_timeout = 30
@@ -133,8 +131,15 @@ net.ipv4.tcp_wmem = 4096 65536 134217728
 fs.file-max = 2000000
 EOF
 
-sysctl -p /etc/sysctl.d/99-bbr.conf
-sysctl -p /etc/sysctl.d/99-proxy-optimize.conf
+# 应用sysctl配置
+sysctl -p /etc/sysctl.d/99-bbr.conf 2>/dev/null || true
+sysctl -p /etc/sysctl.d/99-proxy-optimize.conf 2>/dev/null || true
+
+# 尝试加载conntrack模块并设置参数（如果可用）
+if lsmod | grep -q nf_conntrack; then
+    echo "net.netfilter.nf_conntrack_max = 1000000" >> /etc/sysctl.d/99-proxy-optimize.conf
+    sysctl -w net.netfilter.nf_conntrack_max=1000000 2>/dev/null || true
+fi
 
 # 系统限制优化
 cat > /etc/security/limits.d/99-proxy.conf <<'EOF'
@@ -153,6 +158,9 @@ cd $WORKDIR
 # 创建Python虚拟环境
 python3 -m venv venv
 source venv/bin/activate
+
+# 升级pip
+pip install --upgrade pip setuptools wheel
 
 # 创建requirements.txt
 cat > requirements.txt <<'EOF'
@@ -174,6 +182,8 @@ python-dotenv==1.0.0
 EOF
 
 pip install -r requirements.txt
+
+echo -e "\n${BLUE}========= 5. 创建应用文件 =========${NC}\n"
 
 # ==================== 创建配置文件 ====================
 cat > config.py <<EOF
