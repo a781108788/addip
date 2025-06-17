@@ -640,26 +640,50 @@ def export_selected():
     csegs = request.form.getlist('csegs[]')
     if not csegs:
         return jsonify({'status': 'error', 'message': '未选择C段'}), 400
+    
     db = get_db()
     output = ""
-    all_prefixes = []
+    prefix_for_filename = None
+    
     for cseg in csegs:
-        rows = db.execute("SELECT ip,port,username,password,user_prefix FROM proxy WHERE ip LIKE ? ORDER BY ip,port", (cseg+'.%',)).fetchall()
-        if rows and rows[0][4]:
-            all_prefixes.append(rows[0][4])
-        for ip,port,user,pw,_ in rows:
+        rows = db.execute("SELECT ip,port,username,password,user_prefix FROM proxy WHERE ip LIKE ? ORDER BY ip,port", 
+                         (cseg + '.%',)).fetchall()
+        
+        # 获取第一个有user_prefix的代理作为文件名前缀
+        if not prefix_for_filename and rows:
+            for row in rows:
+                if row[4]:  # user_prefix不为空
+                    prefix_for_filename = row[4]
+                    break
+        
+        for ip, port, user, pw, _ in rows:
             output += f"{ip}:{port}:{user}:{pw}\n"
+    
     db.close()
+    
+    # 生成文件名
+    if not prefix_for_filename:
+        prefix_for_filename = 'proxy'
+    
+    # 将C段转换为文件名友好格式 (31.42.120 -> 31_42_120)
+    cseg_names = []
+    for cseg in sorted(csegs):
+        cseg_names.append(cseg.replace('.', '_'))
+    
+    filename = f"{prefix_for_filename}_{'_'.join(cseg_names)}.txt"
+    
     mem = BytesIO()
     mem.write(output.encode('utf-8'))
     mem.seek(0)
     
-    # 生成文件名：前缀_C段列表
-    prefix = all_prefixes[0] if all_prefixes else 'proxy'
-    cseg_names = [c.replace('.', '_') for c in csegs]
-    filename = f"{prefix}_{'_'.join(cseg_names)}.txt"
-    
-    return Response(mem.read(), mimetype='text/plain', headers={'Content-Disposition': f'attachment; filename={filename}'})
+    return Response(
+        mem.read(), 
+        mimetype='text/plain', 
+        headers={
+            'Content-Disposition': f'attachment; filename="{filename}"',
+            'Content-Type': 'text/plain; charset=utf-8'
+        }
+    )
 
 @app.route('/export_selected_proxy', methods=['POST'])
 @login_required
@@ -1515,67 +1539,115 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     const firstProxy = proxies[0] || {};
                     
                     content.innerHTML = `
-                        <div class="detail-header mb-4">
-                            <h5 class="mb-3">${cSegment}.x 段代理列表</h5>
-                            ${firstProxy.ip_range ? `<span class="badge bg-info me-2">IP范围: ${firstProxy.ip_range}</span>` : ''}
-                            ${firstProxy.port_range ? `<span class="badge bg-primary me-2">端口: ${firstProxy.port_range}</span>` : ''}
-                            ${firstProxy.user_prefix ? `<span class="badge bg-success">前缀: ${firstProxy.user_prefix}</span>` : ''}
-                        </div>
-                        
-                        <div class="action-toolbar mb-3 p-3 bg-light rounded">
+                        <div class="detail-header">
                             <div class="row align-items-center">
-                                <div class="col-auto">
-                                    <div class="form-check">
-                                        <input type="checkbox" class="form-check-input" id="selectAllCheck">
-                                        <label class="form-check-label" for="selectAllCheck">全选</label>
-                                    </div>
-                                </div>
                                 <div class="col">
-                                    <button class="btn btn-sm btn-success me-2" onclick="batchEnableProxies()">
-                                        <i class="bi bi-play-circle"></i> 批量启用
-                                    </button>
-                                    <button class="btn btn-sm btn-warning me-2" onclick="batchDisableProxies()">
-                                        <i class="bi bi-pause-circle"></i> 批量禁用
-                                    </button>
-                                    <button class="btn btn-sm btn-danger me-2" onclick="batchDeleteProxies()">
-                                        <i class="bi bi-trash"></i> 批量删除
-                                    </button>
-                                    <button class="btn btn-sm btn-info" onclick="exportSelectedProxies()">
-                                        <i class="bi bi-download"></i> 导出选中
-                                    </button>
+                                    <h5 class="mb-2">
+                                        <i class="bi bi-hdd-network text-primary me-2"></i>
+                                        ${cSegment}.x 段代理详情
+                                    </h5>
+                                    <div class="d-flex flex-wrap gap-2">
+                                        ${firstProxy.ip_range ? `
+                                            <span class="badge bg-info">
+                                                <i class="bi bi-diagram-3"></i> IP范围: ${firstProxy.ip_range}
+                                            </span>` : ''}
+                                        ${firstProxy.port_range ? `
+                                            <span class="badge bg-primary">
+                                                <i class="bi bi-ethernet"></i> 端口: ${firstProxy.port_range}
+                                            </span>` : ''}
+                                        ${firstProxy.user_prefix ? `
+                                            <span class="badge bg-success">
+                                                <i class="bi bi-person"></i> 前缀: ${firstProxy.user_prefix}
+                                            </span>` : ''}
+                                        <span class="badge bg-secondary">
+                                            <i class="bi bi-list-ul"></i> 共 ${proxies.length} 个代理
+                                        </span>
+                                    </div>
                                 </div>
                             </div>
                         </div>
                         
-                        <div class="table-responsive">
-                            <table class="table table-striped table-hover align-middle">
-                                <thead class="table-dark">
-                                    <tr>
-                                        <th width="40"></th>
-                                        <th width="60">ID</th>
-                                        <th>IP</th>
-                                        <th width="80">端口</th>
-                                        <th>用户名</th>
-                                        <th>密码</th>
-                                        <th width="80">状态</th>
-                                        <th width="150">操作</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
+                        <div class="action-toolbar">
+                            <div class="row align-items-center g-3">
+                                <div class="col-auto">
+                                    <div class="form-check mb-0">
+                                        <input type="checkbox" class="form-check-input" id="selectAllCheck">
+                                        <label class="form-check-label" for="selectAllCheck">
+                                            <strong>全选</strong>
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="col">
+                                    <div class="btn-group btn-group-sm" role="group">
+                                        <button class="btn btn-success" onclick="batchEnableProxies()">
+                                            <i class="bi bi-play-circle"></i> 批量启用
+                                        </button>
+                                        <button class="btn btn-warning" onclick="batchDisableProxies()">
+                                            <i class="bi bi-pause-circle"></i> 批量禁用
+                                        </button>
+                                        <button class="btn btn-danger" onclick="batchDeleteProxies()">
+                                            <i class="bi bi-trash"></i> 批量删除
+                                        </button>
+                                    </div>
+                                    <button class="btn btn-sm btn-info ms-2" onclick="exportSelectedProxies()">
+                                        <i class="bi bi-download"></i> 导出选中
+                                    </button>
+                                </div>
+                                <div class="col-auto">
+                                    <input type="text" class="form-control form-control-sm" 
+                                           placeholder="搜索..." style="width: 200px"
+                                           onkeyup="filterProxyTable(this.value)">
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <div class="table-container">
+                            <div class="table-responsive">
+                                <table class="table table-hover proxy-detail-table mb-0">
+                                    <thead>
+                                        <tr>
+                                            <th width="40">
+                                                <i class="bi bi-check2-square"></i>
+                                            </th>
+                                            <th width="60">ID</th>
+                                            <th>IP地址</th>
+                                            <th width="100">端口</th>
+                                            <th>用户名</th>
+                                            <th width="220">密码</th>
+                                            <th width="100">状态</th>
+                                            <th width="120">操作</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="proxyTableBody">
                     `;
                     
-                    proxies.forEach(proxy => {
+                    proxies.forEach((proxy, index) => {
                         content.innerHTML += `
-                            <tr>
-                                <td><input type="checkbox" class="form-check-input proxy-check" data-id="${proxy.id}"></td>
-                                <td><small class="text-muted">${proxy.id}</small></td>
-                                <td><span class="font-monospace">${proxy.ip}</span></td>
-                                <td><span class="badge bg-secondary">${proxy.port}</span></td>
-                                <td><code>${proxy.username}</code></td>
+                            <tr class="proxy-row">
                                 <td>
-                                    <div class="input-group input-group-sm">
-                                        <input type="text" class="form-control font-monospace" 
+                                    <input type="checkbox" class="form-check-input proxy-check" 
+                                           data-id="${proxy.id}">
+                                </td>
+                                <td>
+                                    <small class="text-muted">#${proxy.id}</small>
+                                </td>
+                                <td>
+                                    <span class="font-monospace fw-bold">${proxy.ip}</span>
+                                </td>
+                                <td>
+                                    <span class="badge bg-secondary fs-6">${proxy.port}</span>
+                                </td>
+                                <td>
+                                    <code class="text-primary">${proxy.username}</code>
+                                </td>
+                                <td>
+                                    <div class="input-group input-group-sm password-input-group">
+                                        <input type="password" class="form-control font-monospace" 
                                                value="${proxy.password}" readonly id="pwd-${proxy.id}">
+                                        <button class="btn btn-outline-secondary" type="button" 
+                                                onclick="togglePassword(${proxy.id})">
+                                            <i class="bi bi-eye" id="eye-${proxy.id}"></i>
+                                        </button>
                                         <button class="btn btn-outline-secondary" type="button" 
                                                 onclick="copyPassword('${proxy.password}', ${proxy.id})">
                                             <i class="bi bi-clipboard"></i>
@@ -1584,20 +1656,20 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                 </td>
                                 <td>
                                     ${proxy.enabled ? 
-                                        '<span class="badge rounded-pill bg-success"><i class="bi bi-check-circle"></i> 启用</span>' : 
-                                        '<span class="badge rounded-pill bg-secondary"><i class="bi bi-x-circle"></i> 禁用</span>'}
+                                        '<span class="badge rounded-pill bg-success status-badge"><i class="bi bi-check-circle-fill"></i> 启用</span>' : 
+                                        '<span class="badge rounded-pill bg-secondary status-badge"><i class="bi bi-x-circle-fill"></i> 禁用</span>'}
                                 </td>
                                 <td>
                                     <div class="btn-group btn-group-sm" role="group">
-                                        <button class="btn btn-outline-${proxy.enabled ? 'warning' : 'success'}" 
+                                        <button class="btn ${proxy.enabled ? 'btn-warning' : 'btn-success'}" 
                                                 onclick="toggleProxy(${proxy.id}, ${!proxy.enabled})"
                                                 title="${proxy.enabled ? '禁用' : '启用'}">
-                                            <i class="bi bi-${proxy.enabled ? 'pause' : 'play'}"></i>
+                                            <i class="bi bi-${proxy.enabled ? 'pause' : 'play'}-fill"></i>
                                         </button>
-                                        <button class="btn btn-outline-danger" 
+                                        <button class="btn btn-danger" 
                                                 onclick="deleteProxy(${proxy.id})"
                                                 title="删除">
-                                            <i class="bi bi-trash"></i>
+                                            <i class="bi bi-trash-fill"></i>
                                         </button>
                                     </div>
                                 </td>
@@ -1605,7 +1677,12 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                         `;
                     });
                     
-                    content.innerHTML += '</tbody></table></div>';
+                    content.innerHTML += `
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                    `;
                     
                     // 全选功能
                     document.getElementById('selectAllCheck').addEventListener('change', (e) => {
@@ -1642,16 +1719,26 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                 });
         }
 
-        // 复制密码功能
-        function copyPassword(password, id) {
-            navigator.clipboard.writeText(password).then(() => {
-                showToast('密码已复制到剪贴板', 'success');
-                const btn = document.querySelector(`#pwd-${id}`).nextElementSibling;
-                const icon = btn.querySelector('i');
-                icon.className = 'bi bi-check';
-                setTimeout(() => {
-                    icon.className = 'bi bi-clipboard';
-                }, 2000);
+        // 切换密码显示
+        function togglePassword(id) {
+            const input = document.getElementById(`pwd-${id}`);
+            const icon = document.getElementById(`eye-${id}`);
+            if (input.type === 'password') {
+                input.type = 'text';
+                icon.className = 'bi bi-eye-slash';
+            } else {
+                input.type = 'password';
+                icon.className = 'bi bi-eye';
+            }
+        }
+
+        // 过滤代理表格
+        function filterProxyTable(value) {
+            const rows = document.querySelectorAll('.proxy-row');
+            const searchTerm = value.toLowerCase();
+            rows.forEach(row => {
+                const text = row.textContent.toLowerCase();
+                row.style.display = text.includes(searchTerm) ? '' : 'none';
             });
         }
 
@@ -1812,14 +1899,35 @@ cat > $WORKDIR/templates/index.html << 'EOF'
             const formData = new FormData();
             selectedGroups.forEach(cseg => formData.append('csegs[]', cseg));
             
+            showLoading();
             fetch('/export_selected', { method: 'POST', body: formData })
-                .then(res => res.blob())
-                .then(blob => {
+                .then(res => {
+                    if (!res.ok) throw new Error('Export failed');
+                    
+                    // 从响应头获取文件名
+                    const contentDisposition = res.headers.get('Content-Disposition');
+                    let filename = 'proxy_export.txt';
+                    if (contentDisposition) {
+                        const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+                        if (filenameMatch && filenameMatch[1]) {
+                            filename = filenameMatch[1].replace(/['"]/g, '');
+                        }
+                    }
+                    
+                    return res.blob().then(blob => ({ blob, filename }));
+                })
+                .then(({ blob, filename }) => {
+                    hideLoading();
                     const a = document.createElement('a');
                     a.href = URL.createObjectURL(blob);
-                    a.download = 'proxy_export.txt';
+                    a.download = filename;
                     a.click();
-                    showToast('导出成功');
+                    URL.revokeObjectURL(a.href);
+                    showToast(`导出成功: ${filename}`);
+                })
+                .catch(err => {
+                    hideLoading();
+                    showToast('导出失败: ' + err.message, 'danger');
                 });
         });
 
