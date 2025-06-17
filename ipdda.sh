@@ -1869,32 +1869,18 @@ User=root
 WantedBy=multi-user.target
 EOF
 
-# 自动备份服务
-cat > /etc/systemd/system/3proxy-backup.service <<EOF
-[Unit]
-Description=3proxy自动备份服务
-After=network.target
-
-[Service]
-Type=oneshot
-WorkingDirectory=$WORKDIR
-ExecStart=$WORKDIR/venv/bin/python3 $WORKDIR/backup.py
-User=root
-
-[Install]
-WantedBy=multi-user.target
+# 自动备份服务 - 使用cron替代systemd timer以避免兼容性问题
+cat > $WORKDIR/auto_backup.sh << 'EOF'
+#!/bin/bash
+cd /opt/3proxy-web
+/opt/3proxy-web/venv/bin/python3 /opt/3proxy-web/backup.py
 EOF
+chmod +x $WORKDIR/auto_backup.sh
 
-cat > /etc/systemd/system/3proxy-backup.timer <<EOF
-[Unit]
-Description=每3天运行一次3proxy备份
-
-[Timer]
-OnCalendar=*-*-*/3 03:00:00
-Persistent=true
-
-[Install]
-WantedBy=timers.target
+# 添加cron任务进行自动备份
+cat > /etc/cron.d/3proxy-backup << EOF
+# 每3天凌晨3点执行备份
+0 3 */3 * * root $WORKDIR/auto_backup.sh >/dev/null 2>&1
 EOF
 
 cd $WORKDIR
@@ -1905,10 +1891,8 @@ $WORKDIR/venv/bin/python3 init_db.py
 systemctl daemon-reload
 systemctl enable 3proxy-web
 systemctl enable 3proxy-autostart
-systemctl enable 3proxy-backup.timer
 systemctl restart 3proxy-web
 systemctl restart 3proxy-autostart
-systemctl start 3proxy-backup.timer
 
 echo -e "\n========= 部署完成！========="
 MYIP=$(get_local_ip)
