@@ -219,7 +219,7 @@ def detect_nic():
 # 初始化数据库表
 def init_enhanced_db():
     db = get_db()
-    # 简化的表结构，移除流量限制相关
+    # 简化的表结构
     db.execute('''CREATE TABLE IF NOT EXISTS proxy_health (
         proxy_id INTEGER PRIMARY KEY,
         last_check TIMESTAMP,
@@ -239,27 +239,11 @@ def init_enhanced_db():
         total_connections INTEGER
     )''')
     
-    db.execute('''CREATE TABLE IF NOT EXISTS proxy_groups (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT UNIQUE,
-        description TEXT,
-        created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )''')
-    
-    db.execute('''CREATE TABLE IF NOT EXISTS proxy_group_mapping (
-        proxy_id INTEGER,
-        group_id INTEGER,
-        PRIMARY KEY (proxy_id, group_id),
-        FOREIGN KEY (proxy_id) REFERENCES proxy(id),
-        FOREIGN KEY (group_id) REFERENCES proxy_groups(id)
-    )''')
-    
     # 添加新字段到proxy表
     try:
         db.execute('ALTER TABLE proxy ADD COLUMN health_status TEXT DEFAULT "unknown"')
         db.execute('ALTER TABLE proxy ADD COLUMN last_health_check TIMESTAMP')
         db.execute('ALTER TABLE proxy ADD COLUMN response_time REAL DEFAULT 0')
-        db.execute('ALTER TABLE proxy ADD COLUMN group_id INTEGER')
     except:
         pass
     
@@ -401,6 +385,13 @@ def cseg_detail(cseg):
     # 计算总页数
     total_pages = (total + per_page - 1) // per_page
     
+    # 获取该C段的范围信息
+    range_info = db.execute('''SELECT DISTINCT ip_range, port_range, user_prefix 
+                              FROM proxy WHERE ip LIKE ? 
+                              AND ip_range IS NOT NULL 
+                              AND ip_range != '' LIMIT 1''', 
+                           (cseg + '.%',)).fetchone()
+    
     db.close()
     
     return render_template('cseg_detail.html', 
@@ -408,56 +399,59 @@ def cseg_detail(cseg):
                          proxies=proxies, 
                          page=page, 
                          total_pages=total_pages,
-                         total=total)
+                         total=total,
+                         range_info=range_info)
 
-# 获取C段统计信息
+# 获取C段统计信息（改进版）
 @app.route('/api/cseg_stats')
 @login_required
 def cseg_stats():
     db = get_db()
     
-    # 获取所有C段的统计信息
-    stats = db.execute('''
-        SELECT 
-            SUBSTR(ip, 1, LENGTH(ip) - LENGTH(LTRIM(SUBSTR(ip, INSTR(ip, '.')), '.')) - 1) as cseg,
-            COUNT(*) as total,
-            SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) as enabled,
-            SUM(CASE WHEN health_status = 'healthy' THEN 1 ELSE 0 END) as healthy,
-            SUM(CASE WHEN health_status = 'unhealthy' THEN 1 ELSE 0 END) as unhealthy,
-            SUM(CASE WHEN health_status = 'dead' THEN 1 ELSE 0 END) as dead,
-            MIN(ip_range) as ip_range,
-            MIN(port_range) as port_range,
-            MIN(user_prefix) as user_prefix
+    # 使用更准确的方法提取C段
+    cursor = db.execute('''
+        SELECT DISTINCT 
+            SUBSTR(ip, 1, LENGTH(ip) - LENGTH(LTRIM(SUBSTR(ip, LENGTH(ip) - LENGTH(REPLACE(ip, '.', '')) + 1), '0123456789'))) as cseg
         FROM proxy
-        GROUP BY cseg
-        ORDER BY cseg
-    ''').fetchall()
+    ''')
     
-    db.close()
+    csegs = [row[0] for row in cursor.fetchall()]
     
-    return jsonify([dict(row) for row in stats])
-
-# 代理分组管理
-@app.route('/api/proxy_groups', methods=['GET', 'POST'])
-@login_required
-def proxy_groups():
-    db = get_db()
-    
-    if request.method == 'POST':
-        data = request.json
-        name = data.get('name')
-        description = data.get('description', '')
+    stats = []
+    for cseg in csegs:
+        stat = db.execute('''
+            SELECT 
+                COUNT(*) as total,
+                SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) as enabled,
+                SUM(CASE WHEN health_status = 'healthy' THEN 1 ELSE 0 END) as healthy,
+                SUM(CASE WHEN health_status = 'unhealthy' THEN 1 ELSE 0 END) as unhealthy,
+                SUM(CASE WHEN health_status = 'dead' THEN 1 ELSE 0 END) as dead,
+                MIN(ip_range) as ip_range,
+                MIN(port_range) as port_range,
+                MIN(user_prefix) as user_prefix
+            FROM proxy
+            WHERE ip LIKE ?
+        ''', (cseg + '.%',)).fetchone()
         
-        db.execute('INSERT INTO proxy_groups (name, description) VALUES (?, ?)', 
-                  (name, description))
-        db.commit()
-        db.close()
-        return jsonify({'status': 'success'})
+        if stat and stat['total'] > 0:
+            stats.append({
+                'cseg': cseg,
+                'total': stat['total'],
+                'enabled': stat['enabled'],
+                'healthy': stat['healthy'],
+                'unhealthy': stat['unhealthy'],
+                'dead': stat['dead'],
+                'ip_range': stat['ip_range'] or '',
+                'port_range': stat['port_range'] or '',
+                'user_prefix': stat['user_prefix'] or ''
+            })
     
-    groups = db.execute('SELECT * FROM proxy_groups ORDER BY name').fetchall()
     db.close()
     
-    return jsonify([dict(row) for row in groups])
+    # 按C段排序
+    stats.sort(key=lambda x: [int(n) for n in x['cseg'].split('.')])
+    
+    return jsonify(stats)
 
 # 批量导入改进
 @app.route('/import_proxies', methods=['POST'])
@@ -573,7 +567,7 @@ def get_proxy_ports():
     db.close()
     return ports
 
-# 原有的路由保持不变，添加以下内容...
+# 原有的路由保持不变
 @app.route('/login', methods=['GET','POST'])
 def login():
     if request.method == 'POST':
@@ -600,22 +594,9 @@ def index():
     db = get_db()
     users = db.execute('SELECT id,username FROM users').fetchall()
     ip_configs = db.execute('SELECT id,ip_str,type,iface,created FROM ip_config ORDER BY id DESC').fetchall()
-    
-    # 获取C段统计信息而不是所有代理
-    cseg_stats = db.execute('''
-        SELECT 
-            SUBSTR(ip, 1, LENGTH(ip) - LENGTH(LTRIM(SUBSTR(ip, INSTR(ip, '.')), '.')) - 1) as cseg,
-            COUNT(*) as total,
-            SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) as enabled,
-            SUM(CASE WHEN health_status = 'healthy' THEN 1 ELSE 0 END) as healthy
-        FROM proxy
-        GROUP BY cseg
-        ORDER BY cseg
-    ''').fetchall()
-    
     db.close()
+    
     return render_template('index.html', 
-                         cseg_stats=cseg_stats,
                          users=users, 
                          ip_configs=ip_configs, 
                          default_iface=detect_nic())
@@ -818,20 +799,37 @@ def export_selected():
         return redirect('/')
     db = get_db()
     output = ""
-    export_prefix = ""
+    
+    # 用于存储文件名组成部分
+    file_parts = []
+    user_prefix = ""
+    
     for cseg in csegs:
         rows = db.execute("SELECT ip,port,username,password,user_prefix FROM proxy WHERE ip LIKE ? ORDER BY ip,port", (cseg+'.%',)).fetchall()
-        if rows and not export_prefix:
-            export_prefix = rows[0][4] or ''
-        for ip,port,user,pw,_ in rows:
-            output += f"{ip}:{port}:{user}:{pw}\n"
+        if rows:
+            # 获取用户前缀（只取第一个）
+            if not user_prefix and rows[0][4]:
+                user_prefix = rows[0][4]
+            
+            # 添加C段到文件名，格式如 192.168.1.x
+            file_parts.append(f"{cseg}.x")
+            
+            for ip,port,user,pw,_ in rows:
+                output += f"{ip}:{port}:{user}:{pw}\n"
+    
     db.close()
     mem = BytesIO()
     mem.write(output.encode('utf-8'))
     mem.seek(0)
-    filename = f"{export_prefix or 'export'}_{'_'.join(csegs)}.txt"
+    
+    # 生成文件名：用户前缀_C段名称
+    if user_prefix and file_parts:
+        filename = f"{user_prefix}_{'_'.join(file_parts)}.txt"
+    else:
+        filename = f"{'_'.join(file_parts)}.txt" if file_parts else "export.txt"
+    
     return Response(mem.read(), mimetype='text/plain', headers={'Content-Disposition': f'attachment; filename={filename}'})
-
+    
 @app.route('/export_selected_proxy', methods=['POST'])
 @login_required
 def export_selected_proxy():
@@ -1788,6 +1786,17 @@ cat > $WORKDIR/templates/index.html << 'EOF'
         .dark-mode .form-label {
             color: #adb5bd;
         }
+
+        /* C段信息样式 */
+        .cseg-info {
+            font-size: 0.9rem;
+            color: #6c757d;
+            margin-top: 0.5rem;
+        }
+
+        .dark-mode .cseg-info {
+            color: #adb5bd;
+        }
     </style>
 </head>
 <body>
@@ -2076,21 +2085,28 @@ cat > $WORKDIR/templates/index.html << 'EOF'
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.js"></script>
 <script>
-// 从服务器获取C段统计信息
-const csegStats = [
-{% for stat in cseg_stats %}
-    {cseg:"{{stat['cseg']}}",total:{{stat['total']}},enabled:{{stat['enabled']}},healthy:{{stat['healthy']}}},
-{% endfor %}
-];
+// 存储C段统计信息
+let csegStatsData = [];
+
+// 获取并构建C段列表
+function loadCsegStats() {
+    fetch('/api/cseg_stats')
+        .then(r => r.json())
+        .then(data => {
+            csegStatsData = data;
+            buildCsegList();
+            fillCsegSelect();
+        });
+}
 
 // 构建C段列表
 function buildCsegList(filterVal="") {
     let container = document.getElementById('csegList');
     container.innerHTML = "";
     
-    let filteredStats = csegStats;
+    let filteredStats = csegStatsData;
     if(filterVal) {
-        filteredStats = csegStats.filter(s => s.cseg.includes(filterVal));
+        filteredStats = csegStatsData.filter(s => s.cseg.includes(filterVal));
     }
     
     filteredStats.forEach(stat => {
@@ -2098,39 +2114,54 @@ function buildCsegList(filterVal="") {
         card.className = 'cseg-card';
         card.onclick = () => window.location.href = `/cseg_detail/${stat.cseg}`;
         
+        // 构建详细信息
+        let rangeInfo = '';
+        if(stat.ip_range && stat.port_range && stat.user_prefix) {
+            rangeInfo = `
+                <div class="cseg-info">
+                    <small>
+                        <i class="fas fa-network-wired me-1"></i>IP: ${stat.ip_range} | 
+                        <i class="fas fa-plug me-1"></i>端口: ${stat.port_range} | 
+                        <i class="fas fa-user me-1"></i>前缀: ${stat.user_prefix}
+                    </small>
+                </div>
+            `;
+        }
+        
         card.innerHTML = `
             <div class="d-flex justify-content-between align-items-center">
                 <div>
                     <h6 class="mb-1"><strong>${stat.cseg}.x</strong></h6>
                     <small class="text-muted">共 ${stat.total} 个代理</small>
+                    ${rangeInfo}
                 </div>
                 <div class="text-end">
                     <span class="badge bg-primary">${stat.enabled} 启用</span>
                     <span class="badge bg-success ms-1">${stat.healthy} 健康</span>
+                    <span class="badge bg-warning ms-1">${stat.unhealthy} 异常</span>
+                    <span class="badge bg-danger ms-1">${stat.dead} 失效</span>
                 </div>
             </div>
         `;
         
         container.appendChild(card);
     });
-    
-    fillCsegSelect();
 }
 
 function fillCsegSelect() {
-    let csegs = csegStats.map(s => s.cseg);
     let sel = document.getElementById('exportCseg');
     sel.innerHTML = "";
-    csegs.forEach(c=> {
+    csegStatsData.forEach(stat => {
         let opt = document.createElement('option');
-        opt.value = c;
-        opt.textContent = c + ".x";
+        opt.value = stat.cseg;
+        opt.textContent = stat.cseg + ".x";
+        opt.setAttribute('data-prefix', stat.user_prefix || '');
         sel.appendChild(opt);
     });
 }
 
 // 初始化
-buildCsegList();
+loadCsegStats();
 
 // 搜索功能（带防抖）
 let searchTimeout;
@@ -2157,9 +2188,8 @@ document.getElementById('exportSelected').onclick = function(){
         .then(resp=>resp.blob())
         .then(blob=>{
             let a = document.createElement('a');
-            let name = 'proxy_' + selected.join('_') + '.txt';
             a.href = URL.createObjectURL(blob);
-            a.download = name;
+            a.download = 'proxy_export.txt'; // 服务器会返回正确的文件名
             a.click();
         });
 };
@@ -2252,6 +2282,9 @@ window.onload = () => {
     // 初始化系统监控
     updateSystemStats();
     setInterval(updateSystemStats, 5000);
+    
+    // 定期刷新C段统计
+    setInterval(loadCsegStats, 30000);
 };
 
 // 表单提交动画
@@ -2421,6 +2454,19 @@ cat > $WORKDIR/templates/cseg_detail.html << 'EOF'
             height: 18px;
             cursor: pointer;
         }
+
+        .info-card {
+            background: rgba(102, 126, 234, 0.1);
+            border-radius: 12px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+        }
+
+        .info-card h6 {
+            margin-bottom: 0.5rem;
+            color: #667eea;
+            font-weight: 600;
+        }
     </style>
 </head>
 <body>
@@ -2433,6 +2479,26 @@ cat > $WORKDIR/templates/cseg_detail.html << 'EOF'
             </a>
         </div>
     </div>
+
+    {% if range_info %}
+    <div class="info-card">
+        <h6>C段配置信息</h6>
+        <div class="row">
+            <div class="col-md-4">
+                <small class="text-muted">IP范围</small>
+                <p class="mb-0"><strong>{{range_info['ip_range']}}</strong></p>
+            </div>
+            <div class="col-md-4">
+                <small class="text-muted">端口范围</small>
+                <p class="mb-0"><strong>{{range_info['port_range']}}</strong></p>
+            </div>
+            <div class="col-md-4">
+                <small class="text-muted">用户名前缀</small>
+                <p class="mb-0"><strong>{{range_info['user_prefix']}}</strong></p>
+            </div>
+        </div>
+    </div>
+    {% endif %}
 
     <div class="card p-4">
         <div class="d-flex justify-content-between align-items-center mb-3">
@@ -2720,9 +2786,9 @@ echo -e "浏览器访问：\n  \033[36mhttp://$MYIP:${PORT}\033[0m"
 echo "Web管理用户名: $ADMINUSER"
 echo "Web管理密码:  $ADMINPASS"
 echo -e "\n优化说明："
-echo "1. 已移除自动健康检查，改为手动触发"
-echo "2. 已移除流量限制功能"
-echo "3. 优化了C段管理，点击C段卡片进入详情页面"
+echo "1. C段管理明确显示 192.168.1.x 格式"
+echo "2. 显示端口范围和用户名前缀信息"
+echo "3. 导出文件名格式：用户前缀_C段数字.txt"
 echo "4. 支持分页显示，避免大量IP时卡顿"
 echo "5. 每天凌晨2点自动备份数据库"
 echo -e "\n使用说明："
