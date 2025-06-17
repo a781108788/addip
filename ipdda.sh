@@ -1574,59 +1574,83 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                         </div>
                         
                         <div class="table-container">
-                            <table class="table table-sm table-hover">
-                                <thead>
+                            <table class="table table-striped">
+                                <thead class="table-dark">
                                     <tr>
-                                        <th width="40">选择</th>
+                                        <th width="40">
+                                            <input type="checkbox" class="form-check-input" id="selectAllCheck" style="cursor:pointer">
+                                        </th>
                                         <th width="60">ID</th>
-                                        <th width="120">IP地址</th>
+                                        <th width="140">IP地址</th>
                                         <th width="80">端口</th>
                                         <th width="120">用户名</th>
-                                        <th width="180">密码</th>
+                                        <th width="200">密码</th>
                                         <th width="80">状态</th>
-                                        <th width="100">操作</th>
+                                        <th width="120">操作</th>
                                     </tr>
                                 </thead>
                                 <tbody id="proxyTableBody">
                     `;
                     
-                    proxies.forEach(proxy => {
+                    proxies.forEach((proxy, index) => {
                         content.innerHTML += `
-                            <tr class="proxy-row">
-                                <td><input type="checkbox" class="form-check-input proxy-check" data-id="${proxy.id}" onchange="updateSelectedCount()"></td>
-                                <td class="text-muted">${proxy.id}</td>
-                                <td class="font-monospace">${proxy.ip}</td>
-                                <td><span class="badge bg-secondary">${proxy.port}</span></td>
-                                <td><code>${proxy.username}</code></td>
+                            <tr class="proxy-row align-middle">
+                                <td class="text-center">
+                                    <input type="checkbox" class="form-check-input proxy-check" 
+                                           data-id="${proxy.id}" onchange="updateSelectedCount()">
+                                </td>
                                 <td>
-                                    <div class="d-flex align-items-center gap-1">
-                                        <input type="text" class="form-control form-control-sm font-monospace" 
-                                               value="${proxy.password}" readonly style="width:130px">
-                                        <button class="btn btn-sm btn-outline-secondary" 
-                                                onclick="copyPassword('${proxy.password}', ${proxy.id})">
+                                    <small class="text-muted">#${proxy.id}</small>
+                                </td>
+                                <td>
+                                    <span class="font-monospace">${proxy.ip}</span>
+                                </td>
+                                <td class="text-center">
+                                    <span class="badge bg-secondary">${proxy.port}</span>
+                                </td>
+                                <td>
+                                    <code class="text-danger">${proxy.username}</code>
+                                </td>
+                                <td>
+                                    <div class="input-group input-group-sm">
+                                        <input type="text" class="form-control font-monospace bg-light" 
+                                               value="${proxy.password}" readonly>
+                                        <button class="btn btn-outline-secondary" type="button"
+                                                onclick="copyPassword('${proxy.password}', ${proxy.id})"
+                                                title="复制密码">
                                             <i class="bi bi-clipboard"></i>
                                         </button>
                                     </div>
                                 </td>
-                                <td>
+                                <td class="text-center">
                                     ${proxy.enabled ? 
                                         '<span class="badge bg-success">启用</span>' : 
                                         '<span class="badge bg-secondary">禁用</span>'}
                                 </td>
-                                <td>
-                                    <button class="btn btn-sm ${proxy.enabled ? 'btn-warning' : 'btn-success'}" 
-                                            onclick="toggleProxy(${proxy.id}, ${!proxy.enabled})">
-                                        ${proxy.enabled ? '禁用' : '启用'}
-                                    </button>
-                                    <button class="btn btn-sm btn-danger" onclick="deleteProxy(${proxy.id})">
-                                        <i class="bi bi-trash"></i>
-                                    </button>
+                                <td class="text-center">
+                                    <div class="btn-group btn-group-sm" role="group">
+                                        ${proxy.enabled ? 
+                                            `<button class="btn btn-warning" onclick="toggleProxy(${proxy.id}, false)" title="禁用">
+                                                <i class="bi bi-pause-fill"></i>
+                                            </button>` :
+                                            `<button class="btn btn-success" onclick="toggleProxy(${proxy.id}, true)" title="启用">
+                                                <i class="bi bi-play-fill"></i>
+                                            </button>`
+                                        }
+                                        <button class="btn btn-danger" onclick="deleteProxy(${proxy.id})" title="删除">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                    </div>
                                 </td>
                             </tr>
                         `;
                     });
                     
-                    content.innerHTML += '</tbody></table></div>';
+                    content.innerHTML += `
+                                </tbody>
+                            </table>
+                        </div>
+                    `;
                     
                     // 全选功能
                     document.getElementById('selectAllCheck').addEventListener('change', (e) => {
