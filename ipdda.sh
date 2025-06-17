@@ -642,18 +642,23 @@ def export_selected():
         return jsonify({'status': 'error', 'message': '未选择C段'}), 400
     db = get_db()
     output = ""
-    export_prefix = ""
+    all_prefixes = []
     for cseg in csegs:
         rows = db.execute("SELECT ip,port,username,password,user_prefix FROM proxy WHERE ip LIKE ? ORDER BY ip,port", (cseg+'.%',)).fetchall()
-        if rows and not export_prefix:
-            export_prefix = rows[0][4] or ''
+        if rows and rows[0][4]:
+            all_prefixes.append(rows[0][4])
         for ip,port,user,pw,_ in rows:
             output += f"{ip}:{port}:{user}:{pw}\n"
     db.close()
     mem = BytesIO()
     mem.write(output.encode('utf-8'))
     mem.seek(0)
-    filename = f"{export_prefix or 'export'}_{'_'.join(csegs)}.txt"
+    
+    # 生成文件名：前缀_C段列表
+    prefix = all_prefixes[0] if all_prefixes else 'proxy'
+    cseg_names = [c.replace('.', '_') for c in csegs]
+    filename = f"{prefix}_{'_'.join(cseg_names)}.txt"
+    
     return Response(mem.read(), mimetype='text/plain', headers={'Content-Disposition': f'attachment; filename={filename}'})
 
 @app.route('/export_selected_proxy', methods=['POST'])
@@ -1428,38 +1433,55 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                         card.className = 'proxy-card';
                         card.innerHTML = `
                             <div class="row align-items-center">
-                                <div class="col-md-8">
-                                    <h6 class="mb-1">
+                                <div class="col-md-7">
+                                    <h6 class="mb-2 d-flex align-items-center">
                                         <input type="checkbox" class="form-check-input me-2" 
                                                data-group="${group.c_segment}">
+                                        <i class="bi bi-hdd-network text-primary me-2"></i>
                                         <strong>${group.c_segment}.x</strong>
-                                        <span class="badge bg-primary ms-2">${group.total} 个代理</span>
-                                        <span class="badge bg-success ms-1">${group.enabled} 启用</span>
-                                        <span class="badge bg-info ms-1">${group.traffic} MB</span>
                                     </h6>
-                                    <small class="text-muted">
-                                        ${group.ip_range ? `IP范围: ${group.ip_range}` : ''}
-                                        ${group.port_range ? `| 端口: ${group.port_range}` : ''}
-                                        ${group.user_prefix ? `| 前缀: ${group.user_prefix}` : ''}
+                                    <div class="d-flex flex-wrap gap-2 mb-2">
+                                        <span class="badge rounded-pill bg-primary">
+                                            <i class="bi bi-layers"></i> ${group.total} 个
+                                        </span>
+                                        <span class="badge rounded-pill bg-success">
+                                            <i class="bi bi-check-circle"></i> ${group.enabled} 启用
+                                        </span>
+                                        <span class="badge rounded-pill bg-info">
+                                            <i class="bi bi-arrow-down-up"></i> ${group.traffic} MB
+                                        </span>
+                                    </div>
+                                    <small class="text-muted d-block">
+                                        ${group.ip_range ? `<i class="bi bi-diagram-3"></i> ${group.ip_range}` : ''}
+                                        ${group.port_range ? `<i class="bi bi-ethernet"></i> ${group.port_range}` : ''}
+                                        ${group.user_prefix ? `<i class="bi bi-person"></i> ${group.user_prefix}` : ''}
                                     </small>
                                 </div>
-                                <div class="col-md-4 text-end">
-                                    <button class="btn btn-sm btn-outline-primary" 
-                                            onclick="viewProxyGroup('${group.c_segment}')">
-                                        <i class="bi bi-eye"></i> 查看
-                                    </button>
-                                    <button class="btn btn-sm btn-outline-success" 
-                                            onclick="toggleGroup('${group.c_segment}', 'enable')">
-                                        <i class="bi bi-play-circle"></i> 启用
-                                    </button>
-                                    <button class="btn btn-sm btn-outline-warning" 
-                                            onclick="toggleGroup('${group.c_segment}', 'disable')">
-                                        <i class="bi bi-pause-circle"></i> 禁用
-                                    </button>
-                                    <button class="btn btn-sm btn-outline-danger" 
-                                            onclick="deleteGroup('${group.c_segment}')">
-                                        <i class="bi bi-trash"></i> 删除
-                                    </button>
+                                <div class="col-md-5 text-end">
+                                    <div class="btn-toolbar justify-content-end" role="toolbar">
+                                        <div class="btn-group btn-group-sm" role="group">
+                                            <button class="btn btn-primary" 
+                                                    onclick="viewProxyGroup('${group.c_segment}')"
+                                                    title="查看详情">
+                                                <i class="bi bi-eye"></i> 查看
+                                            </button>
+                                            <button class="btn btn-success" 
+                                                    onclick="toggleGroup('${group.c_segment}', 'enable')"
+                                                    title="启用全部">
+                                                <i class="bi bi-play-circle"></i> 启用
+                                            </button>
+                                            <button class="btn btn-warning" 
+                                                    onclick="toggleGroup('${group.c_segment}', 'disable')"
+                                                    title="禁用全部">
+                                                <i class="bi bi-pause-circle"></i> 禁用
+                                            </button>
+                                            <button class="btn btn-danger" 
+                                                    onclick="deleteGroup('${group.c_segment}')"
+                                                    title="删除整组">
+                                                <i class="bi bi-trash"></i> 删除
+                                            </button>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         `;
@@ -1490,37 +1512,53 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                 .then(res => res.json())
                 .then(proxies => {
                     const content = document.getElementById('proxyDetailContent');
+                    const firstProxy = proxies[0] || {};
+                    
                     content.innerHTML = `
-                        <h6 class="mb-3">${cSegment}.x 段代理列表</h6>
-                        <div class="mb-3">
-                            <button class="btn btn-sm btn-primary" onclick="selectAllProxies()">
-                                <i class="bi bi-check-all"></i> 全选
-                            </button>
-                            <button class="btn btn-sm btn-success ms-2" onclick="batchEnableProxies()">
-                                <i class="bi bi-play-circle"></i> 批量启用
-                            </button>
-                            <button class="btn btn-sm btn-warning ms-2" onclick="batchDisableProxies()">
-                                <i class="bi bi-pause-circle"></i> 批量禁用
-                            </button>
-                            <button class="btn btn-sm btn-danger ms-2" onclick="batchDeleteProxies()">
-                                <i class="bi bi-trash"></i> 批量删除
-                            </button>
-                            <button class="btn btn-sm btn-info ms-2" onclick="exportSelectedProxies()">
-                                <i class="bi bi-download"></i> 导出选中
-                            </button>
+                        <div class="detail-header mb-4">
+                            <h5 class="mb-3">${cSegment}.x 段代理列表</h5>
+                            ${firstProxy.ip_range ? `<span class="badge bg-info me-2">IP范围: ${firstProxy.ip_range}</span>` : ''}
+                            ${firstProxy.port_range ? `<span class="badge bg-primary me-2">端口: ${firstProxy.port_range}</span>` : ''}
+                            ${firstProxy.user_prefix ? `<span class="badge bg-success">前缀: ${firstProxy.user_prefix}</span>` : ''}
                         </div>
+                        
+                        <div class="action-toolbar mb-3 p-3 bg-light rounded">
+                            <div class="row align-items-center">
+                                <div class="col-auto">
+                                    <div class="form-check">
+                                        <input type="checkbox" class="form-check-input" id="selectAllCheck">
+                                        <label class="form-check-label" for="selectAllCheck">全选</label>
+                                    </div>
+                                </div>
+                                <div class="col">
+                                    <button class="btn btn-sm btn-success me-2" onclick="batchEnableProxies()">
+                                        <i class="bi bi-play-circle"></i> 批量启用
+                                    </button>
+                                    <button class="btn btn-sm btn-warning me-2" onclick="batchDisableProxies()">
+                                        <i class="bi bi-pause-circle"></i> 批量禁用
+                                    </button>
+                                    <button class="btn btn-sm btn-danger me-2" onclick="batchDeleteProxies()">
+                                        <i class="bi bi-trash"></i> 批量删除
+                                    </button>
+                                    <button class="btn btn-sm btn-info" onclick="exportSelectedProxies()">
+                                        <i class="bi bi-download"></i> 导出选中
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        
                         <div class="table-responsive">
-                            <table class="table table-hover">
-                                <thead>
+                            <table class="table table-striped table-hover align-middle">
+                                <thead class="table-dark">
                                     <tr>
-                                        <th><input type="checkbox" id="selectAllCheck"></th>
-                                        <th>ID</th>
+                                        <th width="40"></th>
+                                        <th width="60">ID</th>
                                         <th>IP</th>
-                                        <th>端口</th>
+                                        <th width="80">端口</th>
                                         <th>用户名</th>
                                         <th>密码</th>
-                                        <th>状态</th>
-                                        <th>操作</th>
+                                        <th width="80">状态</th>
+                                        <th width="150">操作</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -1529,26 +1567,39 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     proxies.forEach(proxy => {
                         content.innerHTML += `
                             <tr>
-                                <td><input type="checkbox" class="proxy-check" data-id="${proxy.id}"></td>
-                                <td>${proxy.id}</td>
-                                <td>${proxy.ip}</td>
-                                <td>${proxy.port}</td>
-                                <td>${proxy.username}</td>
-                                <td><code>${proxy.password}</code></td>
+                                <td><input type="checkbox" class="form-check-input proxy-check" data-id="${proxy.id}"></td>
+                                <td><small class="text-muted">${proxy.id}</small></td>
+                                <td><span class="font-monospace">${proxy.ip}</span></td>
+                                <td><span class="badge bg-secondary">${proxy.port}</span></td>
+                                <td><code>${proxy.username}</code></td>
                                 <td>
-                                    ${proxy.enabled ? 
-                                        '<span class="badge bg-success">启用</span>' : 
-                                        '<span class="badge bg-secondary">禁用</span>'}
+                                    <div class="input-group input-group-sm">
+                                        <input type="text" class="form-control font-monospace" 
+                                               value="${proxy.password}" readonly id="pwd-${proxy.id}">
+                                        <button class="btn btn-outline-secondary" type="button" 
+                                                onclick="copyPassword('${proxy.password}', ${proxy.id})">
+                                            <i class="bi bi-clipboard"></i>
+                                        </button>
+                                    </div>
                                 </td>
                                 <td>
-                                    <button class="btn btn-sm btn-outline-primary" 
-                                            onclick="toggleProxy(${proxy.id}, ${!proxy.enabled})">
-                                        ${proxy.enabled ? '禁用' : '启用'}
-                                    </button>
-                                    <button class="btn btn-sm btn-outline-danger" 
-                                            onclick="deleteProxy(${proxy.id})">
-                                        删除
-                                    </button>
+                                    ${proxy.enabled ? 
+                                        '<span class="badge rounded-pill bg-success"><i class="bi bi-check-circle"></i> 启用</span>' : 
+                                        '<span class="badge rounded-pill bg-secondary"><i class="bi bi-x-circle"></i> 禁用</span>'}
+                                </td>
+                                <td>
+                                    <div class="btn-group btn-group-sm" role="group">
+                                        <button class="btn btn-outline-${proxy.enabled ? 'warning' : 'success'}" 
+                                                onclick="toggleProxy(${proxy.id}, ${!proxy.enabled})"
+                                                title="${proxy.enabled ? '禁用' : '启用'}">
+                                            <i class="bi bi-${proxy.enabled ? 'pause' : 'play'}"></i>
+                                        </button>
+                                        <button class="btn btn-outline-danger" 
+                                                onclick="deleteProxy(${proxy.id})"
+                                                title="删除">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                    </div>
                                 </td>
                             </tr>
                         `;
@@ -1589,6 +1640,19 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     hideLoading();
                     showToast('加载失败: ' + err.message, 'danger');
                 });
+        }
+
+        // 复制密码功能
+        function copyPassword(password, id) {
+            navigator.clipboard.writeText(password).then(() => {
+                showToast('密码已复制到剪贴板', 'success');
+                const btn = document.querySelector(`#pwd-${id}`).nextElementSibling;
+                const icon = btn.querySelector('i');
+                icon.className = 'bi bi-check';
+                setTimeout(() => {
+                    icon.className = 'bi bi-clipboard';
+                }, 2000);
+            });
         }
 
         // 代理组操作
