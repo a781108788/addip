@@ -98,14 +98,14 @@ fi
 echo -e "\n${BLUE}========= 3. 系统性能优化 =========${NC}\n"
 
 # 启用BBR
-cat > /etc/sysctl.d/99-bbr.conf <<EOF
+cat > /etc/sysctl.d/99-bbr.conf <<'EOF'
 # Enable BBR
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 EOF
 
 # 系统优化参数
-cat > /etc/sysctl.d/99-proxy-optimize.conf <<EOF
+cat > /etc/sysctl.d/99-proxy-optimize.conf <<'EOF'
 # Network optimizations for proxy server
 net.core.somaxconn = 65535
 net.ipv4.tcp_max_syn_backlog = 65535
@@ -137,7 +137,7 @@ sysctl -p /etc/sysctl.d/99-bbr.conf
 sysctl -p /etc/sysctl.d/99-proxy-optimize.conf
 
 # 系统限制优化
-cat > /etc/security/limits.d/99-proxy.conf <<EOF
+cat > /etc/security/limits.d/99-proxy.conf <<'EOF'
 * soft nofile 1000000
 * hard nofile 1000000
 * soft nproc 65535
@@ -155,7 +155,7 @@ python3 -m venv venv
 source venv/bin/activate
 
 # 创建requirements.txt
-cat > requirements.txt <<EOF
+cat > requirements.txt <<'EOF'
 Flask==2.3.2
 Flask-SQLAlchemy==3.0.5
 Flask-SocketIO==5.3.4
@@ -2221,10 +2221,10 @@ if __name__ == '__main__':
 EOF
 
 # ==================== 创建初始3proxy配置 ====================
-cat > $PROXYCFG_PATH <<EOF
+cat > $PROXYCFG_PATH <<'EOF'
 daemon
 pidfile /var/run/3proxy.pid
-log $LOGDIR/3proxy.log D
+log /var/log/3proxy/3proxy.log D
 rotate 2
 
 nscache 65536
@@ -2240,14 +2240,14 @@ EOF
 # ==================== 创建系统服务 ====================
 
 # 3proxy服务
-cat > /etc/systemd/system/3proxy.service <<EOF
+cat > /etc/systemd/system/3proxy.service <<'EOF'
 [Unit]
 Description=3proxy Proxy Server
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=$THREEPROXY_PATH $PROXYCFG_PATH
+ExecStart=/usr/local/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
 Restart=always
 RestartSec=5
 User=root
@@ -2276,8 +2276,8 @@ WantedBy=multi-user.target
 EOF
 
 # ==================== 配置日志轮换 ====================
-cat > /etc/logrotate.d/3proxy <<EOF
-$LOGDIR/*.log {
+cat > /etc/logrotate.d/3proxy <<'EOF'
+/var/log/3proxy/*.log {
     daily
     rotate 2
     compress
@@ -2287,7 +2287,7 @@ $LOGDIR/*.log {
     create 0644 root root
     sharedscripts
     postrotate
-        /bin/kill -USR1 \`cat /var/run/3proxy.pid 2>/dev/null\` 2>/dev/null || true
+        /bin/kill -USR1 `cat /var/run/3proxy.pid 2>/dev/null` 2>/dev/null || true
     endscript
 }
 EOF
