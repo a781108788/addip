@@ -1880,12 +1880,14 @@ Type=oneshot
 WorkingDirectory=$WORKDIR
 ExecStart=$WORKDIR/venv/bin/python3 $WORKDIR/backup.py
 User=root
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
 cat > /etc/systemd/system/3proxy-backup.timer <<EOF
 [Unit]
 Description=每3天运行一次3proxy备份
-Requires=3proxy-backup.service
 
 [Timer]
 OnCalendar=*-*-*/3 03:00:00
