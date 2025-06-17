@@ -1542,131 +1542,156 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                         <div class="detail-header">
                             <div class="row align-items-center">
                                 <div class="col">
-                                    <h5 class="mb-2">
-                                        <i class="bi bi-hdd-network text-primary me-2"></i>
+                                    <h5 class="mb-3">
+                                        <i class="bi bi-server text-primary me-2"></i>
                                         ${cSegment}.x 段代理详情
                                     </h5>
-                                    <div class="d-flex flex-wrap gap-2">
+                                    <div class="info-tags">
                                         ${firstProxy.ip_range ? `
-                                            <span class="badge bg-info">
-                                                <i class="bi bi-diagram-3"></i> IP范围: ${firstProxy.ip_range}
-                                            </span>` : ''}
+                                            <div class="info-tag">
+                                                <i class="bi bi-diagram-3"></i>
+                                                <span>IP范围</span>
+                                                <strong>${firstProxy.ip_range}</strong>
+                                            </div>` : ''}
                                         ${firstProxy.port_range ? `
-                                            <span class="badge bg-primary">
-                                                <i class="bi bi-ethernet"></i> 端口: ${firstProxy.port_range}
-                                            </span>` : ''}
+                                            <div class="info-tag">
+                                                <i class="bi bi-ethernet"></i>
+                                                <span>端口范围</span>
+                                                <strong>${firstProxy.port_range}</strong>
+                                            </div>` : ''}
                                         ${firstProxy.user_prefix ? `
-                                            <span class="badge bg-success">
-                                                <i class="bi bi-person"></i> 前缀: ${firstProxy.user_prefix}
-                                            </span>` : ''}
-                                        <span class="badge bg-secondary">
-                                            <i class="bi bi-list-ul"></i> 共 ${proxies.length} 个代理
-                                        </span>
+                                            <div class="info-tag">
+                                                <i class="bi bi-person-badge"></i>
+                                                <span>用户前缀</span>
+                                                <strong>${firstProxy.user_prefix}</strong>
+                                            </div>` : ''}
+                                        <div class="info-tag">
+                                            <i class="bi bi-list-ol"></i>
+                                            <span>代理总数</span>
+                                            <strong>${proxies.length}</strong>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
                         </div>
                         
                         <div class="action-toolbar">
-                            <div class="row align-items-center g-3">
-                                <div class="col-auto">
-                                    <div class="form-check mb-0">
-                                        <input type="checkbox" class="form-check-input" id="selectAllCheck">
-                                        <label class="form-check-label" for="selectAllCheck">
-                                            <strong>全选</strong>
-                                        </label>
-                                    </div>
+                            <div class="toolbar-left">
+                                <div class="form-check">
+                                    <input type="checkbox" class="form-check-input" id="selectAllCheck">
+                                    <label class="form-check-label" for="selectAllCheck">全选</label>
                                 </div>
-                                <div class="col">
-                                    <div class="btn-group btn-group-sm" role="group">
-                                        <button class="btn btn-success" onclick="batchEnableProxies()">
-                                            <i class="bi bi-play-circle"></i> 批量启用
-                                        </button>
-                                        <button class="btn btn-warning" onclick="batchDisableProxies()">
-                                            <i class="bi bi-pause-circle"></i> 批量禁用
-                                        </button>
-                                        <button class="btn btn-danger" onclick="batchDeleteProxies()">
-                                            <i class="bi bi-trash"></i> 批量删除
-                                        </button>
-                                    </div>
-                                    <button class="btn btn-sm btn-info ms-2" onclick="exportSelectedProxies()">
-                                        <i class="bi bi-download"></i> 导出选中
+                                <div class="selected-count ms-3">
+                                    已选择 <span id="selectedCount">0</span> 项
+                                </div>
+                            </div>
+                            <div class="toolbar-center">
+                                <div class="btn-group" role="group">
+                                    <button class="btn btn-sm btn-success" onclick="batchEnableProxies()">
+                                        <i class="bi bi-check-circle"></i> 启用
+                                    </button>
+                                    <button class="btn btn-sm btn-warning" onclick="batchDisableProxies()">
+                                        <i class="bi bi-pause-circle"></i> 禁用
+                                    </button>
+                                    <button class="btn btn-sm btn-danger" onclick="batchDeleteProxies()">
+                                        <i class="bi bi-trash"></i> 删除
+                                    </button>
+                                    <button class="btn btn-sm btn-info" onclick="exportSelectedProxies()">
+                                        <i class="bi bi-download"></i> 导出
                                     </button>
                                 </div>
-                                <div class="col-auto">
+                            </div>
+                            <div class="toolbar-right">
+                                <div class="search-box">
+                                    <i class="bi bi-search"></i>
                                     <input type="text" class="form-control form-control-sm" 
-                                           placeholder="搜索..." style="width: 200px"
+                                           placeholder="搜索IP/端口/用户名..."
                                            onkeyup="filterProxyTable(this.value)">
                                 </div>
                             </div>
                         </div>
                         
                         <div class="table-container">
-                            <div class="table-responsive">
-                                <table class="table table-hover proxy-detail-table mb-0">
-                                    <thead>
-                                        <tr>
-                                            <th width="40">
-                                                <i class="bi bi-check2-square"></i>
-                                            </th>
-                                            <th width="60">ID</th>
-                                            <th>IP地址</th>
-                                            <th width="100">端口</th>
-                                            <th>用户名</th>
-                                            <th width="220">密码</th>
-                                            <th width="100">状态</th>
-                                            <th width="120">操作</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="proxyTableBody">
+                            <table class="proxy-table">
+                                <thead>
+                                    <tr>
+                                        <th class="th-check">
+                                            <div class="th-content">选择</div>
+                                        </th>
+                                        <th class="th-id">
+                                            <div class="th-content">ID</div>
+                                        </th>
+                                        <th class="th-ip">
+                                            <div class="th-content">IP地址</div>
+                                        </th>
+                                        <th class="th-port">
+                                            <div class="th-content">端口</div>
+                                        </th>
+                                        <th class="th-user">
+                                            <div class="th-content">用户名</div>
+                                        </th>
+                                        <th class="th-pass">
+                                            <div class="th-content">密码</div>
+                                        </th>
+                                        <th class="th-status">
+                                            <div class="th-content">状态</div>
+                                        </th>
+                                        <th class="th-action">
+                                            <div class="th-content">操作</div>
+                                        </th>
+                                    </tr>
+                                </thead>
+                                <tbody id="proxyTableBody">
                     `;
                     
                     proxies.forEach((proxy, index) => {
                         content.innerHTML += `
-                            <tr class="proxy-row">
-                                <td>
+                            <tr class="proxy-row ${index % 2 === 0 ? 'even' : 'odd'}">
+                                <td class="td-check">
                                     <input type="checkbox" class="form-check-input proxy-check" 
-                                           data-id="${proxy.id}">
+                                           data-id="${proxy.id}" onchange="updateSelectedCount()">
                                 </td>
-                                <td>
-                                    <small class="text-muted">#${proxy.id}</small>
+                                <td class="td-id">
+                                    <span class="id-badge">${proxy.id}</span>
                                 </td>
-                                <td>
-                                    <span class="font-monospace fw-bold">${proxy.ip}</span>
+                                <td class="td-ip">
+                                    <div class="ip-display">
+                                        <i class="bi bi-pc-display text-muted"></i>
+                                        <span class="font-monospace">${proxy.ip}</span>
+                                    </div>
                                 </td>
-                                <td>
-                                    <span class="badge bg-secondary fs-6">${proxy.port}</span>
+                                <td class="td-port">
+                                    <span class="port-badge">${proxy.port}</span>
                                 </td>
-                                <td>
-                                    <code class="text-primary">${proxy.username}</code>
+                                <td class="td-user">
+                                    <div class="user-display">
+                                        <i class="bi bi-person text-muted"></i>
+                                        <code>${proxy.username}</code>
+                                    </div>
                                 </td>
-                                <td>
-                                    <div class="input-group input-group-sm password-input-group">
-                                        <input type="password" class="form-control font-monospace" 
+                                <td class="td-pass">
+                                    <div class="password-group">
+                                        <input type="text" class="password-field" 
                                                value="${proxy.password}" readonly id="pwd-${proxy.id}">
-                                        <button class="btn btn-outline-secondary" type="button" 
-                                                onclick="togglePassword(${proxy.id})">
-                                            <i class="bi bi-eye" id="eye-${proxy.id}"></i>
-                                        </button>
-                                        <button class="btn btn-outline-secondary" type="button" 
-                                                onclick="copyPassword('${proxy.password}', ${proxy.id})">
+                                        <button class="btn-copy" onclick="copyPassword('${proxy.password}', ${proxy.id})"
+                                                title="复制密码">
                                             <i class="bi bi-clipboard"></i>
                                         </button>
                                     </div>
                                 </td>
-                                <td>
+                                <td class="td-status">
                                     ${proxy.enabled ? 
-                                        '<span class="badge rounded-pill bg-success status-badge"><i class="bi bi-check-circle-fill"></i> 启用</span>' : 
-                                        '<span class="badge rounded-pill bg-secondary status-badge"><i class="bi bi-x-circle-fill"></i> 禁用</span>'}
+                                        '<div class="status-badge status-active"><i class="bi bi-check-circle-fill"></i> 启用</div>' : 
+                                        '<div class="status-badge status-inactive"><i class="bi bi-x-circle-fill"></i> 禁用</div>'}
                                 </td>
-                                <td>
-                                    <div class="btn-group btn-group-sm" role="group">
-                                        <button class="btn ${proxy.enabled ? 'btn-warning' : 'btn-success'}" 
+                                <td class="td-action">
+                                    <div class="action-buttons">
+                                        <button class="btn-action ${proxy.enabled ? 'btn-pause' : 'btn-play'}" 
                                                 onclick="toggleProxy(${proxy.id}, ${!proxy.enabled})"
                                                 title="${proxy.enabled ? '禁用' : '启用'}">
                                             <i class="bi bi-${proxy.enabled ? 'pause' : 'play'}-fill"></i>
                                         </button>
-                                        <button class="btn btn-danger" 
+                                        <button class="btn-action btn-delete" 
                                                 onclick="deleteProxy(${proxy.id})"
                                                 title="删除">
                                             <i class="bi bi-trash-fill"></i>
@@ -1678,9 +1703,8 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     });
                     
                     content.innerHTML += `
-                                    </tbody>
-                                </table>
-                            </div>
+                                </tbody>
+                            </table>
                         </div>
                     `;
                     
@@ -1695,6 +1719,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                 selectedProxies.delete(id);
                             }
                         });
+                        updateSelectedCount();
                     });
                     
                     // 单选功能
@@ -1706,6 +1731,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                             } else {
                                 selectedProxies.delete(id);
                             }
+                            updateSelectedCount();
                         });
                     });
                     
@@ -1719,27 +1745,10 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                 });
         }
 
-        // 切换密码显示
-        function togglePassword(id) {
-            const input = document.getElementById(`pwd-${id}`);
-            const icon = document.getElementById(`eye-${id}`);
-            if (input.type === 'password') {
-                input.type = 'text';
-                icon.className = 'bi bi-eye-slash';
-            } else {
-                input.type = 'password';
-                icon.className = 'bi bi-eye';
-            }
-        }
-
-        // 过滤代理表格
-        function filterProxyTable(value) {
-            const rows = document.querySelectorAll('.proxy-row');
-            const searchTerm = value.toLowerCase();
-            rows.forEach(row => {
-                const text = row.textContent.toLowerCase();
-                row.style.display = text.includes(searchTerm) ? '' : 'none';
-            });
+        // 更新选中数量
+        function updateSelectedCount() {
+            const count = document.querySelectorAll('.proxy-check:checked').length;
+            document.getElementById('selectedCount').textContent = count;
         }
 
         // 代理组操作
