@@ -900,8 +900,13 @@ cat > $WORKDIR/templates/index.html << 'EOF'
     <style>
         :root {
             --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            --success-gradient: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+            --warning-gradient: linear-gradient(135deg, #f2994a 0%, #f2c94c 100%);
+            --danger-gradient: linear-gradient(135deg, #eb3349 0%, #f45c43 100%);
+            --info-gradient: linear-gradient(135deg, #2196f3 0%, #21cbf3 100%);
             --card-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
             --hover-shadow: 0 8px 25px rgba(0, 0, 0, 0.15);
+            --btn-radius: 8px;
         }
         
         body {
@@ -1006,15 +1011,189 @@ cat > $WORKDIR/templates/index.html << 'EOF'
             color: white;
             border: none;
             padding: 10px 25px;
-            border-radius: 25px;
+            border-radius: var(--btn-radius);
             transition: all 0.3s ease;
             font-weight: 500;
+            box-shadow: 0 2px 10px rgba(102, 126, 234, 0.3);
         }
         
         .btn-gradient:hover {
             transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
             color: white;
+        }
+        
+        /* 统一按钮样式 */
+        .btn {
+            border-radius: var(--btn-radius);
+            transition: all 0.2s ease;
+            font-weight: 500;
+            border: none;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.2);
+            transition: left 0.3s ease;
+        }
+        
+        .btn:hover::before {
+            left: 100%;
+        }
+        
+        .btn-success {
+            background: var(--success-gradient);
+            box-shadow: 0 2px 10px rgba(17, 153, 142, 0.3);
+        }
+        
+        .btn-success:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(17, 153, 142, 0.4);
+            background: var(--success-gradient);
+        }
+        
+        .btn-warning {
+            background: var(--warning-gradient);
+            box-shadow: 0 2px 10px rgba(242, 153, 74, 0.3);
+            color: white;
+        }
+        
+        .btn-warning:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(242, 153, 74, 0.4);
+            background: var(--warning-gradient);
+            color: white;
+        }
+        
+        .btn-danger {
+            background: var(--danger-gradient);
+            box-shadow: 0 2px 10px rgba(235, 51, 73, 0.3);
+        }
+        
+        .btn-danger:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(235, 51, 73, 0.4);
+            background: var(--danger-gradient);
+        }
+        
+        .btn-info {
+            background: var(--info-gradient);
+            box-shadow: 0 2px 10px rgba(33, 150, 243, 0.3);
+        }
+        
+        .btn-info:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(33, 150, 243, 0.4);
+            background: var(--info-gradient);
+        }
+        
+        .btn-primary {
+            background: var(--primary-gradient);
+            box-shadow: 0 2px 10px rgba(102, 126, 234, 0.3);
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+            background: var(--primary-gradient);
+        }
+        
+        .btn-outline-secondary {
+            background: white;
+            border: 1px solid #e0e0e0;
+            color: #666;
+        }
+        
+        .btn-outline-secondary:hover {
+            background: #f8f9fa;
+            border-color: #667eea;
+            color: #667eea;
+            transform: translateY(-1px);
+        }
+        
+        .btn-sm {
+            padding: 6px 12px;
+            font-size: 0.875rem;
+        }
+        
+        .btn-group .btn {
+            border-radius: 0;
+        }
+        
+        .btn-group .btn:first-child {
+            border-radius: var(--btn-radius) 0 0 var(--btn-radius);
+        }
+        
+        .btn-group .btn:last-child {
+            border-radius: 0 var(--btn-radius) var(--btn-radius) 0;
+        }
+        
+        /* 徽章样式统一 */
+        .badge {
+            font-weight: 500;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 0.85rem;
+        }
+        
+        .badge.bg-secondary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+        }
+        
+        .badge.bg-success {
+            background: var(--success-gradient) !important;
+        }
+        
+        .badge.bg-primary {
+            background: var(--primary-gradient) !important;
+        }
+        
+        .badge.bg-info {
+            background: var(--info-gradient) !important;
+        }
+        
+        /* 输入框美化 */
+        .form-control {
+            border-radius: var(--btn-radius);
+            border: 1px solid #e0e0e0;
+            padding: 12px 15px;
+            transition: all 0.3s ease;
+        }
+        
+        .form-control:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
+        }
+        
+        .form-control-sm {
+            padding: 6px 10px;
+            font-size: 0.875rem;
+        }
+        
+        /* 复选框美化 */
+        .form-check-input {
+            width: 1.2em;
+            height: 1.2em;
+            border-radius: 4px;
+            border: 2px solid #ddd;
+            transition: all 0.2s ease;
+        }
+        
+        .form-check-input:checked {
+            background-color: #667eea;
+            border-color: #667eea;
+        }
+        
+        .form-check-input:hover {
+            border-color: #667eea;
+            cursor: pointer;
         }
         
         .form-control, .form-select {
@@ -1559,18 +1738,18 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                 </div>
                                 <div class="d-flex gap-2">
                                     <button class="btn btn-sm btn-success" onclick="batchEnableProxies()">
-                                        <i class="bi bi-check"></i> 启用
+                                        <i class="bi bi-check-circle-fill"></i> 启用
                                     </button>
                                     <button class="btn btn-sm btn-warning" onclick="batchDisableProxies()">
-                                        <i class="bi bi-pause"></i> 禁用
+                                        <i class="bi bi-pause-circle-fill"></i> 禁用
                                     </button>
                                     <button class="btn btn-sm btn-danger" onclick="batchDeleteProxies()">
-                                        <i class="bi bi-trash"></i> 删除
+                                        <i class="bi bi-trash-fill"></i> 删除
                                     </button>
                                     <button class="btn btn-sm btn-info" onclick="exportSelectedProxies()">
                                         <i class="bi bi-download"></i> 导出
                                     </button>
-                                    <input type="text" class="form-control form-control-sm" style="width:200px"
+                                    <input type="text" class="form-control form-control-sm" style="width:200px; border-radius: 8px;"
                                            placeholder="搜索..." onkeyup="filterProxyTable(this.value)">
                                 </div>
                             </div>
@@ -1607,8 +1786,8 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                 <td style="padding: 8px 4px;">
                                     <span class="font-monospace" style="font-size: 0.9rem;">${proxy.ip}</span>
                                 </td>
-                                <td style="text-align: center; padding: 8px 4px;">
-                                    <span class="badge bg-secondary">${proxy.port}</span>
+                                <td style="padding: 8px 4px;">
+                                    <span class="badge bg-info" style="font-family: monospace;">${proxy.port}</span>
                                 </td>
                                 <td style="padding: 8px 4px;">
                                     <code style="color: #d63384; font-size: 0.9rem;">${proxy.username}</code>
@@ -1617,32 +1796,32 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                     <div style="display: flex; align-items: center; gap: 4px;">
                                         <input type="text" class="form-control form-control-sm" 
                                                value="${proxy.password}" readonly 
-                                               style="font-family: monospace; font-size: 0.85rem;">
+                                               style="font-family: monospace; font-size: 0.85rem; background: #f8f9fa; border-radius: 6px;">
                                         <button class="btn btn-sm btn-outline-secondary" 
-                                                style="padding: 2px 8px;"
+                                                style="padding: 4px 10px; border-radius: 6px;"
                                                 onclick="copyPassword('${proxy.password}', ${proxy.id})"
-                                                title="复制">
-                                            <i class="bi bi-clipboard" style="font-size: 0.85rem;"></i>
+                                                title="复制密码">
+                                            <i class="bi bi-clipboard" style="font-size: 0.9rem;"></i>
                                         </button>
                                     </div>
                                 </td>
                                 <td style="text-align: center; padding: 8px 4px;">
                                     ${proxy.enabled ? 
-                                        '<span class="badge bg-success" style="font-size: 0.75rem;">启用</span>' : 
-                                        '<span class="badge bg-secondary" style="font-size: 0.75rem;">禁用</span>'}
+                                        '<span class="badge bg-success" style="font-size: 0.8rem;"><i class="bi bi-check-circle-fill me-1"></i>启用</span>' : 
+                                        '<span class="badge bg-secondary" style="font-size: 0.8rem;"><i class="bi bi-x-circle-fill me-1"></i>禁用</span>'}
                                 </td>
                                 <td style="text-align: center; padding: 8px 4px;">
                                     <button class="btn btn-sm ${proxy.enabled ? 'btn-warning' : 'btn-success'}" 
-                                            style="padding: 2px 8px; margin-right: 4px;"
+                                            style="padding: 4px 10px; margin-right: 4px; border-radius: 6px;"
                                             onclick="toggleProxy(${proxy.id}, ${!proxy.enabled})"
                                             title="${proxy.enabled ? '禁用' : '启用'}">
-                                        <i class="bi bi-${proxy.enabled ? 'pause' : 'play'}-fill" style="font-size: 0.85rem;"></i>
+                                        <i class="bi bi-${proxy.enabled ? 'pause-circle' : 'play-circle'}-fill" style="font-size: 0.9rem;"></i>
                                     </button>
                                     <button class="btn btn-sm btn-danger" 
-                                            style="padding: 2px 8px;"
+                                            style="padding: 4px 10px; border-radius: 6px;"
                                             onclick="deleteProxy(${proxy.id})"
                                             title="删除">
-                                        <i class="bi bi-trash" style="font-size: 0.85rem;"></i>
+                                        <i class="bi bi-trash-fill" style="font-size: 0.9rem;"></i>
                                     </button>
                                 </td>
                             </tr>`;
