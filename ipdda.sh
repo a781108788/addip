@@ -52,7 +52,7 @@ ADMINPASS=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
 
 echo -e "\n========= 1. 自动安装 3proxy =========\n"
 apt update
-apt install -y gcc make git wget python3 python3-pip python3-venv sqlite3 cron psutil
+apt install -y gcc make git wget python3 python3-pip python3-venv sqlite3 cron python3-psutil
 
 if [ ! -f "$THREEPROXY_PATH" ]; then
     cd /tmp
