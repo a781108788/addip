@@ -161,7 +161,7 @@ pip install flask flask_login flask_wtf wtforms Werkzeug \
 # 保存端口信息
 echo $PORT > $WORKDIR/port.txt
 
-# ------------------- manage.py (优化版主后端) -------------------
+# ------------------- manage.py (修正版主后端) -------------------
 cat > $WORKDIR/manage.py << 'EOF'
 import os, sqlite3, random, string, re, collections, json, time
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, Response
@@ -402,7 +402,19 @@ def cseg_detail(cseg):
                          total=total,
                          range_info=range_info)
 
-# 获取C段统计信息（改进版）
+# 删除整个C段
+@app.route('/delete_cseg/<cseg>', methods=['POST'])
+@login_required
+def delete_cseg(cseg):
+    db = get_db()
+    db.execute("DELETE FROM proxy WHERE ip LIKE ?", (cseg + '.%',))
+    db.commit()
+    db.close()
+    reload_3proxy()
+    flash(f'已删除C段 {cseg}.0/24 的所有代理')
+    return redirect('/')
+
+# 获取C段统计信息（修正版）
 @app.route('/api/cseg_stats')
 @login_required
 def cseg_stats():
@@ -425,25 +437,42 @@ def cseg_stats():
                 SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) as enabled,
                 SUM(CASE WHEN health_status = 'healthy' THEN 1 ELSE 0 END) as healthy,
                 SUM(CASE WHEN health_status = 'unhealthy' THEN 1 ELSE 0 END) as unhealthy,
-                SUM(CASE WHEN health_status = 'dead' THEN 1 ELSE 0 END) as dead,
-                MIN(ip_range) as ip_range,
-                MIN(port_range) as port_range,
-                MIN(user_prefix) as user_prefix
+                SUM(CASE WHEN health_status = 'dead' THEN 1 ELSE 0 END) as dead
             FROM proxy
             WHERE ip LIKE ?
         ''', (cseg + '.%',)).fetchone()
         
+        # 获取端口范围（取最小和最大端口）
+        port_range_data = db.execute('''
+            SELECT MIN(port) as min_port, MAX(port) as max_port
+            FROM proxy WHERE ip LIKE ?
+        ''', (cseg + '.%',)).fetchone()
+        
+        # 获取IP范围、用户前缀等信息
+        range_info = db.execute('''
+            SELECT DISTINCT ip_range, port_range, user_prefix
+            FROM proxy WHERE ip LIKE ? 
+            AND ip_range IS NOT NULL AND ip_range != ''
+            LIMIT 1
+        ''', (cseg + '.%',)).fetchone()
+        
         if stat and stat['total'] > 0:
+            # 构建端口范围显示
+            if port_range_data and port_range_data['min_port'] and port_range_data['max_port']:
+                port_display = f"{port_range_data['min_port']}-{port_range_data['max_port']}"
+            else:
+                port_display = range_info['port_range'] if range_info and range_info['port_range'] else ''
+            
             stats.append({
                 'cseg': cseg,
                 'total': stat['total'],
-                'enabled': stat['enabled'],
-                'healthy': stat['healthy'],
-                'unhealthy': stat['unhealthy'],
-                'dead': stat['dead'],
-                'ip_range': stat['ip_range'] or '',
-                'port_range': stat['port_range'] or '',
-                'user_prefix': stat['user_prefix'] or ''
+                'enabled': stat['enabled'] or 0,
+                'healthy': stat['healthy'] or 0,
+                'unhealthy': stat['unhealthy'] or 0,
+                'dead': stat['dead'] or 0,
+                'ip_range': range_info['ip_range'] if range_info else '',
+                'port_range': port_display,
+                'user_prefix': range_info['user_prefix'] if range_info else ''
             })
     
     db.close()
@@ -829,7 +858,7 @@ def export_selected():
         filename = f"{'_'.join(file_parts)}.txt" if file_parts else "export.txt"
     
     return Response(mem.read(), mimetype='text/plain', headers={'Content-Disposition': f'attachment; filename={filename}'})
-    
+
 @app.route('/export_selected_proxy', methods=['POST'])
 @login_required
 def export_selected_proxy():
@@ -1204,7 +1233,7 @@ cat > $WORKDIR/templates/login.html << 'EOF'
 </html>
 EOF
 
-# --------- index.html（优化版主界面） ---------
+# --------- index.html（修正版主界面） ---------
 cat > $WORKDIR/templates/index.html << 'EOF'
 <!DOCTYPE html>
 <html lang="zh">
@@ -1797,6 +1826,19 @@ cat > $WORKDIR/templates/index.html << 'EOF'
         .dark-mode .cseg-info {
             color: #adb5bd;
         }
+
+        /* 删除按钮样式 */
+        .delete-cseg {
+            position: absolute;
+            top: 1rem;
+            right: 1rem;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .cseg-card:hover .delete-cseg {
+            opacity: 1;
+        }
     </style>
 </head>
 <body>
@@ -2112,34 +2154,39 @@ function buildCsegList(filterVal="") {
     filteredStats.forEach(stat => {
         let card = document.createElement('div');
         card.className = 'cseg-card';
-        card.onclick = () => window.location.href = `/cseg_detail/${stat.cseg}`;
+        card.style.position = 'relative';
         
         // 构建详细信息
         let rangeInfo = '';
-        if(stat.ip_range && stat.port_range && stat.user_prefix) {
+        if(stat.port_range || stat.user_prefix) {
             rangeInfo = `
                 <div class="cseg-info">
                     <small>
-                        <i class="fas fa-network-wired me-1"></i>IP: ${stat.ip_range} | 
-                        <i class="fas fa-plug me-1"></i>端口: ${stat.port_range} | 
-                        <i class="fas fa-user me-1"></i>前缀: ${stat.user_prefix}
+                        ${stat.ip_range ? `<i class="fas fa-network-wired me-1"></i>IP: ${stat.ip_range} | ` : ''}
+                        ${stat.port_range ? `<i class="fas fa-plug me-1"></i>端口: ${stat.port_range} | ` : ''}
+                        ${stat.user_prefix ? `<i class="fas fa-user me-1"></i>前缀: ${stat.user_prefix}` : ''}
                     </small>
                 </div>
             `;
         }
         
         card.innerHTML = `
-            <div class="d-flex justify-content-between align-items-center">
-                <div>
-                    <h6 class="mb-1"><strong>${stat.cseg}.x</strong></h6>
-                    <small class="text-muted">共 ${stat.total} 个代理</small>
-                    ${rangeInfo}
-                </div>
-                <div class="text-end">
-                    <span class="badge bg-primary">${stat.enabled} 启用</span>
-                    <span class="badge bg-success ms-1">${stat.healthy} 健康</span>
-                    <span class="badge bg-warning ms-1">${stat.unhealthy} 异常</span>
-                    <span class="badge bg-danger ms-1">${stat.dead} 失效</span>
+            <button class="btn btn-sm btn-danger delete-cseg" onclick="deleteCseg('${stat.cseg}'); event.stopPropagation();">
+                <i class="fas fa-trash"></i> 删除
+            </button>
+            <div onclick="window.location.href = '/cseg_detail/${stat.cseg}'" style="cursor: pointer;">
+                <div class="d-flex justify-content-between align-items-center">
+                    <div>
+                        <h6 class="mb-1"><strong>${stat.cseg}.0/24</strong></h6>
+                        <small class="text-muted">共 ${stat.total} 个代理</small>
+                        ${rangeInfo}
+                    </div>
+                    <div class="text-end">
+                        <span class="badge bg-primary">${stat.enabled} 启用</span>
+                        <span class="badge bg-success ms-1">${stat.healthy} 健康</span>
+                        <span class="badge bg-warning ms-1">${stat.unhealthy} 异常</span>
+                        <span class="badge bg-danger ms-1">${stat.dead} 失效</span>
+                    </div>
                 </div>
             </div>
         `;
@@ -2154,10 +2201,20 @@ function fillCsegSelect() {
     csegStatsData.forEach(stat => {
         let opt = document.createElement('option');
         opt.value = stat.cseg;
-        opt.textContent = stat.cseg + ".x";
+        opt.textContent = stat.cseg + ".0/24";
         opt.setAttribute('data-prefix', stat.user_prefix || '');
         sel.appendChild(opt);
     });
+}
+
+// 删除C段
+function deleteCseg(cseg) {
+    if(confirm(`确定要删除C段 ${cseg}.0/24 的所有代理吗？此操作不可恢复！`)) {
+        fetch(`/delete_cseg/${cseg}`, {method: 'POST'})
+            .then(() => {
+                loadCsegStats();
+            });
+    }
 }
 
 // 初始化
@@ -2335,7 +2392,7 @@ cat > $WORKDIR/templates/cseg_detail.html << 'EOF'
 <html lang="zh">
 <head>
     <meta charset="utf-8">
-    <title>{{cseg}}.x 段详情 - 3proxy管理</title>
+    <title>{{cseg}}.0/24 段详情 - 3proxy管理</title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
@@ -2472,7 +2529,7 @@ cat > $WORKDIR/templates/cseg_detail.html << 'EOF'
 <body>
 <div class="container py-4">
     <div class="d-flex justify-content-between align-items-center mb-4">
-        <h2>{{cseg}}.x 段详情</h2>
+        <h2>{{cseg}}.0/24 段详情</h2>
         <div>
             <a href="/" class="btn btn-outline-secondary">
                 <i class="fas fa-arrow-left me-2"></i>返回主页
@@ -2785,11 +2842,11 @@ MYIP=$(get_local_ip)
 echo -e "浏览器访问：\n  \033[36mhttp://$MYIP:${PORT}\033[0m"
 echo "Web管理用户名: $ADMINUSER"
 echo "Web管理密码:  $ADMINPASS"
-echo -e "\n优化说明："
-echo "1. C段管理明确显示 192.168.1.x 格式"
-echo "2. 显示端口范围和用户名前缀信息"
-echo "3. 导出文件名格式：用户前缀_C段数字.txt"
-echo "4. 支持分页显示，避免大量IP时卡顿"
+echo -e "\n修正内容："
+echo "1. C段显示格式修正为 192.168.1.0/24"
+echo "2. 添加删除整个C段功能"
+echo "3. 修正导出文件名格式：用户前缀_192.168.1.x.txt"
+echo "4. 修正端口范围显示（从数据库正确读取）"
 echo "5. 每天凌晨2点自动备份数据库"
 echo -e "\n使用说明："
 echo "查看登录信息: bash $0 show"
