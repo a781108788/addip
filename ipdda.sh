@@ -31,8 +31,15 @@ function show_credentials() {
 function optimize_system() {
     echo -e "\n========= 系统性能优化 =========\n"
     
+    # 检查是否已经优化过
+    if grep -q "# 3proxy 性能优化" /etc/sysctl.conf 2>/dev/null; then
+        echo -e "\033[33m系统已经优化过，跳过...\033[0m"
+        return
+    fi
+    
     # 优化内核参数
     cat >> /etc/sysctl.conf <<EOF
+
 # 3proxy 性能优化
 net.ipv4.ip_forward = 1
 net.ipv4.tcp_syncookies = 1
@@ -51,21 +58,28 @@ net.core.default_qdisc = fq
 fs.file-max = 65535
 EOF
     
-    sysctl -p
+    sysctl -p >/dev/null 2>&1
     
     # 优化文件描述符限制
-    cat >> /etc/security/limits.conf <<EOF
+    if ! grep -q "# 3proxy limits" /etc/security/limits.conf 2>/dev/null; then
+        cat >> /etc/security/limits.conf <<EOF
+
+# 3proxy limits
 * soft nofile 65535
 * hard nofile 65535
 * soft nproc 65535
 * hard nproc 65535
 EOF
+    fi
     
     echo -e "\033[32m系统优化完成！\033[0m"
 }
 
 function setup_backup() {
     echo -e "\n========= 设置自动备份 =========\n"
+    
+    # 确保目录存在
+    mkdir -p /opt/3proxy-web/backups
     
     # 创建备份脚本
     cat > /opt/3proxy-web/backup.sh <<'EOF'
@@ -76,10 +90,17 @@ CONFIG_FILE="/usr/local/etc/3proxy/3proxy.cfg"
 DATE=$(date +%Y%m%d_%H%M%S)
 
 mkdir -p $BACKUP_DIR
+
+# 检查文件是否存在
+if [ ! -f "$DB_FILE" ] || [ ! -f "$CONFIG_FILE" ]; then
+    echo "Warning: Some files not found for backup"
+    exit 0
+fi
+
 cd $BACKUP_DIR
 
 # 保留最近7天的备份
-find $BACKUP_DIR -name "backup_*.tar.gz" -mtime +7 -delete
+find $BACKUP_DIR -name "backup_*.tar.gz" -mtime +7 -delete 2>/dev/null
 
 # 创建新备份
 tar -czf "backup_$DATE.tar.gz" $DB_FILE $CONFIG_FILE 2>/dev/null
