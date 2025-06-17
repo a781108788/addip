@@ -531,44 +531,249 @@ print("WebAdmin: "+user)
 print("Webpassword:  "+passwd)
 EOF
 
-# --------- login.html ---------
+# --------- login.html (美化版登录页) ---------
 cat > $WORKDIR/templates/login.html << 'EOF'
 <!DOCTYPE html>
 <html lang="zh">
 <head>
     <meta charset="UTF-8">
     <title>3proxy 登录</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        :root {
+            --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            --bg-gradient: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            min-height: 100vh;
+            background: var(--bg-gradient);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            position: relative;
+            overflow: hidden;
+        }
+
+        /* 动态背景粒子 */
+        body::before {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle, rgba(102, 126, 234, 0.1) 0%, transparent 70%);
+            animation: rotate 20s linear infinite;
+        }
+
+        @keyframes rotate {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
+        }
+
+        .login-container {
+            width: 100%;
+            max-width: 400px;
+            z-index: 1;
+        }
+
+        .login-card {
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            padding: 3rem;
+            transition: transform 0.3s ease;
+        }
+
+        .login-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 25px 50px rgba(0, 0, 0, 0.15);
+        }
+
+        .logo-container {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+
+        .logo {
+            width: 80px;
+            height: 80px;
+            background: var(--primary-gradient);
+            border-radius: 20px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 2rem;
+            color: white;
+            font-weight: bold;
+            margin-bottom: 1rem;
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+            animation: pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.05); }
+        }
+
+        h3 {
+            background: var(--primary-gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+
+        .subtitle {
+            color: #6c757d;
+            font-size: 0.9rem;
+            margin-bottom: 2rem;
+        }
+
+        .form-control {
+            border: 2px solid transparent;
+            border-radius: 12px;
+            padding: 0.75rem 1rem;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+            background: #f8f9fa;
+        }
+
+        .form-control:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
+            background: white;
+        }
+
+        .form-label {
+            font-weight: 600;
+            color: #495057;
+            margin-bottom: 0.5rem;
+        }
+
+        .btn-login {
+            background: var(--primary-gradient);
+            border: none;
+            border-radius: 12px;
+            padding: 0.75rem;
+            font-size: 1rem;
+            font-weight: 600;
+            color: white;
+            transition: all 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .btn-login::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 0;
+            height: 0;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.3);
+            transform: translate(-50%, -50%);
+            transition: width 0.6s, height 0.6s;
+        }
+
+        .btn-login:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn-login:active::before {
+            width: 300px;
+            height: 300px;
+        }
+
+        .alert {
+            border-radius: 12px;
+            border: none;
+            padding: 1rem;
+            font-weight: 500;
+            background: #f8d7da;
+            color: #721c24;
+            animation: shake 0.5s ease-in-out;
+        }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-10px); }
+            75% { transform: translateX(10px); }
+        }
+
+        .input-group {
+            position: relative;
+        }
+
+        .input-icon {
+            position: absolute;
+            right: 1rem;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #6c757d;
+            font-size: 1.2rem;
+        }
+
+        @media (max-width: 576px) {
+            .login-card {
+                padding: 2rem;
+                margin: 1rem;
+            }
+        }
+    </style>
 </head>
-<body class="bg-light">
-<div class="container" style="max-width:400px;margin-top:100px;">
-    <div class="card shadow">
-        <div class="card-body">
-            <h3 class="mb-4 text-center">3proxy 管理登录</h3>
+<body>
+    <div class="login-container">
+        <div class="login-card">
+            <div class="logo-container">
+                <div class="logo">3P</div>
+                <h3>3proxy 管理面板</h3>
+                <p class="subtitle">请登录以继续</p>
+            </div>
             <form method="post">
-                <div class="mb-3">
+                <div class="mb-4">
                     <label class="form-label">用户名</label>
-                    <input type="text" class="form-control" name="username" autofocus required>
+                    <div class="input-group">
+                        <input type="text" class="form-control" name="username" placeholder="请输入用户名" autofocus required>
+                        <span class="input-icon">👤</span>
+                    </div>
                 </div>
-                <div class="mb-3">
+                <div class="mb-4">
                     <label class="form-label">密码</label>
-                    <input type="password" class="form-control" name="password" required>
+                    <div class="input-group">
+                        <input type="password" class="form-control" name="password" placeholder="请输入密码" required>
+                        <span class="input-icon">🔒</span>
+                    </div>
                 </div>
-                <button class="btn btn-primary w-100" type="submit">登录</button>
+                <button class="btn btn-login w-100" type="submit">登录</button>
             </form>
             {% with messages = get_flashed_messages() %}
               {% if messages %}
-                <div class="alert alert-danger mt-3">{{ messages[0] }}</div>
+                <div class="alert mt-3">
+                    <strong>⚠️</strong> {{ messages[0] }}
+                </div>
               {% endif %}
             {% endwith %}
         </div>
     </div>
-</div>
 </body>
 </html>
 EOF
 
-# --------- index.html（主UI/美化/全部功能） ---------
+# --------- index.html（美化版主界面） ---------
 cat > $WORKDIR/templates/index.html << 'EOF'
 <!DOCTYPE html>
 <html lang="zh">
@@ -578,48 +783,575 @@ cat > $WORKDIR/templates/index.html << 'EOF'
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        html,body{background:#f7f7fa;}
-        .tab-pane{padding-top:1.5rem;}
-        .ip-group-header{background:#e5e9f2;font-weight:bold;cursor:pointer;transition:background 0.2s;}
-        .ip-group-header:hover{background:#b5c5e3;}
-        .c-collapsed .ip-group-body{display:none;}
-        .c-expanded .ip-group-body{display:table-row-group;}
-        .group-select{margin-left:12px;}
-        .dark-mode{background:#222;color:#eee;}
-        .dark-mode .card{background:#1a1a1a;color:#eee;}
-        .dark-mode .ip-group-header{background:#292f42;}
-        .dark-mode .ip-group-header:hover{background:#1f2230;}
-        .dark-mode .table th,.dark-mode .table td{background:#222;}
-        .dark-mode .form-control{background:#1a1a1a;color:#eee;}
-        .switch-mode{position:fixed;top:18px;right:26px;z-index:10;}
-        .main-card .card{margin-bottom: 16px;}
-        .flex-row-center{display: flex;align-items: center;}
-        .form-label{margin-bottom: 2px;}
+        :root {
+            --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            --success-gradient: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+            --danger-gradient: linear-gradient(135deg, #eb3349 0%, #f45c43 100%);
+            --warning-gradient: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            --info-gradient: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            --bg-light: #f8f9fa;
+            --bg-dark: #0f0f1e;
+            --card-light: #ffffff;
+            --card-dark: #1a1a2e;
+            --text-light: #212529;
+            --text-dark: #e9ecef;
+            --border-light: rgba(0,0,0,0.1);
+            --border-dark: rgba(255,255,255,0.1);
+        }
+
+        * {
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        html, body {
+            background: var(--bg-light);
+            color: var(--text-light);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        }
+
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 300px;
+            background: var(--primary-gradient);
+            z-index: -1;
+            opacity: 0.1;
+            transform: skewY(-3deg);
+            transform-origin: top left;
+        }
+
+        /* 暗色模式 */
+        .dark-mode {
+            background: var(--bg-dark);
+            color: var(--text-dark);
+        }
+
+        .dark-mode::before {
+            opacity: 0.05;
+        }
+
+        .dark-mode .card {
+            background: var(--card-dark);
+            border: 1px solid var(--border-dark);
+            color: var(--text-dark);
+        }
+
+        .dark-mode .table {
+            color: var(--text-dark);
+        }
+
+        .dark-mode .table-light {
+            background: rgba(255,255,255,0.05) !important;
+            color: var(--text-dark);
+        }
+
+        .dark-mode .form-control,
+        .dark-mode .form-select {
+            background: rgba(255,255,255,0.05);
+            border: 1px solid var(--border-dark);
+            color: var(--text-dark);
+        }
+
+        .dark-mode .form-control:focus,
+        .dark-mode .form-select:focus {
+            background: rgba(255,255,255,0.08);
+            border-color: #667eea;
+            color: var(--text-dark);
+        }
+
+        .dark-mode .nav-tabs {
+            border-bottom-color: var(--border-dark);
+        }
+
+        .dark-mode .nav-link {
+            color: var(--text-dark);
+        }
+
+        .dark-mode .nav-link.active {
+            background: var(--card-dark);
+            border-color: var(--border-dark) var(--border-dark) var(--card-dark);
+            color: var(--text-dark);
+        }
+
+        .dark-mode .ip-group-header {
+            background: rgba(102, 126, 234, 0.1);
+        }
+
+        .dark-mode .ip-group-header:hover {
+            background: rgba(102, 126, 234, 0.2);
+        }
+
+        /* 卡片样式 */
+        .card {
+            border: none;
+            border-radius: 16px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            overflow: hidden;
+            backdrop-filter: blur(10px);
+            background: rgba(255,255,255,0.9);
+        }
+
+        .dark-mode .card {
+            background: rgba(26,26,46,0.9);
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        }
+
+        .card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 30px rgba(0,0,0,0.12);
+        }
+
+        /* 按钮样式 */
+        .btn {
+            border-radius: 10px;
+            font-weight: 500;
+            padding: 0.5rem 1.5rem;
+            position: relative;
+            overflow: hidden;
+            border: none;
+        }
+
+        .btn::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 0;
+            height: 0;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.3);
+            transform: translate(-50%, -50%);
+            transition: width 0.6s, height 0.6s;
+        }
+
+        .btn:active::before {
+            width: 300px;
+            height: 300px;
+        }
+
+        .btn-primary {
+            background: var(--primary-gradient);
+            color: white;
+        }
+
+        .btn-success {
+            background: var(--success-gradient);
+            color: white;
+        }
+
+        .btn-danger {
+            background: var(--danger-gradient);
+            color: white;
+        }
+
+        .btn-warning {
+            background: var(--warning-gradient);
+            color: white;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        }
+
+        /* 表单控件 */
+        .form-control, .form-select {
+            border-radius: 10px;
+            border: 2px solid transparent;
+            background: rgba(0,0,0,0.05);
+            padding: 0.75rem 1rem;
+        }
+
+        .form-control:focus, .form-select:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
+            background: white;
+        }
+
+        .dark-mode .form-control:focus,
+        .dark-mode .form-select:focus {
+            box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.5);
+        }
+
+        /* 标签页样式 */
+        .nav-tabs {
+            border: none;
+            background: rgba(255,255,255,0.8);
+            padding: 0.5rem;
+            border-radius: 16px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            margin-bottom: 2rem;
+        }
+
+        .dark-mode .nav-tabs {
+            background: rgba(26,26,46,0.8);
+        }
+
+        .nav-link {
+            border: none !important;
+            border-radius: 10px;
+            color: #6c757d;
+            font-weight: 500;
+            padding: 0.75rem 1.5rem;
+            margin: 0 0.25rem;
+        }
+
+        .nav-link:hover {
+            background: rgba(102, 126, 234, 0.1);
+            color: #667eea;
+        }
+
+        .nav-link.active {
+            background: var(--primary-gradient);
+            color: white !important;
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        /* 表格样式 */
+        .table {
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .table thead th {
+            background: rgba(102, 126, 234, 0.1);
+            border: none;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.85rem;
+            letter-spacing: 0.5px;
+            padding: 1rem;
+        }
+
+        .table tbody tr {
+            border-bottom: 1px solid var(--border-light);
+        }
+
+        .dark-mode .table tbody tr {
+            border-bottom: 1px solid var(--border-dark);
+        }
+
+        .table tbody tr:hover {
+            background: rgba(102, 126, 234, 0.05);
+        }
+
+        /* IP组头部样式 */
+        .ip-group-header {
+            background: linear-gradient(135deg, rgba(102, 126, 234, 0.1), rgba(118, 75, 162, 0.1));
+            font-weight: 600;
+            cursor: pointer;
+            position: relative;
+        }
+
+        .ip-group-header:hover {
+            background: linear-gradient(135deg, rgba(102, 126, 234, 0.2), rgba(118, 75, 162, 0.2));
+        }
+
+        .ip-group-header td {
+            padding: 1.25rem !important;
+        }
+
+        .c-collapsed .ip-group-body {
+            display: none;
+        }
+
+        .c-expanded .ip-group-body {
+            display: table-row;
+            animation: fadeIn 0.3s ease-out;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* 徽章样式 */
+        .badge {
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            font-weight: 500;
+            font-size: 0.85rem;
+        }
+
+        .text-bg-success {
+            background: var(--success-gradient) !important;
+        }
+
+        .text-bg-secondary {
+            background: linear-gradient(135deg, #667eea, #764ba2) !important;
+        }
+
+        .bg-info {
+            background: var(--info-gradient) !important;
+        }
+
+        .bg-secondary {
+            background: linear-gradient(135deg, #8e9eab, #eef2f3) !important;
+            color: #333 !important;
+        }
+
+        /* 切换模式按钮 */
+        .switch-mode {
+            position: fixed;
+            top: 2rem;
+            right: 2rem;
+            z-index: 1000;
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.9);
+            border: none;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+            font-size: 1.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+        }
+
+        .dark-mode .switch-mode {
+            background: rgba(26,26,46,0.9);
+            box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+        }
+
+        .switch-mode:hover {
+            transform: rotate(180deg) scale(1.1);
+        }
+
+        /* 提示框样式 */
+        .alert {
+            border-radius: 12px;
+            border: none;
+            padding: 1.25rem;
+            font-weight: 500;
+            animation: slideInUp 0.5s ease-out;
+        }
+
+        .alert-success {
+            background: linear-gradient(135deg, rgba(17, 153, 142, 0.2), rgba(56, 239, 125, 0.2));
+            color: #0f5132;
+            border-left: 4px solid #38ef7d;
+        }
+
+        @keyframes slideInUp {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* 滚动条样式 */
+        ::-webkit-scrollbar {
+            width: 10px;
+            height: 10px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: rgba(0,0,0,0.05);
+            border-radius: 10px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--primary-gradient);
+            border-radius: 10px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: linear-gradient(135deg, #764ba2, #667eea);
+        }
+
+        /* 加载动画 */
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,0.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s ease-in-out infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* 搜索框样式 */
+        #searchBox {
+            background: rgba(255,255,255,0.9);
+            border: 2px solid transparent;
+            padding-left: 2.5rem;
+            position: relative;
+        }
+
+        #searchBox:focus {
+            background: white;
+            border-color: #667eea;
+        }
+
+        /* 搜索图标 */
+        .search-wrapper {
+            position: relative;
+        }
+
+        .search-wrapper::before {
+            content: '🔍';
+            position: absolute;
+            left: 0.75rem;
+            top: 50%;
+            transform: translateY(-50%);
+            opacity: 0.5;
+        }
+
+        /* 复选框样式 */
+        input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+            position: relative;
+            -webkit-appearance: none;
+            appearance: none;
+            background: rgba(0,0,0,0.1);
+            border-radius: 4px;
+            transition: all 0.3s;
+        }
+
+        input[type="checkbox"]:checked {
+            background: var(--primary-gradient);
+        }
+
+        input[type="checkbox"]:checked::after {
+            content: '✓';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-weight: bold;
+        }
+
+        /* 标题渐变 */
+        h5 {
+            background: var(--primary-gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            font-weight: 700;
+        }
+
+        .text-success h5 {
+            background: var(--success-gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .text-warning h5 {
+            background: var(--warning-gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        /* 响应式优化 */
+        @media (max-width: 768px) {
+            .card {
+                margin-bottom: 1rem;
+            }
+            
+            .nav-link {
+                padding: 0.5rem 1rem;
+                font-size: 0.9rem;
+            }
+            
+            .switch-mode {
+                top: 1rem;
+                right: 1rem;
+                width: 40px;
+                height: 40px;
+                font-size: 1.2rem;
+            }
+        }
+
+        /* 组选择框增强 */
+        .group-select {
+            margin-left: auto;
+            margin-right: 1rem;
+        }
+
+        /* 固定表头毛玻璃效果 */
+        .sticky-top {
+            backdrop-filter: blur(10px);
+            background: rgba(255,255,255,0.9) !important;
+        }
+
+        .dark-mode .sticky-top {
+            background: rgba(26,26,46,0.9) !important;
+        }
+
+        /* 箭头动画 */
+        .arrow-icon {
+            display: inline-block;
+            transition: transform 0.3s ease;
+        }
+
+        .c-expanded .arrow-icon {
+            transform: rotate(90deg);
+        }
+
+        /* 流量统计样式 */
+        .cnet-traffic {
+            position: relative;
+            min-width: 100px;
+        }
+
+        /* 表单标签样式 */
+        .form-label {
+            font-weight: 600;
+            color: #495057;
+            margin-bottom: 0.5rem;
+        }
+
+        .dark-mode .form-label {
+            color: #adb5bd;
+        }
     </style>
 </head>
 <body>
-<button class="btn btn-outline-dark btn-sm switch-mode">🌙</button>
-<div class="container py-3">
+<button class="switch-mode">🌙</button>
+<div class="container py-4">
     <ul class="nav nav-tabs" id="mainTabs" role="tablist">
       <li class="nav-item" role="presentation">
-        <button class="nav-link active" id="proxy-tab" data-bs-toggle="tab" data-bs-target="#proxy-pane" type="button" role="tab" aria-controls="proxy-pane" aria-selected="true">代理管理</button>
+        <button class="nav-link active" id="proxy-tab" data-bs-toggle="tab" data-bs-target="#proxy-pane" type="button" role="tab">代理管理</button>
       </li>
       <li class="nav-item" role="presentation">
-        <button class="nav-link" id="user-tab" data-bs-toggle="tab" data-bs-target="#user-pane" type="button" role="tab" aria-controls="user-pane" aria-selected="false">用户管理</button>
+        <button class="nav-link" id="user-tab" data-bs-toggle="tab" data-bs-target="#user-pane" type="button" role="tab">用户管理</button>
       </li>
       <li class="nav-item" role="presentation">
-        <button class="nav-link" id="ip-tab" data-bs-toggle="tab" data-bs-target="#ip-pane" type="button" role="tab" aria-controls="ip-pane" aria-selected="false">IP批量管理</button>
+        <button class="nav-link" id="ip-tab" data-bs-toggle="tab" data-bs-target="#ip-pane" type="button" role="tab">IP批量管理</button>
       </li>
     </ul>
-    <div class="tab-content main-card">
+    <div class="tab-content">
         <!-- 代理管理tab -->
-        <div class="tab-pane fade show active" id="proxy-pane" role="tabpanel" aria-labelledby="proxy-tab">
+        <div class="tab-pane fade show active" id="proxy-pane" role="tabpanel">
             <div class="row mt-4 gy-4">
                 <div class="col-lg-6">
-                    <div class="card shadow-sm p-4 mb-2">
-                        <h5 class="fw-bold mb-3 text-success">批量添加代理</h5>
-                        <form method="post" action="/batchaddproxy" id="rangeAddForm" class="mb-3">
-                            <div class="row g-2">
+                    <div class="card p-4">
+                        <h5 class="fw-bold mb-4 text-success">批量添加代理</h5>
+                        <form method="post" action="/batchaddproxy" id="rangeAddForm" class="mb-4">
+                            <div class="row g-3">
                                 <div class="col-12 col-md-4">
                                     <label class="form-label">IP范围</label>
                                     <input type="text" class="form-control" name="iprange" placeholder="192.168.1.2-254">
@@ -633,137 +1365,182 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                     <input type="text" class="form-control" name="userprefix" placeholder="user">
                                 </div>
                             </div>
-                            <button type="submit" class="btn btn-success w-100 mt-3">范围添加</button>
+                            <button type="submit" class="btn btn-success w-100 mt-3">
+                                <span>范围添加</span>
+                            </button>
                         </form>
                         <form method="post" action="/batchaddproxy">
-                            <label class="form-label">手动批量添加(每行一个，支持ip,端口 或 ip:端口，也支持 ip,端口,用户名,密码)</label>
-                            <textarea name="batchproxy" class="form-control mb-3" rows="8" style="font-family:monospace;resize:vertical;min-height:100px;" placeholder="每行一个：ip,端口 或 ip:端口&#10;也支持 ip,端口,用户名,密码"></textarea>
-                            <button type="submit" class="btn btn-success w-100">批量添加</button>
+                            <label class="form-label">手动批量添加</label>
+                            <small class="text-muted d-block mb-2">每行一个，支持 ip,端口 或 ip:端口，也支持 ip,端口,用户名,密码</small>
+                            <textarea name="batchproxy" class="form-control mb-3" rows="8" style="font-family:'Courier New',monospace;resize:vertical;min-height:120px;" placeholder="每行一个：&#10;192.168.1.2,8080&#10;192.168.1.3:8081&#10;192.168.1.4,8082,user1,pass1"></textarea>
+                            <button type="submit" class="btn btn-success w-100">
+                                <span>批量添加</span>
+                            </button>
                         </form>
                     </div>
                 </div>
                 <div class="col-lg-6">
-                    <div class="card shadow-sm p-4 mb-2">
-                        <h5 class="fw-bold mb-3 text-primary">新增单个代理</h5>
-                        <form class="row g-2 align-items-center" method="post" action="/addproxy">
-                            <div class="col">
-                                <label class="form-label">IP</label>
-                                <input name="ip" class="form-control" placeholder="IP" required>
+                    <div class="card p-4">
+                        <h5 class="fw-bold mb-4 text-primary">新增单个代理</h5>
+                        <form class="row g-3" method="post" action="/addproxy">
+                            <div class="col-12 col-md-6">
+                                <label class="form-label">IP地址</label>
+                                <input name="ip" class="form-control" placeholder="192.168.1.100" required>
                             </div>
-                            <div class="col">
+                            <div class="col-12 col-md-6">
                                 <label class="form-label">端口</label>
-                                <input name="port" class="form-control" placeholder="端口" required>
+                                <input name="port" class="form-control" placeholder="8080" required>
                             </div>
-                            <div class="col">
+                            <div class="col-12 col-md-6">
                                 <label class="form-label">用户名</label>
-                                <input name="username" class="form-control" placeholder="用户名" required>
+                                <input name="username" class="form-control" placeholder="输入用户名" required>
                             </div>
-                            <div class="col">
-                                <label class="form-label">密码(留空随机)</label>
-                                <input name="password" class="form-control" placeholder="密码(留空随机)">
+                            <div class="col-12 col-md-6">
+                                <label class="form-label">密码</label>
+                                <input name="password" class="form-control" placeholder="留空自动生成">
                             </div>
-                            <div class="col">
-                                <label class="form-label">用户前缀</label>
-                                <input name="userprefix" class="form-control" placeholder="前缀(可选)">
+                            <div class="col-12">
+                                <label class="form-label">用户前缀 <small class="text-muted">(可选)</small></label>
+                                <input name="userprefix" class="form-control" placeholder="前缀">
                             </div>
-                            <div class="col-auto align-self-end">
-                                <button class="btn btn-primary" type="submit">新增</button>
+                            <div class="col-12">
+                                <button class="btn btn-primary w-100" type="submit">
+                                    <span>新增代理</span>
+                                </button>
                             </div>
                         </form>
                     </div>
                 </div>
                 <div class="col-12">
-                    <div class="card shadow-sm p-4">
-                        <div class="d-flex mb-2 align-items-center">
-                            <h5 class="fw-bold flex-grow-1">代理列表（按C段分组）</h5>
-                            <select id="exportCseg" class="form-select form-select-sm ms-2" multiple size="5" style="width:240px;max-height:120px;overflow:auto;"></select>
-                            <button id="exportSelected" class="btn btn-outline-info btn-sm ms-2">导出所选C段</button>
-                            <button type="button" id="exportSelectedProxy" class="btn btn-outline-success btn-sm ms-2">导出选中代理</button>
-                            <input id="searchBox" class="form-control form-control-sm ms-2" style="width:180px" placeholder="搜索IP/端口/用户">
+                    <div class="card p-4">
+                        <div class="d-flex mb-3 align-items-center flex-wrap gap-2">
+                            <h5 class="fw-bold flex-grow-1 mb-0">代理列表（按C段分组）</h5>
+                            <select id="exportCseg" class="form-select" multiple size="5" style="width:240px;max-height:120px;"></select>
+                            <button id="exportSelected" class="btn btn-outline-info btn-sm">导出所选C段</button>
+                            <button type="button" id="exportSelectedProxy" class="btn btn-outline-success btn-sm">导出选中代理</button>
+                            <div class="search-wrapper">
+                                <input id="searchBox" class="form-control form-control-sm" style="width:220px;padding-left:2.5rem;" placeholder="搜索IP/端口/用户">
+                            </div>
                         </div>
                         <form method="post" action="/batchdelproxy" id="proxyForm">
-                        <div style="max-height:60vh;overflow-y:auto;">
-                        <table class="table table-bordered table-hover align-middle mb-0" id="proxyTable">
+                        <div style="max-height:60vh;overflow-y:auto;border-radius:12px;overflow:hidden;">
+                        <table class="table table-hover align-middle mb-0" id="proxyTable">
                             <thead class="table-light sticky-top">
                                 <tr>
-                                    <th><input type="checkbox" id="selectAll"></th>
-                                    <th>ID</th><th>IP</th><th>端口</th><th>用户名</th><th>密码</th><th>状态</th><th>IP范围</th><th>端口范围</th><th>前缀</th><th>操作</th>
+                                    <th style="width:50px;"><input type="checkbox" id="selectAll"></th>
+                                    <th>ID</th><th>IP</th><th>端口</th><th>用户名</th><th>密码</th><th>状态</th><th>IP范围</th><th>端口范围</th><th>前缀</th><th style="width:180px;">操作</th>
                                 </tr>
                             </thead>
                             <tbody id="proxyTableBody"></tbody>
                         </table>
                         </div>
-                        <button type="submit" class="btn btn-danger mt-2" onclick="return confirm('确定批量删除选中项?')">批量删除</button>
-                        <button type="button" class="btn btn-warning ms-2" id="batchEnable">批量启用</button>
-                        <button type="button" class="btn btn-secondary ms-2" id="batchDisable">批量禁用</button>
+                        <div class="mt-3 d-flex gap-2 flex-wrap">
+                            <button type="submit" class="btn btn-danger" onclick="return confirm('确定批量删除选中项?')">批量删除</button>
+                            <button type="button" class="btn btn-warning" id="batchEnable">批量启用</button>
+                            <button type="button" class="btn btn-secondary" id="batchDisable">批量禁用</button>
+                        </div>
                         </form>
                     </div>
                 </div>
             </div>
         </div>
         <!-- 用户管理tab -->
-        <div class="tab-pane fade" id="user-pane" role="tabpanel" aria-labelledby="user-tab">
-            <div class="card shadow-sm p-4 mt-4">
-                <h5 class="fw-bold mb-3 text-warning">Web用户管理</h5>
-                <form class="row g-2 align-items-center mb-3" method="post" action="/adduser">
-                    <div class="col"><input name="username" class="form-control" placeholder="用户名" required></div>
-                    <div class="col"><input name="password" class="form-control" placeholder="密码" required></div>
-                    <div class="col-auto"><button class="btn btn-outline-primary" type="submit">添加用户</button></div>
+        <div class="tab-pane fade" id="user-pane" role="tabpanel">
+            <div class="card p-4">
+                <h5 class="fw-bold mb-4 text-warning">Web用户管理</h5>
+                <form class="row g-3 align-items-end mb-4" method="post" action="/adduser">
+                    <div class="col-12 col-md-5">
+                        <label class="form-label">用户名</label>
+                        <input name="username" class="form-control" placeholder="输入用户名" required>
+                    </div>
+                    <div class="col-12 col-md-5">
+                        <label class="form-label">密码</label>
+                        <input name="password" class="form-control" type="password" placeholder="输入密码" required>
+                    </div>
+                    <div class="col-12 col-md-2">
+                        <button class="btn btn-primary w-100" type="submit">添加用户</button>
+                    </div>
                 </form>
-                <div class="table-responsive">
-                <table class="table table-bordered table-sm mb-0">
-                    <tr><th>ID</th><th>用户名</th><th>操作</th></tr>
+                <div class="table-responsive" style="border-radius:12px;overflow:hidden;">
+                <table class="table table-hover mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th style="width:80px;">ID</th>
+                            <th>用户名</th>
+                            <th style="width:120px;">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
                     {% for u in users %}
                     <tr>
                         <td>{{u[0]}}</td>
-                        <td>{{u[1]}}</td>
+                        <td class="fw-semibold">{{u[1]}}</td>
                         <td>
                             {% if u[1]!='admin' %}
-                            <a href="/deluser/{{u[0]}}" class="btn btn-sm btn-danger" onclick="return confirm('确认删除?')">删除</a>
+                            <a href="/deluser/{{u[0]}}" class="btn btn-sm btn-danger" onclick="return confirm('确认删除此用户?')">删除</a>
+                            {% else %}
+                            <span class="badge bg-secondary">系统用户</span>
                             {% endif %}
                         </td>
                     </tr>
                     {% endfor %}
+                    </tbody>
                 </table>
                 </div>
             </div>
         </div>
         <!-- IP批量管理tab -->
-        <div class="tab-pane fade" id="ip-pane" role="tabpanel" aria-labelledby="ip-tab">
-            <div class="card shadow-sm p-4 mt-4">
-                <h5 class="fw-bold mb-3 text-primary">IP批量管理(支持区间和单IP)</h5>
-                <form class="row g-3 align-items-center mb-3" method="post" action="/add_ip_config">
-                    <div class="col-auto">
+        <div class="tab-pane fade" id="ip-pane" role="tabpanel">
+            <div class="card p-4">
+                <h5 class="fw-bold mb-4 text-primary">IP批量管理</h5>
+                <form class="row g-3 align-items-end mb-4" method="post" action="/add_ip_config">
+                    <div class="col-12 col-md-2">
                         <label class="form-label">网卡名</label>
-                        <input name="iface" class="form-control" value="{{default_iface}}" required style="width:100px;">
+                        <input name="iface" class="form-control" value="{{default_iface}}" required>
                     </div>
-                    <div class="col">
-                        <label class="form-label">IP区间/单IP（如192.168.1.2-254 或 192.168.1.2,192.168.1.3）</label>
+                    <div class="col-12 col-md-5">
+                        <label class="form-label">IP区间/单IP</label>
                         <input name="ip_input" class="form-control" placeholder="192.168.1.2-254 或 192.168.1.2,192.168.1.3" required>
                     </div>
-                    <div class="col-auto">
+                    <div class="col-12 col-md-3">
                         <label class="form-label">模式</label>
                         <select name="mode" class="form-select">
                             <option value="perm">永久(写入interfaces)</option>
                             <option value="temp">临时(仅当前生效)</option>
                         </select>
                     </div>
-                    <div class="col-auto">
-                        <button class="btn btn-success" type="submit">添加</button>
+                    <div class="col-12 col-md-2">
+                        <button class="btn btn-success w-100" type="submit">添加</button>
                     </div>
                 </form>
-                <div class="table-responsive">
-                <table class="table table-bordered table-sm mb-0">
-                    <tr><th>ID</th><th>IP区间/单IP</th><th>类型</th><th>网卡</th><th>添加时间</th></tr>
+                <div class="table-responsive" style="border-radius:12px;overflow:hidden;">
+                <table class="table table-hover mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th style="width:80px;">ID</th>
+                            <th>IP区间/单IP</th>
+                            <th>类型</th>
+                            <th>网卡</th>
+                            <th>添加时间</th>
+                        </tr>
+                    </thead>
+                    <tbody>
                     {% for c in ip_configs %}
                     <tr>
                         <td>{{c[0]}}</td>
-                        <td>{{c[1]}}</td>
-                        <td>{{c[2]}}</td>
+                        <td class="fw-semibold">{{c[1]}}</td>
+                        <td>
+                            {% if c[2] == 'perm' %}
+                            <span class="badge bg-success">永久</span>
+                            {% else %}
+                            <span class="badge bg-warning">临时</span>
+                            {% endif %}
+                        </td>
                         <td>{{c[3]}}</td>
                         <td>{{c[4]}}</td>
                     </tr>
                     {% endfor %}
+                    </tbody>
                 </table>
                 </div>
             </div>
@@ -771,7 +1548,9 @@ cat > $WORKDIR/templates/index.html << 'EOF'
     </div>
     {% with messages = get_flashed_messages() %}
       {% if messages %}
-        <div class="alert alert-success mt-3 fs-5">{{ messages[0] }}</div>
+        <div class="alert alert-success mt-4" role="alert">
+            <strong>✅ 成功!</strong> {{ messages[0] }}
+        </div>
       {% endif %}
     {% endwith %}
 </div>
@@ -782,10 +1561,12 @@ const proxyData = [
     {id:{{p[0]}},ip:"{{p[1]}}",port:"{{p[2]}}",user:"{{p[3]}}",pw:"{{p[4]}}",enabled:{{'true' if p[5] else 'false'}},ip_range:"{{p[6]}}",port_range:"{{p[7]}}",user_prefix:"{{p[8]}}"},
 {% endfor %}
 ];
+
 function getC(ip) {
     let m = ip.match(/^(\d+\.\d+\.\d+)\./);
     return m ? m[1] : ip;
 }
+
 function buildTable(data, filterVal="") {
     let tbody = document.getElementById('proxyTableBody');
     tbody.innerHTML = "";
@@ -796,6 +1577,7 @@ function buildTable(data, filterVal="") {
         if(!groups[c]) groups[c]=[];
         groups[c].push(p);
     });
+    
     Object.keys(groups).sort().forEach((cseg,i)=>{
         let gid = "cgroup"+i;
         let th = document.createElement('tr');
@@ -804,15 +1586,22 @@ function buildTable(data, filterVal="") {
         let first = groups[cseg][0];
         let groupInfo = "";
         if(first.ip_range && first.port_range && first.user_prefix){
-            groupInfo = `<span class="badge bg-secondary ms-2">范围: ${first.ip_range}, 端口: ${first.port_range}, 前缀: ${first.user_prefix}</span>`;
+            groupInfo = `<span class="badge bg-secondary ms-3">范围: ${first.ip_range} | 端口: ${first.port_range} | 前缀: ${first.user_prefix}</span>`;
         }
         th.innerHTML = `<td colspan="11" class="pointer">
-            <span class="me-2">▶</span>${cseg}.x 段 <small class="ms-2 text-primary">共${groups[cseg].length}条</small>
-            ${groupInfo}
-            <span class="badge bg-info ms-3 cnet-traffic" data-cseg="${cseg}">统计中...</span>
-            <input type="checkbox" class="group-select ms-3" data-gid="${gid}" title="全选本组">
+            <div class="d-flex align-items-center">
+                <span class="arrow-icon me-2">▶</span>
+                <strong>${cseg}.x 段</strong> 
+                <span class="badge bg-primary ms-2">共 ${groups[cseg].length} 条</span>
+                ${groupInfo}
+                <span class="badge bg-info ms-3 cnet-traffic" data-cseg="${cseg}">
+                    <span class="loading"></span> 统计中...
+                </span>
+                <input type="checkbox" class="group-select ms-auto me-3" data-gid="${gid}" title="全选本组" onclick="event.stopPropagation()">
+            </div>
         </td>`;
         tbody.appendChild(th);
+        
         let frag = document.createDocumentFragment();
         groups[cseg].forEach(p=>{
             let tr = document.createElement('tr');
@@ -820,30 +1609,42 @@ function buildTable(data, filterVal="") {
             tr.style.display = "none";
             tr.innerHTML = `<td><input type="checkbox" name="ids" value="${p.id}"></td>
             <td>${p.id}</td>
-            <td>${p.ip}</td>
+            <td><strong>${p.ip}</strong></td>
             <td>${p.port}</td>
             <td>${p.user}</td>
-            <td>${p.pw}</td>
+            <td><code style="font-size:0.85rem;">${p.pw}</code></td>
             <td>${p.enabled ? '<span class="badge text-bg-success">启用</span>' : '<span class="badge text-bg-secondary">禁用</span>'}</td>
-            <td>${p.ip_range||''}</td>
-            <td>${p.port_range||''}</td>
-            <td>${p.user_prefix||''}</td>
+            <td>${p.ip_range||'-'}</td>
+            <td>${p.port_range||'-'}</td>
+            <td>${p.user_prefix||'-'}</td>
             <td>
-                ${p.enabled ? `<a href="/disableproxy/${p.id}" class="btn btn-sm btn-warning">禁用</a>` : `<a href="/enableproxy/${p.id}" class="btn btn-sm btn-success">启用</a>`}
-                <a href="/delproxy/${p.id}" class="btn btn-sm btn-danger" onclick="return confirm('确认删除?')">删除</a>
+                ${p.enabled ? 
+                    `<a href="/disableproxy/${p.id}" class="btn btn-sm btn-warning me-1">禁用</a>` : 
+                    `<a href="/enableproxy/${p.id}" class="btn btn-sm btn-success me-1">启用</a>`
+                }
+                <a href="/delproxy/${p.id}" class="btn btn-sm btn-danger" onclick="return confirm('确认删除此代理?')">删除</a>
             </td>`;
             frag.appendChild(tr);
         });
         tbody.appendChild(frag);
     });
+    
+    // 获取流量统计
     fetch('/cnet_traffic').then(r=>r.json()).then(data=>{
         document.querySelectorAll('.cnet-traffic').forEach(span=>{
             let c = span.getAttribute('data-cseg');
-            span.textContent = data[c] ? `流量${data[c]} MB` : '0 MB';
+            let traffic = data[c] ? `${data[c]} MB` : '0 MB';
+            span.innerHTML = `💾 ${traffic}`;
+        });
+    }).catch(()=>{
+        document.querySelectorAll('.cnet-traffic').forEach(span=>{
+            span.innerHTML = '💾 统计失败';
         });
     });
+    
     fillCsegSelect();
 }
+
 function fillCsegSelect() {
     let csegs = Array.from(new Set(proxyData.map(p=>getC(p.ip)))).sort();
     let sel = document.getElementById('exportCseg');
@@ -855,11 +1656,17 @@ function fillCsegSelect() {
         sel.appendChild(opt);
     });
 }
+
+// 初始化表格
 buildTable(proxyData);
+
+// 全选功能
 document.getElementById('selectAll').onclick = function() {
     var cbs = document.querySelectorAll('#proxyTableBody input[type="checkbox"]');
     for(var i=0;i<cbs.length;++i) cbs[i].checked = this.checked;
 };
+
+// 表格点击事件
 document.getElementById('proxyTableBody').onclick = function(e){
     let row = e.target.closest('tr.ip-group-header');
     if(row && !e.target.classList.contains('group-select')) {
@@ -867,26 +1674,45 @@ document.getElementById('proxyTableBody').onclick = function(e){
         let opened = !row.classList.contains('c-collapsed');
         row.classList.toggle('c-collapsed', opened);
         row.classList.toggle('c-expanded', !opened);
+        
+        // 旋转箭头
+        let arrow = row.querySelector('.arrow-icon');
+        arrow.style.transform = opened ? 'rotate(0deg)' : 'rotate(90deg)';
+        
         document.querySelectorAll('.ip-group-body.'+gid).forEach(tr=>{
             tr.style.display = opened ? "none" : "";
         });
         return;
     }
+    
     if(e.target.classList.contains('group-select')){
         let gid = e.target.getAttribute('data-gid');
         let checked = e.target.checked;
         document.querySelectorAll('.ip-group-body.'+gid+' input[type="checkbox"]').forEach(cb=>cb.checked=checked);
     }
 };
+
+// 搜索功能（带防抖）
+let searchTimeout;
 document.getElementById('searchBox').oninput = function() {
-    let val = this.value.trim().toLowerCase();
-    buildTable(proxyData, val);
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => {
+        let val = this.value.trim().toLowerCase();
+        buildTable(proxyData, val);
+    }, 300);
 };
+
+// 导出选中C段
 document.getElementById('exportSelected').onclick = function(){
     let selected = Array.from(document.getElementById('exportCseg').selectedOptions).map(o=>o.value);
-    if(selected.length==0) { alert("请选择C段"); return; }
+    if(selected.length==0) { 
+        alert("请先选择要导出的C段"); 
+        return; 
+    }
+    
     let form = new FormData();
     selected.forEach(c=>form.append('csegs[]',c));
+    
     // 获取user_prefix
     let user_prefix = '';
     if(selected.length){
@@ -896,6 +1722,7 @@ document.getElementById('exportSelected').onclick = function(){
             user_prefix = cProxies[0].user_prefix || '';
         }
     }
+    
     fetch('/export_selected', {method:'POST', body:form})
         .then(resp=>resp.blob())
         .then(blob=>{
@@ -907,45 +1734,117 @@ document.getElementById('exportSelected').onclick = function(){
         });
 };
 
+// 导出选中代理
 document.getElementById('exportSelectedProxy').onclick = function(){
     let ids = Array.from(document.querySelectorAll('#proxyTableBody input[name="ids"]:checked')).map(cb=>cb.value);
-    if(ids.length === 0) { alert("请选择代理"); return; }
+    if(ids.length === 0) { 
+        alert("请先选择要导出的代理"); 
+        return; 
+    }
+    
     let form = new FormData();
     ids.forEach(id=>form.append('ids[]',id));
+    
     fetch('/export_selected_proxy', {method:'POST', body:form})
         .then(resp=>resp.blob())
         .then(blob=>{
             let a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
-            a.download = 'proxy_export.txt';
+            a.download = 'proxy_export_' + new Date().toISOString().slice(0,10) + '.txt';
             a.click();
         });
 };
+
+// 批量启用
 document.getElementById('batchEnable').onclick = function(){
     let ids = Array.from(document.querySelectorAll('#proxyTableBody input[name="ids"]:checked')).map(cb=>cb.value);
-    if(ids.length === 0) { alert("请选择代理"); return; }
-    let form = new FormData();
-    ids.forEach(id=>form.append('ids[]',id));
-    fetch('/batch_enable', {method:'POST', body:form}).then(()=>location.reload());
+    if(ids.length === 0) { 
+        alert("请先选择要启用的代理"); 
+        return; 
+    }
+    
+    if(confirm(`确定要启用选中的 ${ids.length} 个代理吗？`)) {
+        let form = new FormData();
+        ids.forEach(id=>form.append('ids[]',id));
+        fetch('/batch_enable', {method:'POST', body:form}).then(()=>location.reload());
+    }
 };
+
+// 批量禁用
 document.getElementById('batchDisable').onclick = function(){
     let ids = Array.from(document.querySelectorAll('#proxyTableBody input[name="ids"]:checked')).map(cb=>cb.value);
-    if(ids.length === 0) { alert("请选择代理"); return; }
-    let form = new FormData();
-    ids.forEach(id=>form.append('ids[]',id));
-    fetch('/batch_disable', {method:'POST', body:form}).then(()=>location.reload());
+    if(ids.length === 0) { 
+        alert("请先选择要禁用的代理"); 
+        return; 
+    }
+    
+    if(confirm(`确定要禁用选中的 ${ids.length} 个代理吗？`)) {
+        let form = new FormData();
+        ids.forEach(id=>form.append('ids[]',id));
+        fetch('/batch_disable', {method:'POST', body:form}).then(()=>location.reload());
+    }
 };
+
+// 暗色模式切换
 const btn = document.querySelector('.switch-mode');
+const isDarkMode = localStorage.getItem('darkMode') === 'true';
+
+if(isDarkMode) {
+    document.body.classList.add('dark-mode');
+    btn.textContent = '☀️';
+}
+
 btn.onclick = ()=>{
     document.body.classList.toggle('dark-mode');
-    btn.textContent = document.body.classList.contains('dark-mode') ? '☀️' : '🌙';
+    const isDark = document.body.classList.contains('dark-mode');
+    btn.textContent = isDark ? '☀️' : '🌙';
+    localStorage.setItem('darkMode', isDark);
 };
+
+// 页面加载完成后的初始化
 window.onload = () => {
+    // 确保所有组默认折叠
     document.querySelectorAll('.ip-group-header').forEach(th=>{
         th.classList.add('c-collapsed');
         th.classList.remove('c-expanded');
     });
+    
+    // 添加平滑滚动
+    document.documentElement.style.scrollBehavior = 'smooth';
 };
+
+// 表单提交动画
+document.querySelectorAll('form').forEach(form => {
+    form.addEventListener('submit', function(e) {
+        const submitBtn = this.querySelector('button[type="submit"]');
+        if(submitBtn && !submitBtn.disabled) {
+            submitBtn.disabled = true;
+            const originalText = submitBtn.innerHTML;
+            submitBtn.innerHTML = '<span class="loading"></span> 处理中...';
+            
+            // 如果表单提交失败，恢复按钮状态
+            setTimeout(() => {
+                submitBtn.disabled = false;
+                submitBtn.innerHTML = originalText;
+            }, 5000);
+        }
+    });
+});
+
+// 添加键盘快捷键
+document.addEventListener('keydown', function(e) {
+    // Ctrl/Cmd + K 聚焦搜索框
+    if((e.ctrlKey || e.metaKey) && e.key === 'k') {
+        e.preventDefault();
+        document.getElementById('searchBox').focus();
+    }
+    
+    // Escape 清空搜索
+    if(e.key === 'Escape' && document.activeElement.id === 'searchBox') {
+        document.getElementById('searchBox').value = '';
+        buildTable(proxyData);
+    }
+});
 </script>
 </body>
 </html>
