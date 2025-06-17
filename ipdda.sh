@@ -414,23 +414,41 @@ def delete_cseg(cseg):
     flash(f'已删除C段 {cseg}.0/24 的所有代理')
     return redirect('/')
 
+# 启用/禁用C段
+@app.route('/toggle_cseg/<cseg>/<action>', methods=['POST'])
+@login_required
+def toggle_cseg(cseg, action):
+    db = get_db()
+    if action == 'enable':
+        db.execute("UPDATE proxy SET enabled=1 WHERE ip LIKE ?", (cseg + '.%',))
+        flash(f'已启用C段 {cseg}.0/24 的所有代理')
+    else:
+        db.execute("UPDATE proxy SET enabled=0 WHERE ip LIKE ?", (cseg + '.%',))
+        flash(f'已禁用C段 {cseg}.0/24 的所有代理')
+    db.commit()
+    db.close()
+    reload_3proxy()
+    return redirect('/')
+
 # 获取C段统计信息（修正版）
 @app.route('/api/cseg_stats')
 @login_required
 def cseg_stats():
     db = get_db()
     
-    # 使用更准确的方法提取C段
+    # 获取所有不同的C段
     cursor = db.execute('''
         SELECT DISTINCT 
             SUBSTR(ip, 1, LENGTH(ip) - LENGTH(LTRIM(SUBSTR(ip, LENGTH(ip) - LENGTH(REPLACE(ip, '.', '')) + 1), '0123456789'))) as cseg
         FROM proxy
+        ORDER BY cseg
     ''')
     
     csegs = [row[0] for row in cursor.fetchall()]
     
     stats = []
     for cseg in csegs:
+        # 获取基本统计
         stat = db.execute('''
             SELECT 
                 COUNT(*) as total,
@@ -444,7 +462,8 @@ def cseg_stats():
         
         # 获取端口范围（取最小和最大端口）
         port_range_data = db.execute('''
-            SELECT MIN(port) as min_port, MAX(port) as max_port
+            SELECT MIN(port) as min_port, MAX(port) as max_port,
+                   COUNT(DISTINCT port) as port_count
             FROM proxy WHERE ip LIKE ?
         ''', (cseg + '.%',)).fetchone()
         
@@ -458,10 +477,14 @@ def cseg_stats():
         
         if stat and stat['total'] > 0:
             # 构建端口范围显示
-            if port_range_data and port_range_data['min_port'] and port_range_data['max_port']:
-                port_display = f"{port_range_data['min_port']}-{port_range_data['max_port']}"
-            else:
-                port_display = range_info['port_range'] if range_info and range_info['port_range'] else ''
+            port_display = ''
+            if range_info and range_info['port_range']:
+                port_display = range_info['port_range']
+            elif port_range_data and port_range_data['min_port'] and port_range_data['max_port']:
+                if port_range_data['port_count'] > 1:
+                    port_display = f"{port_range_data['min_port']}-{port_range_data['max_port']}"
+                else:
+                    port_display = str(port_range_data['min_port'])
             
             stats.append({
                 'cseg': cseg,
@@ -470,7 +493,7 @@ def cseg_stats():
                 'healthy': stat['healthy'] or 0,
                 'unhealthy': stat['unhealthy'] or 0,
                 'dead': stat['dead'] or 0,
-                'ip_range': range_info['ip_range'] if range_info else '',
+                'ip_range': range_info['ip_range'] if range_info else f"{cseg}.1-254",
                 'port_range': port_display,
                 'user_prefix': range_info['user_prefix'] if range_info else ''
             })
@@ -840,8 +863,9 @@ def export_selected():
             if not user_prefix and rows[0][4]:
                 user_prefix = rows[0][4]
             
-            # 添加C段到文件名，格式如 192.168.1.x
-            file_parts.append(f"{cseg}.x")
+            # 添加C段到文件名
+            cseg_last = cseg.split('.')[-1]
+            file_parts.append(cseg_last)
             
             for ip,port,user,pw,_ in rows:
                 output += f"{ip}:{port}:{user}:{pw}\n"
@@ -851,11 +875,11 @@ def export_selected():
     mem.write(output.encode('utf-8'))
     mem.seek(0)
     
-    # 生成文件名：用户前缀_C段名称
+    # 生成文件名：用户前缀_C段最后一位
     if user_prefix and file_parts:
-        filename = f"{user_prefix}_{'_'.join(file_parts)}.txt"
+        filename = f"{user_prefix}_{'.'.join(file_parts)}.txt"
     else:
-        filename = f"{'_'.join(file_parts)}.txt" if file_parts else "export.txt"
+        filename = f"proxy_{'_'.join(file_parts)}.txt" if file_parts else "export.txt"
     
     return Response(mem.read(), mimetype='text/plain', headers={'Content-Disposition': f'attachment; filename={filename}'})
 
@@ -1233,7 +1257,7 @@ cat > $WORKDIR/templates/login.html << 'EOF'
 </html>
 EOF
 
-# --------- index.html（修正版主界面） ---------
+# --------- index.html（优化版主界面） ---------
 cat > $WORKDIR/templates/index.html << 'EOF'
 <!DOCTYPE html>
 <html lang="zh">
@@ -1493,19 +1517,26 @@ cat > $WORKDIR/templates/index.html << 'EOF'
 
         /* C段卡片样式 */
         .cseg-card {
-            background: linear-gradient(135deg, rgba(102, 126, 234, 0.1), rgba(118, 75, 162, 0.1));
-            border-radius: 12px;
+            background: #fff;
+            border: 1px solid rgba(0,0,0,0.08);
+            border-radius: 16px;
             padding: 1.5rem;
             margin-bottom: 1rem;
-            cursor: pointer;
             transition: all 0.3s ease;
             position: relative;
             overflow: hidden;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+        }
+
+        .dark-mode .cseg-card {
+            background: rgba(26,26,46,0.8);
+            border-color: rgba(255,255,255,0.1);
         }
 
         .cseg-card:hover {
-            transform: translateX(10px);
-            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.2);
+            transform: translateY(-3px);
+            box-shadow: 0 8px 25px rgba(0,0,0,0.1);
+            border-color: rgba(102, 126, 234, 0.3);
         }
 
         .cseg-card::before {
@@ -1513,7 +1544,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
             position: absolute;
             top: 0;
             left: 0;
-            width: 4px;
+            width: 5px;
             height: 100%;
             background: var(--primary-gradient);
             transform: scaleY(0);
@@ -1522,6 +1553,31 @@ cat > $WORKDIR/templates/index.html << 'EOF'
 
         .cseg-card:hover::before {
             transform: scaleY(1);
+        }
+
+        /* 复选框优化 */
+        .cseg-checkbox {
+            position: absolute;
+            top: 1.5rem;
+            left: 1.5rem;
+            width: 20px;
+            height: 20px;
+            z-index: 10;
+        }
+
+        /* 操作按钮 */
+        .cseg-actions {
+            position: absolute;
+            top: 1rem;
+            right: 1rem;
+            display: flex;
+            gap: 0.5rem;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+
+        .cseg-card:hover .cseg-actions {
+            opacity: 1;
         }
 
         /* 徽章样式 */
@@ -1827,17 +1883,38 @@ cat > $WORKDIR/templates/index.html << 'EOF'
             color: #adb5bd;
         }
 
-        /* 删除按钮样式 */
-        .delete-cseg {
-            position: absolute;
-            top: 1rem;
-            right: 1rem;
-            opacity: 0;
-            transition: opacity 0.3s;
+        /* 批量操作栏 */
+        .batch-actions {
+            position: sticky;
+            bottom: 0;
+            background: rgba(255,255,255,0.95);
+            border-top: 2px solid rgba(0,0,0,0.1);
+            padding: 1rem;
+            margin: 0 -1.5rem -1.5rem;
+            border-radius: 0 0 16px 16px;
+            backdrop-filter: blur(10px);
+            display: none;
         }
 
-        .cseg-card:hover .delete-cseg {
-            opacity: 1;
+        .dark-mode .batch-actions {
+            background: rgba(26,26,46,0.95);
+            border-top-color: rgba(255,255,255,0.1);
+        }
+
+        .batch-actions.show {
+            display: block;
+        }
+
+        /* C段标题 */
+        .cseg-title {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: #212529;
+            margin-bottom: 0.25rem;
+        }
+
+        .dark-mode .cseg-title {
+            color: #e9ecef;
         }
     </style>
 </head>
@@ -1952,14 +2029,41 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     <div class="card p-4">
                         <div class="d-flex mb-3 align-items-center flex-wrap gap-2">
                             <h5 class="fw-bold flex-grow-1 mb-0">C段管理</h5>
-                            <select id="exportCseg" class="form-select" multiple size="5" style="width:240px;max-height:120px;"></select>
-                            <button id="exportSelected" class="btn btn-outline-info btn-sm">导出所选C段</button>
+                            <div class="d-flex gap-2">
+                                <button class="btn btn-sm btn-outline-primary" onclick="selectAllCsegs()">
+                                    <i class="fas fa-check-square me-1"></i>全选
+                                </button>
+                                <button class="btn btn-sm btn-outline-secondary" onclick="unselectAllCsegs()">
+                                    <i class="fas fa-square me-1"></i>取消
+                                </button>
+                            </div>
                             <div class="search-wrapper">
                                 <input id="searchBox" class="form-control form-control-sm" style="width:220px;padding-left:2.5rem;" placeholder="搜索C段">
                             </div>
                         </div>
                         <div id="csegList">
                             <!-- C段列表动态加载 -->
+                        </div>
+                        
+                        <!-- 批量操作栏 -->
+                        <div class="batch-actions" id="batchActions">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <span>已选择 <strong id="selectedCount">0</strong> 个C段</span>
+                                <div class="d-flex gap-2">
+                                    <button class="btn btn-sm btn-success" onclick="exportSelectedCsegs()">
+                                        <i class="fas fa-download me-1"></i>导出选中
+                                    </button>
+                                    <button class="btn btn-sm btn-warning" onclick="enableSelectedCsegs()">
+                                        <i class="fas fa-check me-1"></i>启用选中
+                                    </button>
+                                    <button class="btn btn-sm btn-secondary" onclick="disableSelectedCsegs()">
+                                        <i class="fas fa-ban me-1"></i>禁用选中
+                                    </button>
+                                    <button class="btn btn-sm btn-danger" onclick="deleteSelectedCsegs()">
+                                        <i class="fas fa-trash me-1"></i>删除选中
+                                    </button>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -2129,6 +2233,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
 <script>
 // 存储C段统计信息
 let csegStatsData = [];
+let selectedCsegs = new Set();
 
 // 获取并构建C段列表
 function loadCsegStats() {
@@ -2137,7 +2242,6 @@ function loadCsegStats() {
         .then(data => {
             csegStatsData = data;
             buildCsegList();
-            fillCsegSelect();
         });
 }
 
@@ -2170,14 +2274,28 @@ function buildCsegList(filterVal="") {
             `;
         }
         
+        let isChecked = selectedCsegs.has(stat.cseg);
+        
         card.innerHTML = `
-            <button class="btn btn-sm btn-danger delete-cseg" onclick="deleteCseg('${stat.cseg}'); event.stopPropagation();">
-                <i class="fas fa-trash"></i> 删除
-            </button>
-            <div onclick="window.location.href = '/cseg_detail/${stat.cseg}'" style="cursor: pointer;">
+            <input type="checkbox" class="cseg-checkbox" value="${stat.cseg}" 
+                   ${isChecked ? 'checked' : ''} onclick="toggleCseg('${stat.cseg}', this.checked); event.stopPropagation();">
+            
+            <div class="cseg-actions">
+                <button class="btn btn-sm btn-warning" title="启用" onclick="toggleCseg('${stat.cseg}', 'enable'); event.stopPropagation();">
+                    <i class="fas fa-check"></i>
+                </button>
+                <button class="btn btn-sm btn-secondary" title="禁用" onclick="toggleCseg('${stat.cseg}', 'disable'); event.stopPropagation();">
+                    <i class="fas fa-ban"></i>
+                </button>
+                <button class="btn btn-sm btn-danger" title="删除" onclick="deleteCseg('${stat.cseg}'); event.stopPropagation();">
+                    <i class="fas fa-trash"></i>
+                </button>
+            </div>
+            
+            <div onclick="window.location.href = '/cseg_detail/${stat.cseg}'" style="cursor: pointer; padding-left: 35px;">
                 <div class="d-flex justify-content-between align-items-center">
                     <div>
-                        <h6 class="mb-1"><strong>${stat.cseg}.0/24</strong></h6>
+                        <div class="cseg-title">${stat.cseg}.0/24</div>
                         <small class="text-muted">共 ${stat.total} 个代理</small>
                         ${rangeInfo}
                     </div>
@@ -2193,18 +2311,130 @@ function buildCsegList(filterVal="") {
         
         container.appendChild(card);
     });
+    
+    updateBatchActions();
 }
 
-function fillCsegSelect() {
-    let sel = document.getElementById('exportCseg');
-    sel.innerHTML = "";
+// 切换C段选择
+function toggleCseg(cseg, checked) {
+    if(typeof checked === 'string') {
+        // 这是启用/禁用操作
+        if(confirm(`确定要${checked === 'enable' ? '启用' : '禁用'}C段 ${cseg}.0/24 的所有代理吗？`)) {
+            fetch(`/toggle_cseg/${cseg}/${checked}`, {method: 'POST'})
+                .then(() => {
+                    loadCsegStats();
+                });
+        }
+    } else {
+        // 这是选择操作
+        if(checked) {
+            selectedCsegs.add(cseg);
+        } else {
+            selectedCsegs.delete(cseg);
+        }
+        updateBatchActions();
+    }
+}
+
+// 更新批量操作栏
+function updateBatchActions() {
+    let count = selectedCsegs.size;
+    document.getElementById('selectedCount').textContent = count;
+    document.getElementById('batchActions').classList.toggle('show', count > 0);
+}
+
+// 全选
+function selectAllCsegs() {
     csegStatsData.forEach(stat => {
-        let opt = document.createElement('option');
-        opt.value = stat.cseg;
-        opt.textContent = stat.cseg + ".0/24";
-        opt.setAttribute('data-prefix', stat.user_prefix || '');
-        sel.appendChild(opt);
+        selectedCsegs.add(stat.cseg);
     });
+    buildCsegList();
+}
+
+// 取消全选
+function unselectAllCsegs() {
+    selectedCsegs.clear();
+    buildCsegList();
+}
+
+// 导出选中C段
+function exportSelectedCsegs() {
+    if(selectedCsegs.size === 0) {
+        alert("请先选择要导出的C段");
+        return;
+    }
+    
+    let form = new FormData();
+    selectedCsegs.forEach(cseg => form.append('csegs[]', cseg));
+    
+    fetch('/export_selected', {method:'POST', body:form})
+        .then(resp => resp.blob())
+        .then(blob => {
+            let a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'proxy_export.txt';
+            a.click();
+        });
+}
+
+// 启用选中C段
+function enableSelectedCsegs() {
+    if(selectedCsegs.size === 0) {
+        alert("请先选择要启用的C段");
+        return;
+    }
+    
+    if(confirm(`确定要启用选中的 ${selectedCsegs.size} 个C段的所有代理吗？`)) {
+        let promises = [];
+        selectedCsegs.forEach(cseg => {
+            promises.push(fetch(`/toggle_cseg/${cseg}/enable`, {method: 'POST'}));
+        });
+        
+        Promise.all(promises).then(() => {
+            selectedCsegs.clear();
+            loadCsegStats();
+        });
+    }
+}
+
+// 禁用选中C段
+function disableSelectedCsegs() {
+    if(selectedCsegs.size === 0) {
+        alert("请先选择要禁用的C段");
+        return;
+    }
+    
+    if(confirm(`确定要禁用选中的 ${selectedCsegs.size} 个C段的所有代理吗？`)) {
+        let promises = [];
+        selectedCsegs.forEach(cseg => {
+            promises.push(fetch(`/toggle_cseg/${cseg}/disable`, {method: 'POST'}));
+        });
+        
+        Promise.all(promises).then(() => {
+            selectedCsegs.clear();
+            loadCsegStats();
+        });
+    }
+}
+
+// 删除选中C段
+function deleteSelectedCsegs() {
+    if(selectedCsegs.size === 0) {
+        alert("请先选择要删除的C段");
+        return;
+    }
+    
+    if(confirm(`确定要删除选中的 ${selectedCsegs.size} 个C段的所有代理吗？此操作不可恢复！`)) {
+        let promises = [];
+        selectedCsegs.forEach(cseg => {
+            promises.push(fetch(`/delete_cseg/${cseg}`, {method: 'POST'}));
+        });
+        
+        Promise.all(promises).then(() => {
+            selectedCsegs.clear();
+            loadCsegStats();
+        });
+    }
 }
 
 // 删除C段
@@ -2228,27 +2458,6 @@ document.getElementById('searchBox').oninput = function() {
         let val = this.value.trim().toLowerCase();
         buildCsegList(val);
     }, 300);
-};
-
-// 导出选中C段
-document.getElementById('exportSelected').onclick = function(){
-    let selected = Array.from(document.getElementById('exportCseg').selectedOptions).map(o=>o.value);
-    if(selected.length==0) { 
-        alert("请先选择要导出的C段"); 
-        return; 
-    }
-    
-    let form = new FormData();
-    selected.forEach(c=>form.append('csegs[]',c));
-    
-    fetch('/export_selected', {method:'POST', body:form})
-        .then(resp=>resp.blob())
-        .then(blob=>{
-            let a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
-            a.download = 'proxy_export.txt'; // 服务器会返回正确的文件名
-            a.click();
-        });
 };
 
 // 暗色模式切换
@@ -2842,13 +3051,3 @@ MYIP=$(get_local_ip)
 echo -e "浏览器访问：\n  \033[36mhttp://$MYIP:${PORT}\033[0m"
 echo "Web管理用户名: $ADMINUSER"
 echo "Web管理密码:  $ADMINPASS"
-echo -e "\n修正内容："
-echo "1. C段显示格式修正为 192.168.1.0/24"
-echo "2. 添加删除整个C段功能"
-echo "3. 修正导出文件名格式：用户前缀_192.168.1.x.txt"
-echo "4. 修正端口范围显示（从数据库正确读取）"
-echo "5. 每天凌晨2点自动备份数据库"
-echo -e "\n使用说明："
-echo "查看登录信息: bash $0 show"
-echo "卸载: bash $0 uninstall"
-echo "重装: bash $0 reinstall"
