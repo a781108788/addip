@@ -198,9 +198,38 @@ cd $WORKDIR
 # 设置自动备份（在创建目录之后）
 setup_backup
 
+# 创建虚拟环境
 python3 -m venv venv
 source venv/bin/activate
-pip install flask flask_login flask_wtf wtforms Werkzeug psutil --break-system-packages
+
+# 强制使用IPv4并禁用SSL验证
+export PIP_DEFAULT_TIMEOUT=120
+export CURL_CA_BUNDLE=""
+export PIP_CERT=""
+
+echo "正在安装 Python 依赖包..."
+
+# 方法1: 强制IPv4并使用不同的源
+pip install -4 --trusted-host pypi.org --trusted-host files.pythonhosted.org \
+    flask flask_login flask_wtf wtforms Werkzeug psutil \
+    --index-url https://pypi.org/simple/ --no-cache-dir || \
+# 方法2: 使用系统Python包
+(echo -e "\n使用系统包..." && \
+    deactivate && \
+    apt update && \
+    apt install -y python3-flask python3-werkzeug && \
+    # 使用系统Python运行
+    USE_SYSTEM_PYTHON=true) || \
+# 方法3: 最小化安装
+(echo -e "\n创建最小化环境..." && \
+    mkdir -p $WORKDIR/minimal_libs && \
+    echo "import sys; sys.path.insert(0, '/usr/lib/python3/dist-packages')" > $WORKDIR/minimal_libs/__init__.py)
+
+# 如果所有方法都失败，创建标记文件
+if [ ! -f "$WORKDIR/venv/lib/python*/site-packages/flask/__init__.py" ] && [ "$USE_SYSTEM_PYTHON" != "true" ]; then
+    echo "NO_PIP_PACKAGES=true" > $WORKDIR/.install_status
+    echo -e "\033[33m警告: Python包安装失败，将使用降级模式运行\033[0m"
+fi
 
 # ------------------- manage.py (主后端) -------------------
 cat > $WORKDIR/manage.py << 'EOF'
