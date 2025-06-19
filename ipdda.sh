@@ -1624,6 +1624,9 @@ cat > $WORKDIR/templates/index.html << 'EOF'
 
         // 加载代理组
         function loadProxyGroups() {
+            // 加载前先验证选中的组是否还存在
+            const currentSelected = new Set(selectedGroups);
+            
             showLoading();
             fetch('/api/proxy_groups')
                 .then(res => res.json())
@@ -1631,9 +1634,24 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     const container = document.getElementById('proxyGroups');
                     container.innerHTML = '';
                     
+                    // 获取当前存在的C段列表
+                    const existingSegments = new Set(groups.map(g => g.c_segment));
+                    
+                    // 清理已不存在的选中项
+                    currentSelected.forEach(cseg => {
+                        if (!existingSegments.has(cseg)) {
+                            selectedGroups.delete(cseg);
+                        }
+                    });
+                    
                     groups.forEach(group => {
                         const card = document.createElement('div');
                         card.className = 'proxy-card';
+                        
+                        // 如果这个组在选中集合中，添加选中样式
+                        if (selectedGroups.has(group.c_segment)) {
+                            card.classList.add('selected');
+                        }
                         card.innerHTML = `
                             <div class="row align-items-center">
                                 <div class="col-md-7">
@@ -1710,6 +1728,12 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                         
                         // 复选框事件（阻止冒泡）
                         const checkbox = card.querySelector('input[type="checkbox"]');
+                        
+                        // 如果这个组在选中集合中，勾选复选框
+                        if (selectedGroups.has(group.c_segment)) {
+                            checkbox.checked = true;
+                        }
+                        
                         checkbox.addEventListener('change', (e) => {
                             e.stopPropagation();
                             if (e.target.checked) {
@@ -1919,6 +1943,8 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                 .then(data => {
                     hideLoading();
                     showToast(`已删除 ${cSegment}.x 段代理组`);
+                    // 从选中集合中移除已删除的组
+                    selectedGroups.delete(cSegment);
                     loadProxyGroups();
                 })
                 .catch(err => {
@@ -2100,6 +2126,17 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     a.click();
                     URL.revokeObjectURL(a.href);
                     showToast(`导出成功: ${filename}`);
+                    
+                    // 导出后清空选择
+                    selectedGroups.clear();
+                    // 取消所有复选框的选中状态
+                    document.querySelectorAll('.proxy-card input[type="checkbox"]').forEach(cb => {
+                        cb.checked = false;
+                    });
+                    // 移除所有卡片的选中样式
+                    document.querySelectorAll('.proxy-card.selected').forEach(card => {
+                        card.classList.remove('selected');
+                    });
                 })
                 .catch(err => {
                     hideLoading();
