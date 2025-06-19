@@ -200,7 +200,7 @@ setup_backup
 
 python3 -m venv venv
 source venv/bin/activate
-pip install flask flask_login flask_wtf wtforms Werkzeug psutil --break-system-packages
+pip install flask flask_login flask_wtf wtforms Werkzeug psutil --break-system-packages -i https://pypi.tuna.tsinghua.edu.cn/simple
 
 # ------------------- manage.py (主后端) -------------------
 cat > $WORKDIR/manage.py << 'EOF'
