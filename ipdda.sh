@@ -200,7 +200,7 @@ setup_backup
 
 python3 -m venv venv
 source venv/bin/activate
-pip install flask flask_login flask_wtf wtforms Werkzeug psutil --break-system-packages -i https://pypi.tuna.tsinghua.edu.cn/simple
+pip install flask flask_login flask_wtf wtforms Werkzeug psutil --break-system-packages
 
 # ------------------- manage.py (主后端) -------------------
 cat > $WORKDIR/manage.py << 'EOF'
@@ -1710,6 +1710,9 @@ cat > $WORKDIR/templates/index.html << 'EOF'
 
         // 查看代理组详情
         function viewProxyGroup(cSegment) {
+            // 清空之前的选择
+            selectedProxies.clear();
+            
             showLoading();
             fetch(`/api/proxy_group/${cSegment}`)
                 .then(res => res.json())
@@ -1852,6 +1855,13 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     
                     hideLoading();
                     const modal = new bootstrap.Modal(document.getElementById('proxyDetailModal'));
+                    
+                    // 监听模态框关闭事件，清空选择
+                    document.getElementById('proxyDetailModal').addEventListener('hidden.bs.modal', function () {
+                        selectedProxies.clear();
+                        updateSelectedCount();
+                    }, { once: true });
+                    
                     modal.show();
                 })
                 .catch(err => {
@@ -1941,7 +1951,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                 });
         }
 
-        // 批量操作
+        // 批量操作函数
         function batchEnableProxies() {
             if (selectedProxies.size === 0) {
                 showToast('请先选择代理', 'warning');
@@ -1956,9 +1966,10 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                 .then(data => {
                     showToast('批量启用成功');
                     selectedProxies.clear();
-                    const cSegment = document.querySelector('#proxyDetailContent h6').textContent.split('.')[0];
+                    updateSelectedCount();
+                    // 重新加载当前代理组
+                    const cSegment = document.querySelector('.detail-header h5').textContent.split('.')[0];
                     viewProxyGroup(cSegment);
-                    loadProxyGroups();
                 });
         }
 
@@ -1976,9 +1987,9 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                 .then(data => {
                     showToast('批量禁用成功');
                     selectedProxies.clear();
-                    const cSegment = document.querySelector('#proxyDetailContent h6').textContent.split('.')[0];
+                    updateSelectedCount();
+                    const cSegment = document.querySelector('.detail-header h5').textContent.split('.')[0];
                     viewProxyGroup(cSegment);
-                    loadProxyGroups();
                 });
         }
 
@@ -1998,6 +2009,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                 .then(data => {
                     showToast('批量删除成功');
                     selectedProxies.clear();
+                    updateSelectedCount();
                     bootstrap.Modal.getInstance(document.getElementById('proxyDetailModal')).hide();
                     loadProxyGroups();
                 });
@@ -2019,7 +2031,14 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     a.href = URL.createObjectURL(blob);
                     a.download = 'proxy_export.txt';
                     a.click();
+                    URL.revokeObjectURL(a.href);
                     showToast('导出成功');
+                    // 导出后清空选择
+                    selectedProxies.clear();
+                    updateSelectedCount();
+                    // 取消全选
+                    const selectAllCheck = document.getElementById('selectAllCheck');
+                    if (selectAllCheck) selectAllCheck.checked = false;
                 });
         }
 
