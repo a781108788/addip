@@ -308,13 +308,39 @@ def api_proxy_groups():
     result = []
     for c_seg, proxies in groups.items():
         enabled_count = sum(1 for p in proxies if p['enabled'])
+        
+        # 计算实际的IP范围和端口范围
+        ips = [p['ip'] for p in proxies]
+        ports = sorted([p['port'] for p in proxies])  # 排序端口
+        
+        # IP范围
+        if ips:
+            ip_nums = sorted([int(ip.split('.')[-1]) for ip in ips])
+            # 检查是否连续
+            if len(ip_nums) > 1 and ip_nums[-1] - ip_nums[0] == len(ip_nums) - 1:
+                actual_ip_range = f"{c_seg}.{ip_nums[0]}-{ip_nums[-1]}"
+            else:
+                # 不连续时显示实际数量
+                actual_ip_range = f"{c_seg}.x ({len(ip_nums)} IPs)"
+        else:
+            actual_ip_range = proxies[0]['ip_range'] if proxies else ''
+        
+        # 端口范围
+        if ports:
+            if len(ports) == 1:
+                actual_port_range = str(ports[0])
+            else:
+                actual_port_range = f"{ports[0]}-{ports[-1]}"
+        else:
+            actual_port_range = proxies[0]['port_range'] if proxies else ''
+        
         result.append({
             'c_segment': c_seg,
             'total': len(proxies),
             'enabled': enabled_count,
             'traffic': traffic_stats.get(c_seg, 0),
-            'ip_range': proxies[0]['ip_range'] if proxies else '',
-            'port_range': proxies[0]['port_range'] if proxies else '',
+            'ip_range': actual_ip_range,
+            'port_range': actual_port_range,
             'user_prefix': proxies[0]['user_prefix'] if proxies else ''
         })
     
@@ -474,7 +500,9 @@ def batchaddproxy():
     iprange = request.form.get('iprange')
     portrange = request.form.get('portrange')
     userprefix = request.form.get('userprefix')
-    if iprange and portrange and userprefix:
+    
+    if iprange and userprefix:
+        # 解析IP范围
         m = re.match(r"(\d+\.\d+\.\d+\.)(\d+)-(\d+)", iprange.strip())
         if not m:
             return jsonify({'status': 'error', 'message': 'IP范围格式错误'})
@@ -482,29 +510,62 @@ def batchaddproxy():
         start = int(m.group(2))
         end = int(m.group(3))
         ips = [f"{ip_base}{i}" for i in range(start, end+1)]
-        m2 = re.match(r"(\d+)-(\d+)", portrange.strip())
-        if not m2:
-            return jsonify({'status': 'error', 'message': '端口范围格式错误'})
-        port_start = int(m2.group(1))
-        port_end = int(m2.group(2))
-        all_ports = list(range(port_start, port_end+1))
-        if len(all_ports) < len(ips):
-            return jsonify({'status': 'error', 'message': '端口区间不足以分配全部IP'})
-        random.shuffle(all_ports)
+        
+        # 获取已使用的端口
         db = get_db()
+        used_ports = set()
+        cursor = db.execute('SELECT port FROM proxy')
+        for row in cursor:
+            used_ports.add(row[0])
+        
+        # 解析或生成端口范围
+        if portrange and portrange.strip():
+            # 用户指定了端口范围
+            m2 = re.match(r"(\d+)-(\d+)", portrange.strip())
+            if not m2:
+                db.close()
+                return jsonify({'status': 'error', 'message': '端口范围格式错误'})
+            port_start = int(m2.group(1))
+            port_end = int(m2.group(2))
+            if port_start < 1024 or port_end > 65535:
+                db.close()
+                return jsonify({'status': 'error', 'message': '端口范围应在1024-65535之间'})
+        else:
+            # 自动分配端口范围 (5000-65534)
+            port_start = 5000
+            port_end = 65534
+        
+        # 生成可用端口列表（排除已使用的）
+        all_ports = [p for p in range(port_start, port_end+1) if p not in used_ports]
+        if len(all_ports) < len(ips):
+            db.close()
+            return jsonify({'status': 'error', 'message': f'可用端口不足，需要{len(ips)}个端口，但只有{len(all_ports)}个可用'})
+        
+        # 随机选择端口
+        import random
+        random.shuffle(all_ports)
+        selected_ports = all_ports[:len(ips)]
+        selected_ports.sort()  # 排序以便记录实际范围
+        
+        # 计算实际使用的端口范围
+        actual_port_range = f"{selected_ports[0]}-{selected_ports[-1]}"
+        
+        # 添加代理
         count = 0
         for i, ip in enumerate(ips):
-            port = all_ports[i]
+            port = selected_ports[i]
             uname = userprefix + ''.join(random.choices(string.ascii_lowercase+string.digits, k=4))
             pw = ''.join(random.choices(string.ascii_letters+string.digits, k=12))
             db.execute('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix) VALUES (?,?,?,?,1,?,?,?)', 
-                (ip, port, uname, pw, iprange, portrange, userprefix))
+                (ip, port, uname, pw, iprange, actual_port_range, userprefix))
             count += 1
+        
         db.commit()
         db.close()
         reload_3proxy()
-        return jsonify({'status': 'success', 'message': f'批量范围添加完成，共添加{count}条代理'})
+        return jsonify({'status': 'success', 'message': f'批量范围添加完成，共添加{count}条代理，端口范围：{actual_port_range}'})
     
+    # 处理手动批量添加
     batch_data = request.form.get('batchproxy','').strip().splitlines()
     db = get_db()
     count = 0
@@ -1849,7 +1910,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                                style="font-family: monospace; font-size: 0.85rem; background: #f8f9fa; border-radius: 6px;">
                                         <button class="btn btn-sm btn-outline-secondary" 
                                                 style="padding: 4px 10px; border-radius: 6px;"
-                                                onclick="copyPassword('${proxy.password}', ${proxy.id})"
+                                                onclick="copyPassword('${proxy.password.replace(/'/g, "\\'")}', ${proxy.id})"
                                                 title="复制密码">
                                             <i class="bi bi-clipboard" style="font-size: 0.9rem;"></i>
                                         </button>
@@ -1899,6 +1960,9 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                         });
                         updateSelectedCount();
                     });
+                    
+                    // 初始化选中数量
+                    updateSelectedCount();
                     
                     hideLoading();
                     const modal = new bootstrap.Modal(document.getElementById('proxyDetailModal'));
@@ -1978,9 +2042,15 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     // 刷新当前模态框内容
                     const modal = bootstrap.Modal.getInstance(document.getElementById('proxyDetailModal'));
                     if (modal) {
-                        const cSegment = document.querySelector('#proxyDetailContent h6').textContent.split('.')[0];
-                        viewProxyGroup(cSegment);
+                        const detailHeader = document.querySelector('.detail-header h5');
+                        if (detailHeader) {
+                            const cSegment = detailHeader.textContent.split('.')[0].trim();
+                            viewProxyGroup(cSegment);
+                        }
                     }
+                })
+                .catch(err => {
+                    showToast('操作失败: ' + err.message, 'danger');
                 });
         }
 
@@ -1993,10 +2063,16 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     showToast('代理已删除');
                     const modal = bootstrap.Modal.getInstance(document.getElementById('proxyDetailModal'));
                     if (modal) {
-                        const cSegment = document.querySelector('#proxyDetailContent h6').textContent.split('.')[0];
-                        viewProxyGroup(cSegment);
+                        const detailHeader = document.querySelector('.detail-header h5');
+                        if (detailHeader) {
+                            const cSegment = detailHeader.textContent.split('.')[0].trim();
+                            viewProxyGroup(cSegment);
+                        }
                     }
                     loadProxyGroups();
+                })
+                .catch(err => {
+                    showToast('删除失败: ' + err.message, 'danger');
                 });
         }
 
@@ -2333,6 +2409,10 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                 document.body.classList.add('dark-mode');
                 document.querySelector('#darkModeToggle i').className = 'bi bi-sun-fill';
             }
+            
+            // 清空全局选择集合
+            selectedGroups.clear();
+            selectedProxies.clear();
             
             // 加载初始数据
             loadProxyGroups();
