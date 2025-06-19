@@ -1639,7 +1639,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                 <div class="col-md-7">
                                     <h6 class="mb-2 d-flex align-items-center">
                                         <input type="checkbox" class="form-check-input me-2" 
-                                               data-group="${group.c_segment}">
+                                               data-group="${group.c_segment}" onclick="event.stopPropagation();">
                                         <i class="bi bi-hdd-network text-primary me-2"></i>
                                         <strong>${group.c_segment}.x</strong>
                                     </h6>
@@ -1664,22 +1664,22 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                     <div class="btn-toolbar justify-content-end" role="toolbar">
                                         <div class="btn-group btn-group-sm" role="group">
                                             <button class="btn btn-primary" 
-                                                    onclick="viewProxyGroup('${group.c_segment}')"
+                                                    onclick="event.stopPropagation(); viewProxyGroup('${group.c_segment}')"
                                                     title="查看详情">
                                                 <i class="bi bi-eye"></i> 查看
                                             </button>
                                             <button class="btn btn-success" 
-                                                    onclick="toggleGroup('${group.c_segment}', 'enable')"
+                                                    onclick="event.stopPropagation(); toggleGroup('${group.c_segment}', 'enable')"
                                                     title="启用全部">
                                                 <i class="bi bi-play-circle"></i> 启用
                                             </button>
                                             <button class="btn btn-warning" 
-                                                    onclick="toggleGroup('${group.c_segment}', 'disable')"
+                                                    onclick="event.stopPropagation(); toggleGroup('${group.c_segment}', 'disable')"
                                                     title="禁用全部">
                                                 <i class="bi bi-pause-circle"></i> 禁用
                                             </button>
                                             <button class="btn btn-danger" 
-                                                    onclick="deleteGroup('${group.c_segment}')"
+                                                    onclick="event.stopPropagation(); deleteGroup('${group.c_segment}')"
                                                     title="删除整组">
                                                 <i class="bi bi-trash"></i> 删除
                                             </button>
@@ -1689,12 +1689,35 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                             </div>
                         `;
                         
-                        // 复选框事件
-                        card.querySelector('input[type="checkbox"]').addEventListener('change', (e) => {
-                            if (e.target.checked) {
+                        // 点击卡片切换选中状态
+                        card.addEventListener('click', (e) => {
+                            // 如果点击的是按钮或输入框，不处理
+                            if (e.target.closest('button') || e.target.closest('input')) {
+                                return;
+                            }
+                            
+                            const checkbox = card.querySelector('input[type="checkbox"]');
+                            checkbox.checked = !checkbox.checked;
+                            
+                            if (checkbox.checked) {
                                 selectedGroups.add(group.c_segment);
+                                card.classList.add('selected');
                             } else {
                                 selectedGroups.delete(group.c_segment);
+                                card.classList.remove('selected');
+                            }
+                        });
+                        
+                        // 复选框事件（阻止冒泡）
+                        const checkbox = card.querySelector('input[type="checkbox"]');
+                        checkbox.addEventListener('change', (e) => {
+                            e.stopPropagation();
+                            if (e.target.checked) {
+                                selectedGroups.add(group.c_segment);
+                                card.classList.add('selected');
+                            } else {
+                                selectedGroups.delete(group.c_segment);
+                                card.classList.remove('selected');
                             }
                         });
                         
