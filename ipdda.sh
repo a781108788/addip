@@ -816,8 +816,13 @@ EOF
 # --------- init_db.py（DB初始化） ---------
 cat > $WORKDIR/init_db.py << 'EOF'
 import sqlite3
-from werkzeug.security import generate_password_hash
+import hashlib
 import os
+
+def generate_password_hash(password):
+    """简单的密码哈希函数"""
+    return hashlib.sha256(password.encode()).hexdigest()
+
 user = os.environ.get('ADMINUSER')
 passwd = os.environ.get('ADMINPASS')
 db = sqlite3.connect('3proxy.db')
@@ -2300,7 +2305,7 @@ After=network.target
 
 [Service]
 WorkingDirectory=$WORKDIR
-ExecStart=$WORKDIR/venv/bin/python3 $WORKDIR/manage.py $PORT
+ExecStart=/usr/bin/python3 $WORKDIR/manage.py $PORT
 Restart=always
 User=root
 
@@ -2316,7 +2321,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$WORKDIR
-ExecStart=/bin/bash -c "cd $WORKDIR && $WORKDIR/venv/bin/python3 $WORKDIR/config_gen.py && $THREEPROXY_PATH $PROXYCFG_PATH"
+ExecStart=/bin/bash -c "cd $WORKDIR && /usr/bin/python3 $WORKDIR/config_gen.py && $THREEPROXY_PATH $PROXYCFG_PATH"
 Restart=always
 User=root
 
@@ -2327,7 +2332,9 @@ EOF
 cd $WORKDIR
 export ADMINUSER
 export ADMINPASS
-$WORKDIR/venv/bin/python3 init_db.py
+
+# 使用系统Python初始化数据库
+/usr/bin/python3 init_db.py
 
 # 保存登录凭据
 cat > $CREDS_FILE <<EOF
