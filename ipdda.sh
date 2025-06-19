@@ -20,9 +20,9 @@ function get_local_ip() {
 
 function show_credentials() {
     if [ -f "$CREDS_FILE" ]; then
-        echo -e "\n========= 3proxy Web管理系统登录信息 ========="
+        echo -e "\n\033[32m========= 3proxy Web管理系统登录信息 =========\033[0m"
         cat "$CREDS_FILE"
-        echo -e "============================================\n"
+        echo -e "\033[32m============================================\033[0m\n"
     else
         echo -e "\033[31m未找到登录凭据文件。请运行安装脚本。\033[0m"
     fi
@@ -825,6 +825,7 @@ def generate_password_hash(password):
 
 user = os.environ.get('ADMINUSER')
 passwd = os.environ.get('ADMINPASS')
+
 db = sqlite3.connect('3proxy.db')
 db.execute('''CREATE TABLE IF NOT EXISTS proxy (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -839,10 +840,22 @@ db.execute('''CREATE TABLE IF NOT EXISTS ip_config (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ip_str TEXT, type TEXT, iface TEXT, created TEXT
 )''')
-db.execute('INSERT OR IGNORE INTO users (username, password) VALUES (?,?)', (user, generate_password_hash(passwd)))
+
+# 检查用户是否已存在
+cursor = db.execute("SELECT username FROM users WHERE username=?", (user,))
+if cursor.fetchone() is None:
+    # 用户不存在，创建新用户
+    password_hash = generate_password_hash(passwd)
+    db.execute('INSERT INTO users (username, password) VALUES (?,?)', (user, password_hash))
+    print(f"创建管理员账号成功!")
+else:
+    print(f"管理员账号已存在")
+
 db.commit()
-print("WebAdmin: "+user)
-print("Webpassword:  "+passwd)
+db.close()
+
+print(f"WebAdmin: {user}")
+print(f"WebPassword: {passwd}")
 EOF
 
 # --------- login.html ---------
@@ -2338,10 +2351,12 @@ export ADMINPASS
 
 # 保存登录凭据
 cat > $CREDS_FILE <<EOF
+========= 3proxy Web管理系统登录信息 =========
 Web管理地址: http://$(get_local_ip):${PORT}
 管理员用户名: $ADMINUSER
 管理员密码: $ADMINPASS
 安装时间: $(date)
+============================================
 EOF
 chmod 600 $CREDS_FILE
 
@@ -2354,8 +2369,8 @@ systemctl restart 3proxy-autostart
 echo -e "\n========= 部署完成！========="
 MYIP=$(get_local_ip)
 echo -e "浏览器访问：\n  \033[36mhttp://$MYIP:${PORT}\033[0m"
-echo "Web管理用户名: $ADMINUSER"
-echo "Web管理密码:  $ADMINPASS"
+echo -e "\033[32m管理员用户名: $ADMINUSER\033[0m"
+echo -e "\033[32m管理员密码: $ADMINPASS\033[0m"
 echo -e "\n功能说明："
 echo "1. 代理组采用卡片式设计，点击查看详情"
 echo "2. 系统监控实时显示CPU、内存、磁盘使用情况"
