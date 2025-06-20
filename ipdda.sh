@@ -1,46 +1,16 @@
 #!/bin/bash
 set -e
 
-# 企业级3proxy管理系统 - 支持万级代理规模
-# 兼容 Debian 11/12，优化为128G内存32核服务器
-
-WORKDIR=/opt/3proxy-enterprise
+WORKDIR=/opt/3proxy-web
 THREEPROXY_PATH=/usr/local/bin/3proxy
-PROXYCFG_DIR=/usr/local/etc/3proxy
-PROXYCFG_PATH=$PROXYCFG_DIR/3proxy.cfg
-LOGDIR=/var/log/3proxy
-LOGFILE=$LOGDIR/3proxy.log
-CREDS_FILE=/opt/3proxy-enterprise/.credentials
-CACHE_DIR=/var/cache/3proxy
-RUNTIME_DIR=/run/3proxy
-
-# 颜色定义
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;36m'
-NC='\033[0m'
-
-function print_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
-}
-
-function print_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
-
-function print_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
-
-function print_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
+PROXYCFG_PATH=/usr/local/etc/3proxy/3proxy.cfg
+LOGFILE=/usr/local/etc/3proxy/3proxy.log
+CREDS_FILE=/opt/3proxy-web/.credentials
 
 function get_local_ip() {
     local pubip lanip
-    pubip=$(curl -s --connect-timeout 5 ifconfig.me || curl -s --connect-timeout 5 ip.sb || curl -s --connect-timeout 5 icanhazip.com || echo "")
-    lanip=$(hostname -I 2>/dev/null | awk '{print $1}' || ip route get 1 2>/dev/null | awk '{print $NF;exit}' || echo "127.0.0.1")
+    pubip=$(curl -s ifconfig.me || curl -s ip.sb || curl -s icanhazip.com)
+    lanip=$(hostname -I | awk '{print $1}')
     if [[ -n "$pubip" && "$pubip" != "$lanip" ]]; then
         echo "$pubip"
     else
@@ -50,920 +20,358 @@ function get_local_ip() {
 
 function show_credentials() {
     if [ -f "$CREDS_FILE" ]; then
-        echo -e "\n========= 3proxy Enterprise 登录信息 ========="
+        echo -e "\n========= 3proxy Web管理系统登录信息 ========="
         cat "$CREDS_FILE"
         echo -e "============================================\n"
     else
-        print_error "未找到登录凭据文件。请运行安装脚本。"
+        echo -e "\033[31m未找到登录凭据文件。请运行安装脚本。\033[0m"
     fi
-}
-
-function check_system() {
-    print_info "检查系统环境..."
-    
-    # 检查操作系统
-    if ! grep -qE "Debian GNU/Linux (11|12)" /etc/os-release 2>/dev/null; then
-        print_warning "当前系统可能不是 Debian 11/12，继续安装可能遇到兼容性问题"
-    fi
-    
-    # 检查内存
-    total_mem=$(free -g | awk '/^Mem:/{print $2}')
-    if [ "$total_mem" -lt 16 ]; then
-        print_warning "系统内存小于16GB，建议升级硬件以获得最佳性能"
-    fi
-    
-    # 检查CPU核心数
-    cpu_cores=$(nproc)
-    if [ "$cpu_cores" -lt 8 ]; then
-        print_warning "CPU核心数小于8，可能影响并发性能"
-    fi
-    
-    print_success "系统检查完成 (内存: ${total_mem}GB, CPU: ${cpu_cores}核)"
 }
 
 function optimize_system() {
-    print_info "执行系统性能优化..."
+    echo -e "\n========= 系统性能优化 =========\n"
     
     # 检查是否已经优化过
-    if grep -q "# 3proxy Enterprise Performance Tuning" /etc/sysctl.conf 2>/dev/null; then
-        print_warning "系统已经优化过，跳过..."
+    if grep -q "# 3proxy 性能优化" /etc/sysctl.conf 2>/dev/null; then
+        echo -e "\033[33m系统已经优化过，跳过...\033[0m"
         return
     fi
     
-    # 备份原始配置
-    cp /etc/sysctl.conf /etc/sysctl.conf.bak.$(date +%Y%m%d%H%M%S)
-    
-    # 企业级内核参数优化
-    cat >> /etc/sysctl.conf <<'EOF'
+    # 优化内核参数 - 支持大规模代理
+    cat >> /etc/sysctl.conf <<EOF
 
-# 3proxy Enterprise Performance Tuning
-# 针对128G内存32核服务器优化，支持百万级并发连接
-
-# 基础网络设置
+# 3proxy 性能优化 - 支持万级并发
+# 基础网络优化
 net.ipv4.ip_forward = 1
 net.ipv4.conf.all.forwarding = 1
 net.ipv4.conf.default.forwarding = 1
-net.ipv6.conf.all.forwarding = 1
 
-# TCP优化 - 支持大规模并发
+# TCP 连接优化
 net.ipv4.tcp_syncookies = 1
 net.ipv4.tcp_tw_reuse = 1
-net.ipv4.tcp_fin_timeout = 10
-net.ipv4.tcp_keepalive_time = 120
+net.ipv4.tcp_tw_recycle = 0
+net.ipv4.tcp_fin_timeout = 15
+net.ipv4.tcp_keepalive_time = 300
 net.ipv4.tcp_keepalive_probes = 3
-net.ipv4.tcp_keepalive_intvl = 10
-net.ipv4.tcp_max_syn_backlog = 262144
-net.ipv4.tcp_max_tw_buckets = 2000000
+net.ipv4.tcp_keepalive_intvl = 30
+net.ipv4.tcp_max_syn_backlog = 65536
+net.ipv4.tcp_max_tw_buckets = 65536
 net.ipv4.tcp_timestamps = 1
 net.ipv4.tcp_slow_start_after_idle = 0
-net.ipv4.tcp_no_metrics_save = 1
-net.ipv4.tcp_syn_retries = 2
-net.ipv4.tcp_synack_retries = 2
-net.ipv4.tcp_orphan_retries = 1
-net.ipv4.tcp_retries2 = 5
 
-# 端口范围 - 最大化可用端口
+# 端口范围
 net.ipv4.ip_local_port_range = 1024 65535
-net.ipv4.ip_local_reserved_ports = 3128,8080,8888,9999
 
-# 连接跟踪 - 支持千万级并发
-net.netfilter.nf_conntrack_max = 10000000
-net.netfilter.nf_conntrack_buckets = 2500000
-net.netfilter.nf_conntrack_tcp_timeout_established = 600
-net.netfilter.nf_conntrack_tcp_timeout_time_wait = 30
-net.netfilter.nf_conntrack_tcp_timeout_close_wait = 30
-net.netfilter.nf_conntrack_tcp_timeout_fin_wait = 30
-net.netfilter.nf_conntrack_generic_timeout = 120
+# 连接跟踪优化
+net.netfilter.nf_conntrack_max = 1000000
+net.netfilter.nf_conntrack_tcp_timeout_established = 1200
+net.netfilter.nf_conntrack_tcp_timeout_time_wait = 120
+net.netfilter.nf_conntrack_tcp_timeout_close_wait = 60
+net.netfilter.nf_conntrack_tcp_timeout_fin_wait = 120
 
-# 套接字缓冲区 - 针对128G内存优化
-net.core.somaxconn = 262144
-net.core.netdev_max_backlog = 262144
-net.core.optmem_max = 134217728
-net.ipv4.tcp_mem = 786432 1048576 134217728
-net.ipv4.udp_mem = 786432 1048576 134217728
-net.ipv4.tcp_rmem = 4096 87380 134217728
-net.ipv4.tcp_wmem = 4096 65536 134217728
-net.core.rmem_max = 134217728
-net.core.wmem_max = 134217728
-net.core.rmem_default = 524288
-net.core.wmem_default = 524288
+# 套接字优化
+net.core.somaxconn = 65535
+net.core.netdev_max_backlog = 65536
+net.core.optmem_max = 25165824
+net.ipv4.tcp_mem = 786432 1048576 26777216
+net.ipv4.udp_mem = 65536 131072 262144
+net.ipv4.tcp_rmem = 4096 87380 33554432
+net.ipv4.tcp_wmem = 4096 65536 33554432
+net.core.rmem_max = 33554432
+net.core.wmem_max = 33554432
+net.core.rmem_default = 262144
+net.core.wmem_default = 262144
+
+# TCP 拥塞控制
 net.ipv4.tcp_congestion_control = bbr
 net.core.default_qdisc = fq
 net.ipv4.tcp_fastopen = 3
 net.ipv4.tcp_mtu_probing = 1
 
-# ARP表优化
-net.ipv4.neigh.default.gc_thresh1 = 8192
-net.ipv4.neigh.default.gc_thresh2 = 32768
-net.ipv4.neigh.default.gc_thresh3 = 65536
-net.ipv6.neigh.default.gc_thresh1 = 8192
-net.ipv6.neigh.default.gc_thresh2 = 32768
-net.ipv6.neigh.default.gc_thresh3 = 65536
-
-# 路由缓存
-net.ipv4.route.max_size = 8388608
-net.ipv4.route.gc_timeout = 300
-
-# 文件系统优化
-fs.file-max = 10000000
-fs.nr_open = 10000000
-fs.inotify.max_user_instances = 65536
-fs.inotify.max_user_watches = 1048576
-fs.aio-max-nr = 1048576
-
-# 内存管理优化
-vm.swappiness = 10
-vm.dirty_ratio = 15
-vm.dirty_background_ratio = 5
-vm.max_map_count = 655360
-vm.overcommit_memory = 1
-
-# 安全相关
-net.ipv4.conf.all.rp_filter = 0
-net.ipv4.conf.default.rp_filter = 0
-net.ipv4.conf.all.accept_source_route = 0
-net.ipv4.conf.all.accept_redirects = 0
-net.ipv4.conf.all.send_redirects = 0
-net.ipv4.conf.all.secure_redirects = 0
+# 防止 ICMP 攻击
+net.ipv4.icmp_echo_ignore_all = 0
 net.ipv4.icmp_echo_ignore_broadcasts = 1
 net.ipv4.icmp_ignore_bogus_error_responses = 1
+net.ipv4.icmp_ratelimit = 100
+net.ipv4.icmp_ratemask = 88089
 
-# CPU调度优化
-kernel.sched_migration_cost_ns = 5000000
-kernel.sched_autogroup_enabled = 0
+# 文件句柄
+fs.file-max = 2000000
+fs.nr_open = 2000000
+
+# 其他优化
+net.ipv4.tcp_no_metrics_save = 1
+net.ipv4.route.flush = 1
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.all.rp_filter = 1
 EOF
     
     # 立即应用
     sysctl -p >/dev/null 2>&1
     
-    # 加载必要的内核模块
+    # 加载 nf_conntrack 模块
     modprobe nf_conntrack >/dev/null 2>&1
-    modprobe nf_conntrack_ipv4 >/dev/null 2>&1 || true  # Debian 12可能不需要
     
-    # 设置conntrack hashsize
-    echo 2500000 > /sys/module/nf_conntrack/parameters/hashsize 2>/dev/null || true
-    
-    # 优化limits
-    if ! grep -q "# 3proxy Enterprise limits" /etc/security/limits.conf 2>/dev/null; then
-        cat >> /etc/security/limits.conf <<'EOF'
+    # 优化文件描述符限制
+    if ! grep -q "# 3proxy limits" /etc/security/limits.conf 2>/dev/null; then
+        cat >> /etc/security/limits.conf <<EOF
 
-# 3proxy Enterprise limits
-* soft nofile 10000000
-* hard nofile 10000000
-* soft nproc 10000000
-* hard nproc 10000000
-* soft stack 65536
-* hard stack 65536
-root soft nofile 10000000
-root hard nofile 10000000
-root soft nproc 10000000
-root hard nproc 10000000
+# 3proxy limits
+* soft nofile 1000000
+* hard nofile 1000000
+* soft nproc 1000000
+* hard nproc 1000000
+root soft nofile 1000000
+root hard nofile 1000000
+root soft nproc 1000000
+root hard nproc 1000000
 EOF
     fi
     
-    # 优化systemd限制
-    mkdir -p /etc/systemd/system.conf.d
-    cat > /etc/systemd/system.conf.d/3proxy-limits.conf <<'EOF'
-[Manager]
-DefaultLimitNOFILE=10000000
-DefaultLimitNPROC=10000000
-DefaultLimitSTACK=67108864
-DefaultTasksMax=infinity
-EOF
+    # 优化 systemd 限制
+    if [ -f /etc/systemd/system.conf ]; then
+        sed -i 's/^#DefaultLimitNOFILE=.*/DefaultLimitNOFILE=1000000/' /etc/systemd/system.conf
+        sed -i 's/^#DefaultLimitNPROC=.*/DefaultLimitNPROC=1000000/' /etc/systemd/system.conf
+    fi
     
-    # 创建优化的启动脚本
-    cat > /usr/local/bin/3proxy-enterprise.sh <<'EOF'
+    # 创建优化脚本供 3proxy 服务使用
+    cat > /usr/local/bin/3proxy-optimize.sh <<'EOF'
 #!/bin/bash
-# 3proxy Enterprise启动脚本
+# 运行时优化
+ulimit -n 1000000
+ulimit -u 1000000
 
-# 设置运行时限制
-ulimit -n 10000000
-ulimit -u 10000000
-ulimit -s 65536
+# 清理 TIME_WAIT 连接
+echo 1 > /proc/sys/net/ipv4/tcp_tw_reuse
 
-# CPU亲和性设置 - 将3proxy绑定到特定CPU核心
-CORES=$(nproc)
-if [ $CORES -ge 32 ]; then
-    # 为3proxy预留后16个核心
-    taskset -c 16-31 /usr/local/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
-else
-    # 使用所有可用核心
-    /usr/local/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
-fi
+# 优化网络缓冲区
+echo 33554432 > /proc/sys/net/core/rmem_max
+echo 33554432 > /proc/sys/net/core/wmem_max
+
+# 增加连接跟踪表大小
+echo 1000000 > /proc/sys/net/netfilter/nf_conntrack_max
+
+# 禁用反向路径过滤（如果需要）
+for i in /proc/sys/net/ipv4/conf/*/rp_filter; do
+    echo 0 > $i
+done
+
+# 启动 3proxy
+exec /usr/local/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
 EOF
     
-    chmod +x /usr/local/bin/3proxy-enterprise.sh
+    chmod +x /usr/local/bin/3proxy-optimize.sh
     
-    # 禁用透明大页
-    echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
-    echo never > /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null || true
+    # 更新 3proxy 配置以支持更多连接
+    sed -i 's/maxconn 2000/maxconn 100000/g' $PROXYCFG_PATH 2>/dev/null || true
+    sed -i 's/maxconn 10000/maxconn 100000/g' $PROXYCFG_PATH 2>/dev/null || true
     
-    print_success "系统优化完成！已配置为支持千万级并发连接"
-}
-
-function setup_directories() {
-    print_info "创建必要的目录结构..."
-    
-    # 创建目录
-    mkdir -p $WORKDIR/{templates,static,backups,configs,scripts}
-    mkdir -p $PROXYCFG_DIR
-    mkdir -p $LOGDIR
-    mkdir -p $CACHE_DIR
-    mkdir -p $RUNTIME_DIR
-    
-    # 设置权限
-    chmod 755 $WORKDIR
-    chmod 755 $PROXYCFG_DIR
-    chmod 755 $LOGDIR
-    chmod 755 $CACHE_DIR
-    chmod 755 $RUNTIME_DIR
-    
-    print_success "目录创建完成"
-}
-
-function install_dependencies() {
-    print_info "安装依赖包..."
-    
-    # 更新包列表
-    apt update
-    
-    # 安装编译工具和基础包
-    apt install -y gcc make git wget curl \
-        python3 python3-pip python3-venv python3-dev \
-        sqlite3 libsqlite3-dev \
-        redis-server \
-        nginx \
-        supervisor \
-        htop iotop iftop \
-        net-tools dnsutils \
-        cron logrotate \
-        build-essential \
-        libssl-dev libffi-dev \
-        libevent-dev \
-        libmaxminddb0 libmaxminddb-dev mmdb-bin
-    
-    # 启动Redis（用于缓存）
-    systemctl enable redis-server
-    systemctl start redis-server
-    
-    print_success "依赖安装完成"
-}
-
-function compile_3proxy() {
-    print_info "编译安装3proxy..."
-    
-    if [ ! -f "$THREEPROXY_PATH" ]; then
-        cd /tmp
-        rm -rf 3proxy
-        git clone --depth=1 https://github.com/3proxy/3proxy.git
-        cd 3proxy
-        
-        # 修改编译配置以支持更多连接
-        sed -i 's/MAXUSERS 128/MAXUSERS 100000/g' src/structures.h 2>/dev/null || true
-        
-        # 编译
-        make -f Makefile.Linux
-        make -f Makefile.Linux install
-        
-        # 确保二进制文件存在
-        if [ ! -f /usr/local/bin/3proxy ]; then
-            cp src/3proxy /usr/local/bin/3proxy
-        fi
-        
-        chmod +x /usr/local/bin/3proxy
-        
-        print_success "3proxy编译安装完成"
-    else
-        print_warning "3proxy已安装，跳过编译"
-    fi
-}
-
-function setup_initial_config() {
-    print_info "创建初始配置..."
-    
-    # 创建基础配置文件
-    cat > $PROXYCFG_PATH <<'EOF'
-# 3proxy Enterprise Configuration
-# 支持百万级并发连接
-
-daemon
-pidfile /run/3proxy/3proxy.pid
-config /usr/local/etc/3proxy/3proxy.cfg
-monitor /usr/local/etc/3proxy/3proxy.cfg
-
-# 性能参数
-maxconn 1000000
-stacksize 262144
-
-# DNS配置
-nserver 8.8.8.8
-nserver 8.8.4.4
-nserver 1.1.1.1
-nserver 1.0.0.1
-nscache 262144
-nscache6 65536
-
-# 超时设置（优化为快速释放资源）
-timeouts 1 3 10 30 60 180 1800 15 60
-
-# 日志配置
-log /var/log/3proxy/3proxy.log D
-logformat "L%t %N.%p %E %U %C:%c %R:%r %O %I %h %T"
-rotate 100M
-archiver gz /usr/bin/gzip %F
-
-# 访问控制
-auth none
-
-# 认证方式将由Python动态生成
-# 代理配置将由Python动态生成
-EOF
-    
-    print_success "初始配置创建完成"
-}
-
-function setup_log_rotation() {
-    print_info "配置日志轮转..."
-    
-    cat > /etc/logrotate.d/3proxy <<'EOF'
-/var/log/3proxy/*.log {
-    daily
-    rotate 7
-    maxsize 1G
-    compress
-    delaycompress
-    missingok
-    notifempty
-    create 0644 root root
-    sharedscripts
-    postrotate
-        /usr/bin/killall -USR1 3proxy 2>/dev/null || true
-    endscript
-}
-EOF
-    
-    print_success "日志轮转配置完成"
+    echo -e "\033[32m系统优化完成！支持万级代理并发\033[0m"
+    echo -e "\033[33m注意：如果代理数量超过5000，建议：\033[0m"
+    echo -e "1. 使用更高配置的服务器（至少8核16G内存）"
+    echo -e "2. 考虑使用多台服务器分布式部署"
+    echo -e "3. 定期监控系统资源使用情况"
 }
 
 function setup_backup() {
-    print_info "设置自动备份..."
+    echo -e "\n========= 设置自动备份 =========\n"
+    
+    # 确保工作目录和备份目录存在
+    mkdir -p $WORKDIR
+    mkdir -p $WORKDIR/backups
     
     # 创建备份脚本
-    cat > $WORKDIR/scripts/backup.sh <<'EOF'
+    cat > $WORKDIR/backup.sh <<'EOF'
 #!/bin/bash
-BACKUP_DIR="/opt/3proxy-enterprise/backups"
-DB_FILE="/opt/3proxy-enterprise/3proxy.db"
-CONFIG_DIR="/usr/local/etc/3proxy"
+BACKUP_DIR="/opt/3proxy-web/backups"
+DB_FILE="/opt/3proxy-web/3proxy.db"
+CONFIG_FILE="/usr/local/etc/3proxy/3proxy.cfg"
 DATE=$(date +%Y%m%d_%H%M%S)
-RETENTION_DAYS=7
 
 # 确保备份目录存在
 mkdir -p "$BACKUP_DIR"
 
-# 清理旧备份
-find "$BACKUP_DIR" -name "backup_*.tar.gz" -mtime +$RETENTION_DAYS -delete 2>/dev/null || true
+# 检查文件是否存在
+if [ ! -f "$DB_FILE" ] || [ ! -f "$CONFIG_FILE" ]; then
+    echo "Warning: Some files not found for backup"
+    exit 0
+fi
+
+cd "$BACKUP_DIR"
+
+# 保留最近7天的备份
+find "$BACKUP_DIR" -name "backup_*.tar.gz" -mtime +7 -delete 2>/dev/null || true
 
 # 创建新备份
-cd /
-tar -czf "$BACKUP_DIR/backup_$DATE.tar.gz" \
-    "$DB_FILE" \
-    "$CONFIG_DIR" \
-    --exclude="$CONFIG_DIR/*.log*" \
-    2>/dev/null || true
+tar -czf "backup_$DATE.tar.gz" "$DB_FILE" "$CONFIG_FILE" 2>/dev/null || true
 
-echo "[$(date)] Backup completed: backup_$DATE.tar.gz"
-
-# 如果备份目录超过10GB，删除最旧的备份
-BACKUP_SIZE=$(du -sb "$BACKUP_DIR" | awk '{print $1}')
-if [ $BACKUP_SIZE -gt 10737418240 ]; then
-    ls -t "$BACKUP_DIR"/backup_*.tar.gz | tail -n +10 | xargs rm -f 2>/dev/null || true
-fi
+echo "Backup completed: backup_$DATE.tar.gz"
 EOF
     
-    chmod +x $WORKDIR/scripts/backup.sh
+    chmod +x $WORKDIR/backup.sh
     
     # 设置定时备份
-    echo "0 2 * * * root $WORKDIR/scripts/backup.sh >> $LOGDIR/backup.log 2>&1" > /etc/cron.d/3proxy-backup
+    echo "0 2 * * * root $WORKDIR/backup.sh > /dev/null 2>&1" > /etc/cron.d/3proxy-backup
     
-    print_success "自动备份已设置（每天凌晨2点）"
+    echo -e "\033[32m自动备份已设置（每天凌晨2点）\033[0m"
 }
 
-function setup_monitoring() {
-    print_info "设置监控脚本..."
-    
-    # 创建监控脚本
-    cat > $WORKDIR/scripts/monitor.sh <<'EOF'
-#!/bin/bash
-# 3proxy监控脚本
-
-PIDFILE="/run/3proxy/3proxy.pid"
-LOGFILE="/var/log/3proxy/monitor.log"
-MAX_MEMORY_MB=65536  # 最大内存使用量(MB)
-MAX_CPU_PERCENT=800  # 最大CPU使用率(800% = 8核心满载)
-
-log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> $LOGFILE
+function uninstall_3proxy_web() {
+    systemctl stop 3proxy-web 2>/dev/null || true
+    systemctl stop 3proxy-autostart 2>/dev/null || true
+    systemctl disable 3proxy-web 2>/dev/null || true
+    systemctl disable 3proxy-autostart 2>/dev/null || true
+    rm -rf $WORKDIR
+    rm -f /etc/systemd/system/3proxy-web.service
+    rm -f /etc/systemd/system/3proxy-autostart.service
+    rm -f /usr/local/bin/3proxy
+    rm -rf /usr/local/etc/3proxy
+    rm -f /etc/cron.d/3proxy-logrotate
+    rm -f /etc/cron.d/3proxy-backup
+    systemctl daemon-reload
+    echo -e "\033[31m3proxy Web管理及全部相关内容已卸载。\033[0m"
 }
 
-# 检查3proxy是否运行
-if [ -f "$PIDFILE" ]; then
-    PID=$(cat $PIDFILE)
-    if ! kill -0 $PID 2>/dev/null; then
-        log "ERROR: 3proxy进程不存在，正在重启..."
-        systemctl restart 3proxy-enterprise
-        exit 1
-    fi
-    
-    # 获取进程信息
-    STATS=$(ps -p $PID -o pid,vsz,rss,pcpu,comm --no-headers)
-    if [ -n "$STATS" ]; then
-        VSZ=$(echo $STATS | awk '{print $2}')
-        RSS=$(echo $STATS | awk '{print $3}')
-        CPU=$(echo $STATS | awk '{print $4}')
-        
-        RSS_MB=$((RSS/1024))
-        
-        # 检查内存使用
-        if [ $RSS_MB -gt $MAX_MEMORY_MB ]; then
-            log "WARNING: 内存使用过高 (${RSS_MB}MB > ${MAX_MEMORY_MB}MB)"
-            # 可以在这里添加告警通知
-        fi
-        
-        # 检查CPU使用
-        CPU_INT=$(echo $CPU | cut -d. -f1)
-        if [ $CPU_INT -gt $MAX_CPU_PERCENT ]; then
-            log "WARNING: CPU使用过高 (${CPU}% > ${MAX_CPU_PERCENT}%)"
-        fi
-        
-        # 记录统计信息
-        echo "$(date '+%s')|$RSS_MB|$CPU" >> /var/log/3proxy/stats.log
-    fi
-else
-    log "ERROR: PID文件不存在，正在重启3proxy..."
-    systemctl restart 3proxy-enterprise
+# 处理命令行参数
+case "$1" in
+    "uninstall")
+        uninstall_3proxy_web
+        exit 0
+        ;;
+    "reinstall")
+        uninstall_3proxy_web
+        echo -e "\033[32m正在重新安装...\033[0m"
+        ;;
+    "show")
+        show_credentials
+        exit 0
+        ;;
+esac
+
+PORT=$((RANDOM%55534+10000))
+ADMINUSER="admin$RANDOM"
+ADMINPASS=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
+
+echo -e "\n========= 1. 自动安装 3proxy =========\n"
+apt update
+apt install -y gcc make git wget python3 python3-pip python3-venv sqlite3 cron
+
+if [ ! -f "$THREEPROXY_PATH" ]; then
+    cd /tmp
+    rm -rf 3proxy
+    git clone --depth=1 https://github.com/z3APA3A/3proxy.git
+    cd 3proxy
+    make -f Makefile.Linux
+    mkdir -p /usr/local/bin /usr/local/etc/3proxy
+    cp bin/3proxy /usr/local/bin/3proxy
+    chmod +x /usr/local/bin/3proxy
 fi
 
-# 清理旧的统计数据（保留24小时）
-tail -n 1440 /var/log/3proxy/stats.log > /var/log/3proxy/stats.log.tmp 2>/dev/null
-mv -f /var/log/3proxy/stats.log.tmp /var/log/3proxy/stats.log 2>/dev/null || true
+if [ ! -f "$PROXYCFG_PATH" ]; then
+cat > $PROXYCFG_PATH <<EOF
+daemon
+maxconn 100000
+nserver 8.8.8.8
+nserver 1.1.1.1
+nserver 8.8.4.4
+nscache 65536
+nscache6 65536
+stacksize 6291456
+timeouts 1 5 30 60 180 1800 15 60
+auth none
+proxy -p3128
+log $LOGFILE D
+rotate 30
+archiver gz /usr/bin/gzip %F
 EOF
-    
-    chmod +x $WORKDIR/scripts/monitor.sh
-    
-    # 设置定时监控（每分钟）
-    echo "* * * * * root $WORKDIR/scripts/monitor.sh" > /etc/cron.d/3proxy-monitor
-    
-    print_success "监控脚本设置完成"
-}
+fi
 
-function create_web_application() {
-    print_info "创建Web管理应用..."
-    
-    cd $WORKDIR
-    
-    # 创建Python虚拟环境
-    python3 -m venv venv
-    source venv/bin/activate
-    
-    # 安装Python包
-    pip install --upgrade pip
-    pip install flask flask_login flask_wtf wtforms \
-                werkzeug psutil redis \
-                gunicorn gevent \
-                sqlalchemy alembic \
-                click python-dotenv \
-                --no-cache-dir
-    
-    # 创建主应用文件
-    cat > $WORKDIR/app.py << 'EOAPP'
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-3proxy Enterprise Management System
-支持百万级代理管理的高性能Web管理系统
-"""
+# 日志轮转
+cat > /etc/cron.d/3proxy-logrotate <<EOF
+0 3 */3 * * root [ -f "$LOGFILE" ] && > "$LOGFILE"
+EOF
 
-import os
-import sys
-import sqlite3
-import random
-import string
-import re
-import json
-import time
-import threading
-import queue
-import psutil
-import redis
-import hashlib
-import datetime
-import subprocess
-import signal
-from collections import defaultdict, OrderedDict
-from functools import wraps, lru_cache
-from contextlib import contextmanager
+# 执行系统优化
+optimize_system
 
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, Response, g
-from flask_login import LoginManager, login_user, login_required, logout_user, UserMixin, current_user
+echo -e "\n========= 2. 部署 Python Web 管理环境 =========\n"
+mkdir -p $WORKDIR/templates $WORKDIR/static $WORKDIR/backups
+cd $WORKDIR
+
+# 设置自动备份（在创建目录之后）
+setup_backup
+
+python3 -m venv venv
+source venv/bin/activate
+pip install flask flask_login flask_wtf wtforms Werkzeug psutil --break-system-packages
+
+# ------------------- manage.py (主后端) -------------------
+cat > $WORKDIR/manage.py << 'EOF'
+import os, sqlite3, random, string, re, collections, json, psutil, datetime
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, Response
+from flask_login import LoginManager, login_user, login_required, logout_user, UserMixin
 from werkzeug.security import generate_password_hash, check_password_hash
-from werkzeug.utils import secure_filename
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import logging
-from logging.handlers import RotatingFileHandler
+from io import BytesIO
 
-# 配置常量
-DB_PATH = '/opt/3proxy-enterprise/3proxy.db'
-REDIS_HOST = 'localhost'
-REDIS_PORT = 6379
-REDIS_DB = 0
-CACHE_TTL = 300  # 缓存5分钟
-BATCH_SIZE = 1000  # 批量操作大小
-MAX_WORKERS = 16  # 最大工作线程数
-CONFIG_CHUNK_SIZE = 10000  # 配置文件分片大小
+DB = '3proxy.db'
+SECRET = 'changeme_this_is_secret'
+import sys
+PORT = int(sys.argv[1]) if len(sys.argv)>1 else 9999
+THREEPROXY_PATH = '/usr/local/bin/3proxy'
+PROXYCFG_PATH = '/usr/local/etc/3proxy/3proxy.cfg'
+LOGFILE = '/usr/local/etc/3proxy/3proxy.log'
+INTERFACES_FILE = '/etc/network/interfaces'
 
-# 初始化Flask应用
-app = Flask(__name__, 
-    template_folder='templates',
-    static_folder='static',
-    static_url_path='/static'
-)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'enterprise-secret-key-change-in-production')
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
-
-# 初始化日志
-def setup_logging():
-    if not app.debug:
-        file_handler = RotatingFileHandler(
-            '/var/log/3proxy/webapp.log',
-            maxBytes=10485760,
-            backupCount=10
-        )
-        file_handler.setFormatter(logging.Formatter(
-            '%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'
-        ))
-        file_handler.setLevel(logging.INFO)
-        app.logger.addHandler(file_handler)
-        app.logger.setLevel(logging.INFO)
-        app.logger.info('3proxy Enterprise startup')
-
-setup_logging()
-
-# 初始化登录管理器
+app = Flask(__name__, template_folder='templates', static_folder='static')
+app.secret_key = SECRET
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
-login_manager.login_message = '请先登录'
 
-# 初始化Redis连接池
-redis_pool = redis.ConnectionPool(
-    host=REDIS_HOST,
-    port=REDIS_PORT,
-    db=REDIS_DB,
-    max_connections=100,
-    decode_responses=True
-)
+def get_db():
+    return sqlite3.connect(DB)
 
-# 线程池
-executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+def detect_nic():
+    for nic in os.listdir('/sys/class/net'):
+        if nic.startswith('e') or nic.startswith('en') or nic.startswith('eth'):
+            return nic
+    return 'eth0'
 
-# 数据库连接池
-class DatabasePool:
-    def __init__(self, database, max_connections=50):
-        self.database = database
-        self.max_connections = max_connections
-        self.pool = queue.Queue(maxsize=max_connections)
-        self.lock = threading.Lock()
-        self._initialize_pool()
-    
-    def _initialize_pool(self):
-        for _ in range(self.max_connections):
-            conn = sqlite3.connect(self.database, timeout=30.0)
-            conn.row_factory = sqlite3.Row
-            conn.execute('PRAGMA journal_mode=WAL')
-            conn.execute('PRAGMA synchronous=NORMAL')
-            conn.execute('PRAGMA cache_size=10000')
-            conn.execute('PRAGMA temp_store=MEMORY')
-            self.pool.put(conn)
-    
-    @contextmanager
-    def get_connection(self):
-        conn = self.pool.get()
-        try:
-            yield conn
-        finally:
-            self.pool.put(conn)
-
-# 初始化数据库连接池
-db_pool = DatabasePool(DB_PATH)
-
-# Redis缓存装饰器
-def redis_cache(key_prefix, ttl=CACHE_TTL):
-    def decorator(f):
-        @wraps(f)
-        def wrapped(*args, **kwargs):
-            r = redis.Redis(connection_pool=redis_pool)
-            
-            # 生成缓存键
-            cache_key = f"{key_prefix}:{hashlib.md5(str(args).encode() + str(kwargs).encode()).hexdigest()}"
-            
-            # 尝试从缓存获取
-            cached = r.get(cache_key)
-            if cached:
-                return json.loads(cached)
-            
-            # 执行函数
-            result = f(*args, **kwargs)
-            
-            # 存入缓存
-            r.setex(cache_key, ttl, json.dumps(result))
-            
-            return result
-        return wrapped
-    return decorator
-
-# 用户模型
 class User(UserMixin):
-    def __init__(self, id, username, password_hash):
+    def __init__(self, id, username, password):
         self.id = id
         self.username = username
-        self.password_hash = password_hash
-    
+        self.password_hash = password
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
-    
-    @staticmethod
-    def get(user_id):
-        with db_pool.get_connection() as conn:
-            cur = conn.execute("SELECT id, username, password FROM users WHERE id = ?", (user_id,))
-            row = cur.fetchone()
-            if row:
-                return User(row['id'], row['username'], row['password'])
-        return None
-    
-    @staticmethod
-    def get_by_username(username):
-        with db_pool.get_connection() as conn:
-            cur = conn.execute("SELECT id, username, password FROM users WHERE username = ?", (username,))
-            row = cur.fetchone()
-            if row:
-                return User(row['id'], row['username'], row['password'])
-        return None
 
 @login_manager.user_loader
 def load_user(user_id):
-    return User.get(user_id)
+    db = get_db()
+    cur = db.execute("SELECT id,username,password FROM users WHERE id=?", (user_id,))
+    row = cur.fetchone()
+    db.close()
+    if row:
+        return User(row[0], row[1], row[2])
+    return None
 
-# 代理配置生成器（支持分片）
-class ProxyConfigGenerator:
-    def __init__(self):
-        self.config_dir = '/usr/local/etc/3proxy'
-        self.chunk_size = CONFIG_CHUNK_SIZE
-    
-    def generate_configs(self):
-        """生成3proxy配置文件（支持分片）"""
-        app.logger.info("开始生成代理配置...")
-        
-        with db_pool.get_connection() as conn:
-            # 获取所有启用的代理
-            cursor = conn.execute(
-                "SELECT ip, port, username, password FROM proxy WHERE enabled = 1 ORDER BY id"
-            )
-            
-            # 生成主配置文件
-            self._generate_main_config()
-            
-            # 生成用户认证文件
-            users_dict = {}
-            proxy_configs = []
-            
-            for row in cursor:
-                ip, port, username, password = row
-                users_dict[username] = password
-                proxy_configs.append((ip, port, username))
-            
-            # 写入用户文件（分片）
-            self._write_users_file(users_dict)
-            
-            # 写入代理配置（分片）
-            self._write_proxy_configs(proxy_configs)
-        
-        app.logger.info(f"配置生成完成，共{len(proxy_configs)}个代理")
-        
-        # 重载3proxy
-        self._reload_3proxy()
-    
-    def _generate_main_config(self):
-        """生成主配置文件"""
-        config = """# 3proxy Enterprise Configuration
-# Auto-generated - DO NOT EDIT MANUALLY
+def reload_3proxy():
+    os.system(f'python3 {os.path.join(os.path.dirname(__file__), "config_gen.py")}')
+    os.system(f'pkill 3proxy; {THREEPROXY_PATH} {PROXYCFG_PATH} &')
 
-daemon
-pidfile /run/3proxy/3proxy.pid
-monitor /usr/local/etc/3proxy/
-
-# 性能参数
-maxconn 1000000
-stacksize 262144
-
-# DNS配置
-nserver 8.8.8.8
-nserver 8.8.4.4
-nserver 1.1.1.1
-nscache 262144
-nscache6 65536
-
-# 超时设置
-timeouts 1 3 10 30 60 180 1800 15 60
-
-# 日志配置
-log /var/log/3proxy/3proxy.log D
-logformat "L%t %N.%p %E %U %C:%c %R:%r %O %I %h %T"
-rotate 100M
-
-# 包含其他配置文件
-include /usr/local/etc/3proxy/users.cfg
-include /usr/local/etc/3proxy/proxies/*.cfg
-"""
-        
-        with open(f"{self.config_dir}/3proxy.cfg", 'w') as f:
-            f.write(config)
-    
-    def _write_users_file(self, users_dict):
-        """写入用户认证文件（支持大量用户）"""
-        os.makedirs(f"{self.config_dir}/proxies", exist_ok=True)
-        
-        with open(f"{self.config_dir}/users.cfg", 'w') as f:
-            f.write("# Users configuration\n")
-            f.write("auth strong\n")
-            
-            # 分批写入用户
-            users_list = [f"{user}:CL:{passwd}" for user, passwd in users_dict.items()]
-            for i in range(0, len(users_list), 1000):
-                batch = users_list[i:i+1000]
-                f.write(f"users {' '.join(batch)}\n")
-    
-    def _write_proxy_configs(self, proxy_configs):
-        """写入代理配置（分片）"""
-        # 清理旧配置
-        import glob
-        for old_file in glob.glob(f"{self.config_dir}/proxies/*.cfg"):
-            os.remove(old_file)
-        
-        # 分片写入
-        for i in range(0, len(proxy_configs), self.chunk_size):
-            chunk = proxy_configs[i:i+self.chunk_size]
-            chunk_id = i // self.chunk_size
-            
-            with open(f"{self.config_dir}/proxies/proxy_{chunk_id:04d}.cfg", 'w') as f:
-                f.write(f"# Proxy chunk {chunk_id}\n")
-                
-                for ip, port, username in chunk:
-                    f.write(f"auth strong\n")
-                    f.write(f"allow {username}\n")
-                    f.write(f"proxy -n -a -p{port} -i{ip} -e{ip}\n")
-                    f.write("\n")
-    
-    def _reload_3proxy(self):
-        """重载3proxy配置"""
-        try:
-            # 发送SIGHUP信号重载配置
-            subprocess.run(['pkill', '-HUP', '3proxy'], check=False)
-            app.logger.info("3proxy配置重载成功")
-        except Exception as e:
-            app.logger.error(f"3proxy重载失败: {e}")
-            # 如果重载失败，尝试重启
-            try:
-                subprocess.run(['systemctl', 'restart', '3proxy-enterprise'], check=True)
-                app.logger.info("3proxy重启成功")
-            except Exception as e2:
-                app.logger.error(f"3proxy重启失败: {e2}")
-
-# 实例化配置生成器
-config_generator = ProxyConfigGenerator()
-
-# 批量操作管理器
-class BatchOperationManager:
-    def __init__(self):
-        self.operations = {}
-        self.lock = threading.Lock()
-    
-    def create_operation(self, operation_type, total_items):
-        """创建批量操作"""
-        op_id = hashlib.md5(f"{operation_type}:{time.time()}".encode()).hexdigest()
-        
-        with self.lock:
-            self.operations[op_id] = {
-                'type': operation_type,
-                'total': total_items,
-                'processed': 0,
-                'success': 0,
-                'failed': 0,
-                'status': 'running',
-                'start_time': time.time(),
-                'errors': []
-            }
-        
-        return op_id
-    
-    def update_progress(self, op_id, success=True, error=None):
-        """更新操作进度"""
-        with self.lock:
-            if op_id in self.operations:
-                op = self.operations[op_id]
-                op['processed'] += 1
-                
-                if success:
-                    op['success'] += 1
-                else:
-                    op['failed'] += 1
-                    if error:
-                        op['errors'].append(error)
-                
-                if op['processed'] >= op['total']:
-                    op['status'] = 'completed'
-                    op['end_time'] = time.time()
-    
-    def get_status(self, op_id):
-        """获取操作状态"""
-        with self.lock:
-            return self.operations.get(op_id, {})
-
-# 实例化批量操作管理器
-batch_manager = BatchOperationManager()
-
-# 工具函数
-def get_network_interfaces():
-    """获取网络接口列表"""
-    interfaces = []
-    for name, addrs in psutil.net_if_addrs().items():
-        if name != 'lo':  # 排除回环接口
-            for addr in addrs:
-                if addr.family == 2:  # IPv4
-                    interfaces.append({
-                        'name': name,
-                        'ip': addr.address,
-                        'netmask': addr.netmask
-                    })
-    return interfaces
-
-def validate_ip_range(ip_range):
-    """验证IP范围格式"""
-    # 支持格式: 192.168.1.1-254 或 192.168.1.1-192.168.1.254
-    pattern = r'^(\d{1,3}\.){3}\d{1,3}-(\d{1,3}|(\d{1,3}\.){3}\d{1,3})$'
-    return re.match(pattern, ip_range) is not None
-
-def expand_ip_range(ip_range):
-    """展开IP范围"""
-    ips = []
-    
-    if '-' in ip_range:
-        parts = ip_range.split('-')
-        if '.' in parts[1]:
-            # 完整IP范围: 192.168.1.1-192.168.1.254
-            start_ip = parts[0]
-            end_ip = parts[1]
-            
-            start_parts = [int(x) for x in start_ip.split('.')]
-            end_parts = [int(x) for x in end_ip.split('.')]
-            
-            current = start_parts[:]
-            while current <= end_parts:
-                ips.append('.'.join(map(str, current)))
-                
-                current[3] += 1
-                for i in range(3, 0, -1):
-                    if current[i] > 255:
-                        current[i] = 0
-                        current[i-1] += 1
-                
-                if current[0] > 255:
-                    break
-        else:
-            # 简短格式: 192.168.1.1-254
-            base = '.'.join(parts[0].split('.')[:-1])
-            start = int(parts[0].split('.')[-1])
-            end = int(parts[1])
-            
-            for i in range(start, end + 1):
-                if i <= 255:
-                    ips.append(f"{base}.{i}")
-    
-    return ips
-
-# 路由处理函数
-@app.route('/login', methods=['GET', 'POST'])
+@app.route('/login', methods=['GET','POST'])
 def login():
     if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        
-        user = User.get_by_username(username)
-        if user and user.check_password(password):
-            login_user(user, remember=True)
-            next_page = request.args.get('next')
-            return redirect(next_page) if next_page else redirect(url_for('index'))
-        
-        flash('用户名或密码错误', 'danger')
-    
+        db = get_db()
+        cur = db.execute('SELECT id,username,password FROM users WHERE username=?', (request.form['username'],))
+        row = cur.fetchone()
+        db.close()
+        if row and check_password_hash(row[2], request.form['password']):
+            user = User(row[0], row[1], row[2])
+            login_user(user)
+            return redirect('/')
+        flash('登录失败')
     return render_template('login.html')
 
 @app.route('/logout')
@@ -972,3093 +380,2242 @@ def logout():
     logout_user()
     return redirect(url_for('login'))
 
-@app.route('/')
+@app.route('/', methods=['GET', 'POST'])
 @login_required
 def index():
     return render_template('index.html')
 
-# API路由
-@app.route('/api/dashboard/stats')
-@login_required
-@redis_cache('dashboard_stats', ttl=60)
-def api_dashboard_stats():
-    """获取仪表板统计信息"""
-    with db_pool.get_connection() as conn:
-        # 总代理数
-        total = conn.execute("SELECT COUNT(*) FROM proxy").fetchone()[0]
-        
-        # 启用的代理数
-        enabled = conn.execute("SELECT COUNT(*) FROM proxy WHERE enabled = 1").fetchone()[0]
-        
-        # C段统计 - 使用简化的方法
-        c_segments = conn.execute(
-            "SELECT COUNT(DISTINCT substr(ip, 1, instr(ip||'.', '.')+(length(ip)-length(replace(ip,'.','')))-1)) FROM proxy"
-        ).fetchone()[0]
-        
-        # 端口范围
-        port_range = conn.execute(
-            "SELECT MIN(port), MAX(port) FROM proxy"
-        ).fetchone()
-    
-    return jsonify({
-        'total_proxies': total,
-        'enabled_proxies': enabled,
-        'disabled_proxies': total - enabled,
-        'c_segments': c_segments,
-        'port_range': f"{port_range[0]}-{port_range[1]}" if port_range[0] else "N/A",
-        'utilization': round(enabled / total * 100, 2) if total > 0 else 0
-    })
-
-@app.route('/api/system/status')
-@login_required
-def api_system_status():
-    """获取系统状态"""
-    # CPU使用率
-    cpu_percent = psutil.cpu_percent(interval=1, percpu=True)
-    cpu_avg = sum(cpu_percent) / len(cpu_percent)
-    
-    # 内存信息
-    memory = psutil.virtual_memory()
-    
-    # 磁盘信息
-    disk = psutil.disk_usage('/')
-    
-    # 网络IO
-    net_io = psutil.net_io_counters()
-    
-    # 3proxy进程信息
-    proxy_info = {'running': False, 'pid': None, 'cpu': 0, 'memory': 0, 'connections': 0}
-    for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_info', 'connections']):
-        try:
-            if proc.info['name'] == '3proxy':
-                proxy_info['running'] = True
-                proxy_info['pid'] = proc.info['pid']
-                proxy_info['cpu'] = proc.cpu_percent(interval=0.1)
-                proxy_info['memory'] = proc.memory_info().rss / 1024 / 1024  # MB
-                proxy_info['connections'] = len(proc.connections())
-                break
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
-    
-    return jsonify({
-        'cpu': {
-            'percent': round(cpu_avg, 2),
-            'cores': len(cpu_percent),
-            'per_core': [round(p, 2) for p in cpu_percent]
-        },
-        'memory': {
-            'total': round(memory.total / 1024 / 1024 / 1024, 2),  # GB
-            'used': round(memory.used / 1024 / 1024 / 1024, 2),
-            'available': round(memory.available / 1024 / 1024 / 1024, 2),
-            'percent': round(memory.percent, 2)
-        },
-        'disk': {
-            'total': round(disk.total / 1024 / 1024 / 1024, 2),  # GB
-            'used': round(disk.used / 1024 / 1024 / 1024, 2),
-            'free': round(disk.free / 1024 / 1024 / 1024, 2),
-            'percent': round(disk.percent, 2)
-        },
-        'network': {
-            'bytes_sent': round(net_io.bytes_sent / 1024 / 1024, 2),  # MB
-            'bytes_recv': round(net_io.bytes_recv / 1024 / 1024, 2),
-            'packets_sent': net_io.packets_sent,
-            'packets_recv': net_io.packets_recv
-        },
-        'proxy': proxy_info,
-        'timestamp': datetime.datetime.now().isoformat()
-    })
-
-@app.route('/api/proxy/groups')
+@app.route('/api/proxy_groups')
 @login_required
 def api_proxy_groups():
-    """获取代理组列表（C段分组）"""
-    page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 20, type=int)
-    search = request.args.get('search', '')
+    db = get_db()
+    proxies = db.execute('SELECT id,ip,port,username,password,enabled,ip_range,port_range,user_prefix FROM proxy ORDER BY ip').fetchall()
+    db.close()
     
-    with db_pool.get_connection() as conn:
-        # 构建查询 - 使用简化的C段提取方法
-        query = """
-            SELECT 
-                substr(ip, 1, instr(ip||'.', '.')+(length(ip)-length(replace(ip,'.','')))-1) as c_segment,
-                COUNT(*) as total,
-                SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) as enabled,
-                MIN(port) as min_port,
-                MAX(port) as max_port,
-                GROUP_CONCAT(DISTINCT user_prefix) as prefixes
-            FROM proxy
-        """
+    groups = collections.defaultdict(list)
+    for p in proxies:
+        c_seg = '.'.join(p[1].split('.')[:3])
+        groups[c_seg].append({
+            'id': p[0],
+            'ip': p[1],
+            'port': p[2],
+            'username': p[3],
+            'password': p[4],
+            'enabled': p[5],
+            'ip_range': p[6],
+            'port_range': p[7],
+            'user_prefix': p[8]
+        })
+    
+    # 获取流量统计
+    traffic_stats = get_traffic_stats()
+    
+    result = []
+    for c_seg, proxies in groups.items():
+        enabled_count = sum(1 for p in proxies if p['enabled'])
         
-        if search:
-            query += " WHERE ip LIKE ?"
-            params = (f"%{search}%",)
+        # 计算实际的IP范围和端口范围
+        ips = [p['ip'] for p in proxies]
+        ports = sorted([p['port'] for p in proxies])  # 排序端口
+        
+        # IP范围
+        if ips:
+            ip_nums = sorted([int(ip.split('.')[-1]) for ip in ips])
+            # 检查是否连续
+            if len(ip_nums) > 1 and ip_nums[-1] - ip_nums[0] == len(ip_nums) - 1:
+                actual_ip_range = f"{c_seg}.{ip_nums[0]}-{ip_nums[-1]}"
+            else:
+                # 不连续时显示实际数量
+                actual_ip_range = f"{c_seg}.x ({len(ip_nums)} IPs)"
         else:
-            params = ()
+            actual_ip_range = proxies[0]['ip_range'] if proxies else ''
         
-        query += " GROUP BY c_segment ORDER BY c_segment"
+        # 端口范围
+        if ports:
+            if len(ports) == 1:
+                actual_port_range = str(ports[0])
+            else:
+                actual_port_range = f"{ports[0]}-{ports[-1]}"
+        else:
+            actual_port_range = proxies[0]['port_range'] if proxies else ''
         
-        # 获取总数
-        count_query = "SELECT COUNT(DISTINCT substr(ip, 1, instr(ip||'.', '.')+(length(ip)-length(replace(ip,'.','')))-1)) FROM proxy"
-        if search:
-            count_query += " WHERE ip LIKE ?"
-        
-        total = conn.execute(count_query, params).fetchone()[0]
-        
-        # 分页查询
-        query += f" LIMIT {per_page} OFFSET {(page - 1) * per_page}"
-        
-        cursor = conn.execute(query, params)
-        groups = []
-        
-        for row in cursor:
-            groups.append({
-                'c_segment': row['c_segment'],
-                'total': row['total'],
-                'enabled': row['enabled'],
-                'disabled': row['total'] - row['enabled'],
-                'port_range': f"{row['min_port']}-{row['max_port']}",
-                'prefixes': row['prefixes'].split(',') if row['prefixes'] else []
-            })
+        result.append({
+            'c_segment': c_seg,
+            'total': len(proxies),
+            'enabled': enabled_count,
+            'traffic': traffic_stats.get(c_seg, 0),
+            'ip_range': actual_ip_range,
+            'port_range': actual_port_range,
+            'user_prefix': proxies[0]['user_prefix'] if proxies else ''
+        })
     
-    return jsonify({
-        'groups': groups,
-        'total': total,
-        'page': page,
-        'per_page': per_page,
-        'pages': (total + per_page - 1) // per_page
-    })
+    return jsonify(sorted(result, key=lambda x: x['c_segment']))
 
-@app.route('/api/proxy/group/<c_segment>')
+@app.route('/api/proxy_group/<c_segment>')
 @login_required
 def api_proxy_group_detail(c_segment):
-    """获取代理组详情"""
-    page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 100, type=int)
+    db = get_db()
+    proxies = db.execute('SELECT id,ip,port,username,password,enabled,ip_range,port_range,user_prefix FROM proxy WHERE ip LIKE ? ORDER BY ip,port', 
+                        (c_segment + '.%',)).fetchall()
+    db.close()
     
-    with db_pool.get_connection() as conn:
-        # 获取总数
-        total = conn.execute(
-            "SELECT COUNT(*) FROM proxy WHERE ip LIKE ?",
-            (f"{c_segment}%",)
-        ).fetchone()[0]
-        
-        # 获取代理列表
-        cursor = conn.execute(
-            """
-            SELECT id, ip, port, username, password, enabled
-            FROM proxy
-            WHERE ip LIKE ?
-            ORDER BY ip, port
-            LIMIT ? OFFSET ?
-            """,
-            (f"{c_segment}%", per_page, (page - 1) * per_page)
-        )
-        
-        proxies = []
-        for row in cursor:
-            proxies.append({
-                'id': row['id'],
-                'ip': row['ip'],
-                'port': row['port'],
-                'username': row['username'],
-                'password': row['password'],
-                'enabled': bool(row['enabled'])
-            })
+    result = []
+    for p in proxies:
+        result.append({
+            'id': p[0],
+            'ip': p[1],
+            'port': p[2],
+            'username': p[3],
+            'password': p[4],
+            'enabled': p[5],
+            'ip_range': p[6],
+            'port_range': p[7],
+            'user_prefix': p[8]
+        })
+    
+    return jsonify(result)
+
+@app.route('/api/delete_group/<c_segment>', methods=['POST'])
+@login_required
+def api_delete_group(c_segment):
+    db = get_db()
+    db.execute('DELETE FROM proxy WHERE ip LIKE ?', (c_segment + '.%',))
+    db.commit()
+    db.close()
+    reload_3proxy()
+    return jsonify({'status': 'success'})
+
+@app.route('/api/toggle_group/<c_segment>/<action>', methods=['POST'])
+@login_required
+def api_toggle_group(c_segment, action):
+    enabled = 1 if action == 'enable' else 0
+    db = get_db()
+    db.execute('UPDATE proxy SET enabled=? WHERE ip LIKE ?', (enabled, c_segment + '.%'))
+    db.commit()
+    db.close()
+    reload_3proxy()
+    return jsonify({'status': 'success'})
+
+@app.route('/api/system_status')
+@login_required
+def api_system_status():
+    cpu_percent = psutil.cpu_percent(interval=1)
+    memory = psutil.virtual_memory()
+    disk = psutil.disk_usage('/')
+    
+    # 获取网络流量
+    net_io = psutil.net_io_counters()
+    
+    # 获取3proxy进程信息
+    proxy_info = {'running': False, 'pid': None, 'memory': 0, 'connections': 0}
+    for proc in psutil.process_iter(['pid', 'name']):
+        if proc.info['name'] == '3proxy':
+            proxy_info['running'] = True
+            proxy_info['pid'] = proc.info['pid']
+            try:
+                p = psutil.Process(proc.info['pid'])
+                proxy_info['memory'] = p.memory_info().rss / 1024 / 1024  # MB
+                proxy_info['connections'] = len(p.connections())
+            except:
+                pass
+            break
     
     return jsonify({
-        'proxies': proxies,
-        'total': total,
-        'page': page,
-        'per_page': per_page,
-        'pages': (total + per_page - 1) // per_page
+        'cpu': cpu_percent,
+        'memory': {
+            'percent': memory.percent,
+            'used': memory.used / 1024 / 1024 / 1024,  # GB
+            'total': memory.total / 1024 / 1024 / 1024  # GB
+        },
+        'disk': {
+            'percent': disk.percent,
+            'used': disk.used / 1024 / 1024 / 1024,  # GB
+            'total': disk.total / 1024 / 1024 / 1024  # GB
+        },
+        'network': {
+            'bytes_sent': net_io.bytes_sent / 1024 / 1024,  # MB
+            'bytes_recv': net_io.bytes_recv / 1024 / 1024   # MB
+        },
+        'proxy': proxy_info,
+        'timestamp': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     })
 
-@app.route('/api/proxy/batch/add', methods=['POST'])
-@login_required
-def api_proxy_batch_add():
-    """批量添加代理"""
-    data = request.get_json()
-    
-    ip_range = data.get('ip_range')
-    port_start = data.get('port_start', 10000)
-    port_end = data.get('port_end', 60000)
-    user_prefix = data.get('user_prefix', 'user')
-    password_length = data.get('password_length', 12)
-    
-    # 验证IP范围
-    if not validate_ip_range(ip_range):
-        return jsonify({'error': 'IP范围格式错误'}), 400
-    
-    # 展开IP范围
-    ips = expand_ip_range(ip_range)
-    if not ips:
-        return jsonify({'error': '无效的IP范围'}), 400
-    
-    if len(ips) > 10000:
-        return jsonify({'error': 'IP数量超过限制(10000)'}), 400
-    
-    # 创建批量操作
-    op_id = batch_manager.create_operation('batch_add_proxy', len(ips))
-    
-    # 异步执行批量添加
-    def batch_add_worker():
-        with db_pool.get_connection() as conn:
-            # 获取已使用的端口
-            used_ports = set()
-            cursor = conn.execute("SELECT port FROM proxy")
-            for row in cursor:
-                used_ports.add(row[0])
-            
-            # 生成可用端口池
-            available_ports = [p for p in range(port_start, port_end + 1) if p not in used_ports]
-            if len(available_ports) < len(ips):
-                batch_manager.update_progress(op_id, False, "可用端口不足")
-                return
-            
-            # 随机选择端口
-            random.shuffle(available_ports)
-            selected_ports = available_ports[:len(ips)]
-            
-            # 批量插入
-            batch_data = []
-            for i, ip in enumerate(ips):
-                username = f"{user_prefix}{random.randint(1000, 9999)}"
-                password = ''.join(random.choices(string.ascii_letters + string.digits, k=password_length))
-                port = selected_ports[i]
-                
-                batch_data.append((ip, port, username, password, 1, ip_range, f"{port_start}-{port_end}", user_prefix))
-                
-                if len(batch_data) >= BATCH_SIZE:
-                    conn.executemany(
-                        "INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        batch_data
-                    )
-                    conn.commit()
-                    
-                    for _ in batch_data:
-                        batch_manager.update_progress(op_id, True)
-                    
-                    batch_data = []
-            
-            # 插入剩余数据
-            if batch_data:
-                conn.executemany(
-                    "INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    batch_data
-                )
-                conn.commit()
-                
-                for _ in batch_data:
-                    batch_manager.update_progress(op_id, True)
-        
-        # 重新生成配置
-        config_generator.generate_configs()
-    
-    # 提交到线程池执行
-    executor.submit(batch_add_worker)
-    
-    return jsonify({'operation_id': op_id, 'message': '批量添加任务已创建'})
-
-@app.route('/api/proxy/batch/operation/<op_id>')
-@login_required
-def api_batch_operation_status(op_id):
-    """获取批量操作状态"""
-    status = batch_manager.get_status(op_id)
-    if not status:
-        return jsonify({'error': '操作不存在'}), 404
-    
-    return jsonify(status)
-
-@app.route('/api/proxy/batch/delete', methods=['POST'])
-@login_required
-def api_proxy_batch_delete():
-    """批量删除代理"""
-    data = request.get_json()
-    proxy_ids = data.get('ids', [])
-    
-    if not proxy_ids:
-        return jsonify({'error': '未选择代理'}), 400
-    
-    # 创建批量操作
-    op_id = batch_manager.create_operation('batch_delete_proxy', len(proxy_ids))
-    
-    # 异步执行批量删除
-    def batch_delete_worker():
-        with db_pool.get_connection() as conn:
-            # 分批删除
-            for i in range(0, len(proxy_ids), BATCH_SIZE):
-                batch = proxy_ids[i:i+BATCH_SIZE]
-                placeholders = ','.join('?' * len(batch))
-                
-                conn.execute(f"DELETE FROM proxy WHERE id IN ({placeholders})", batch)
-                conn.commit()
-                
-                for _ in batch:
-                    batch_manager.update_progress(op_id, True)
-        
-        # 重新生成配置
-        config_generator.generate_configs()
-    
-    # 提交到线程池执行
-    executor.submit(batch_delete_worker)
-    
-    return jsonify({'operation_id': op_id, 'message': '批量删除任务已创建'})
-
-@app.route('/api/proxy/batch/toggle', methods=['POST'])
-@login_required
-def api_proxy_batch_toggle():
-    """批量启用/禁用代理"""
-    data = request.get_json()
-    proxy_ids = data.get('ids', [])
-    enabled = data.get('enabled', True)
-    
-    if not proxy_ids:
-        return jsonify({'error': '未选择代理'}), 400
-    
-    # 创建批量操作
-    op_id = batch_manager.create_operation('batch_toggle_proxy', len(proxy_ids))
-    
-    # 异步执行批量更新
-    def batch_toggle_worker():
-        with db_pool.get_connection() as conn:
-            # 分批更新
-            for i in range(0, len(proxy_ids), BATCH_SIZE):
-                batch = proxy_ids[i:i+BATCH_SIZE]
-                placeholders = ','.join('?' * len(batch))
-                
-                conn.execute(
-                    f"UPDATE proxy SET enabled = ? WHERE id IN ({placeholders})",
-                    [1 if enabled else 0] + batch
-                )
-                conn.commit()
-                
-                for _ in batch:
-                    batch_manager.update_progress(op_id, True)
-        
-        # 重新生成配置
-        config_generator.generate_configs()
-    
-    # 提交到线程池执行
-    executor.submit(batch_toggle_worker)
-    
-    return jsonify({'operation_id': op_id, 'message': f'批量{"启用" if enabled else "禁用"}任务已创建'})
-
-@app.route('/api/proxy/export', methods=['POST'])
-@login_required
-def api_proxy_export():
-    """导出代理"""
-    data = request.get_json()
-    format_type = data.get('format', 'txt')
-    c_segments = data.get('c_segments', [])
-    
-    with db_pool.get_connection() as conn:
-        if c_segments:
-            # 导出指定C段
-            placeholders = ','.join('?' * len(c_segments))
-            # 简化SQL查询，避免过长的单行
-            sql = "SELECT ip, port, username, password FROM proxy WHERE "
-            sql += "substr(ip, 1, instr(ip||'.', '.')+(length(ip)-length(replace(ip,'.','')))-1) "
-            sql += f"IN ({placeholders}) ORDER BY ip, port"
-            cursor = conn.execute(sql, c_segments)
-        else:
-            # 导出所有
-            cursor = conn.execute("SELECT ip, port, username, password FROM proxy ORDER BY ip, port")
-        
-        # 生成导出内容
-        if format_type == 'json':
-            proxies = []
-            for row in cursor:
-                proxies.append({
-                    'ip': row[0],
-                    'port': row[1],
-                    'username': row[2],
-                    'password': row[3]
-                })
-            
-            content = json.dumps(proxies, indent=2)
-            mimetype = 'application/json'
-            filename = 'proxies.json'
-        else:
-            # 默认txt格式
-            lines = []
-            for row in cursor:
-                lines.append(f"{row[0]}:{row[1]}:{row[2]}:{row[3]}")
-            
-            content = '\n'.join(lines)
-            mimetype = 'text/plain'
-            filename = 'proxies.txt'
-    
-    return Response(
-        content,
-        mimetype=mimetype,
-        headers={
-            'Content-Disposition': f'attachment; filename={filename}',
-            'Content-Type': f'{mimetype}; charset=utf-8'
-        }
-    )
-
-@app.route('/api/proxy/import', methods=['POST'])
-@login_required
-def api_proxy_import():
-    """导入代理"""
-    if 'file' not in request.files:
-        return jsonify({'error': '未上传文件'}), 400
-    
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({'error': '未选择文件'}), 400
-    
-    # 读取文件内容
-    content = file.read().decode('utf-8', errors='ignore')
-    lines = content.strip().split('\n')
-    
-    # 解析代理数据
-    proxies = []
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith('#'):
-            continue
-        
-        # 支持多种格式
-        parts = re.split(r'[:|,\s]+', line)
-        if len(parts) >= 2:
-            ip = parts[0]
-            port = int(parts[1]) if parts[1].isdigit() else 0
-            username = parts[2] if len(parts) > 2 else f"user{random.randint(1000, 9999)}"
-            password = parts[3] if len(parts) > 3 else ''.join(random.choices(string.ascii_letters + string.digits, k=12))
-            
-            if port > 0:
-                proxies.append((ip, port, username, password))
-    
-    if not proxies:
-        return jsonify({'error': '未找到有效的代理数据'}), 400
-    
-    # 创建批量操作
-    op_id = batch_manager.create_operation('import_proxy', len(proxies))
-    
-    # 异步执行导入
-    def import_worker():
-        with db_pool.get_connection() as conn:
-            # 分批插入
-            for i in range(0, len(proxies), BATCH_SIZE):
-                batch = proxies[i:i+BATCH_SIZE]
-                
-                # 检查重复
-                for proxy in batch:
-                    existing = conn.execute(
-                        "SELECT id FROM proxy WHERE ip = ? AND port = ?",
-                        (proxy[0], proxy[1])
-                    ).fetchone()
-                    
-                    if not existing:
-                        conn.execute(
-                            "INSERT INTO proxy (ip, port, username, password, enabled) VALUES (?, ?, ?, ?, 1)",
-                            proxy
-                        )
-                        batch_manager.update_progress(op_id, True)
-                    else:
-                        batch_manager.update_progress(op_id, False, f"代理已存在: {proxy[0]}:{proxy[1]}")
-                
-                conn.commit()
-        
-        # 重新生成配置
-        config_generator.generate_configs()
-    
-    # 提交到线程池执行
-    executor.submit(import_worker)
-    
-    return jsonify({'operation_id': op_id, 'message': f'正在导入{len(proxies)}个代理'})
+def get_traffic_stats():
+    stats = collections.defaultdict(int)
+    if not os.path.exists(LOGFILE):
+        return stats
+    try:
+        with open(LOGFILE, encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) > 7:
+                    try:
+                        srcip = parts[2]
+                        bytes_sent = int(parts[-2])
+                        cseg = '.'.join(srcip.split('.')[:3])
+                        stats[cseg] += bytes_sent
+                    except:
+                        pass
+    except:
+        pass
+    return {k: round(v/1024/1024, 2) for k, v in stats.items()}
 
 @app.route('/api/users')
 @login_required
 def api_users():
-    """获取用户列表"""
-    with db_pool.get_connection() as conn:
-        cursor = conn.execute("SELECT id, username FROM users ORDER BY id")
-        users = []
+    db = get_db()
+    users = db.execute('SELECT id,username FROM users').fetchall()
+    db.close()
+    return jsonify([{'id': u[0], 'username': u[1]} for u in users])
+
+@app.route('/api/ip_configs')
+@login_required
+def api_ip_configs():
+    db = get_db()
+    configs = db.execute('SELECT id,ip_str,type,iface,created FROM ip_config ORDER BY id DESC').fetchall()
+    db.close()
+    return jsonify([{
+        'id': c[0],
+        'ip_str': c[1],
+        'type': c[2],
+        'iface': c[3],
+        'created': c[4]
+    } for c in configs])
+
+# 保留原有的所有其他路由...
+@app.route('/addproxy', methods=['POST'])
+@login_required
+def addproxy():
+    ip = request.form['ip']
+    port = int(request.form['port'])
+    username = request.form['username']
+    password = request.form['password'] or ''.join(random.choices(string.ascii_letters+string.digits, k=12))
+    user_prefix = request.form.get('userprefix','')
+    db = get_db()
+    db.execute('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix) VALUES (?,?,?,?,1,?,?,?)', 
+        (ip, port, username, password, ip, port, user_prefix))
+    db.commit()
+    db.close()
+    reload_3proxy()
+    return jsonify({'status': 'success', 'message': '已添加代理'})
+
+@app.route('/batchaddproxy', methods=['POST'])
+@login_required
+def batchaddproxy():
+    iprange = request.form.get('iprange')
+    portrange = request.form.get('portrange')
+    userprefix = request.form.get('userprefix')
+    
+    if iprange and userprefix:
+        # 解析IP范围
+        m = re.match(r"(\d+\.\d+\.\d+\.)(\d+)-(\d+)", iprange.strip())
+        if not m:
+            return jsonify({'status': 'error', 'message': 'IP范围格式错误'})
+        ip_base = m.group(1)
+        start = int(m.group(2))
+        end = int(m.group(3))
+        ips = [f"{ip_base}{i}" for i in range(start, end+1)]
+        
+        # 获取已使用的端口
+        db = get_db()
+        used_ports = set()
+        cursor = db.execute('SELECT port FROM proxy')
         for row in cursor:
-            users.append({
-                'id': row['id'],
-                'username': row['username']
-            })
-    
-    return jsonify({'users': users})
-
-@app.route('/api/users/add', methods=['POST'])
-@login_required
-def api_add_user():
-    """添加用户"""
-    data = request.get_json()
-    username = data.get('username')
-    password = data.get('password')
-    
-    if not username or not password:
-        return jsonify({'error': '用户名和密码不能为空'}), 400
-    
-    # 检查用户名是否存在
-    with db_pool.get_connection() as conn:
-        existing = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
-        if existing:
-            return jsonify({'error': '用户名已存在'}), 400
+            used_ports.add(row[0])
         
-        # 添加用户
-        password_hash = generate_password_hash(password)
-        conn.execute("INSERT INTO users (username, password) VALUES (?, ?)", (username, password_hash))
-        conn.commit()
-    
-    return jsonify({'message': '用户添加成功'})
-
-@app.route('/api/users/delete/<int:user_id>', methods=['DELETE'])
-@login_required
-def api_delete_user(user_id):
-    """删除用户"""
-    if user_id == current_user.id:
-        return jsonify({'error': '不能删除当前登录用户'}), 400
-    
-    with db_pool.get_connection() as conn:
-        # 检查是否是最后一个管理员
-        user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-        if user_count <= 1:
-            return jsonify({'error': '不能删除最后一个用户'}), 400
+        # 解析或生成端口范围
+        if portrange and portrange.strip():
+            # 用户指定了端口范围
+            m2 = re.match(r"(\d+)-(\d+)", portrange.strip())
+            if not m2:
+                db.close()
+                return jsonify({'status': 'error', 'message': '端口范围格式错误'})
+            port_start = int(m2.group(1))
+            port_end = int(m2.group(2))
+            if port_start < 1024 or port_end > 65535:
+                db.close()
+                return jsonify({'status': 'error', 'message': '端口范围应在1024-65535之间'})
+        else:
+            # 自动分配端口范围 (5000-65534)
+            port_start = 5000
+            port_end = 65534
         
-        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
-        conn.commit()
+        # 生成可用端口列表（排除已使用的）
+        all_ports = [p for p in range(port_start, port_end+1) if p not in used_ports]
+        if len(all_ports) < len(ips):
+            db.close()
+            return jsonify({'status': 'error', 'message': f'可用端口不足，需要{len(ips)}个端口，但只有{len(all_ports)}个可用'})
+        
+        # 随机选择端口
+        import random
+        random.shuffle(all_ports)
+        selected_ports = all_ports[:len(ips)]
+        selected_ports.sort()  # 排序以便记录实际范围
+        
+        # 计算实际使用的端口范围
+        actual_port_range = f"{selected_ports[0]}-{selected_ports[-1]}"
+        
+        # 添加代理
+        count = 0
+        for i, ip in enumerate(ips):
+            port = selected_ports[i]
+            uname = userprefix + ''.join(random.choices(string.ascii_lowercase+string.digits, k=4))
+            pw = ''.join(random.choices(string.ascii_letters+string.digits, k=12))
+            db.execute('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix) VALUES (?,?,?,?,1,?,?,?)', 
+                (ip, port, uname, pw, iprange, actual_port_range, userprefix))
+            count += 1
+        
+        db.commit()
+        db.close()
+        reload_3proxy()
+        return jsonify({'status': 'success', 'message': f'批量范围添加完成，共添加{count}条代理，端口范围：{actual_port_range}'})
     
-    return jsonify({'message': '用户删除成功'})
+    # 处理手动批量添加
+    batch_data = request.form.get('batchproxy','').strip().splitlines()
+    db = get_db()
+    count = 0
+    base_idx = db.execute("SELECT MAX(id) FROM proxy").fetchone()[0]
+    if base_idx is None:
+        base_idx = 0
+    idx = 1
+    for line in batch_data:
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        if ',' in line:
+            parts = [x.strip() for x in line.split(',')]
+        elif ':' in line:
+            parts = [x.strip() for x in line.split(':')]
+        else:
+            parts = re.split(r'\s+', line)
+        if len(parts) == 2:
+            ip, port = parts
+            username = f"user{base_idx + idx:03d}"
+            password = ''.join(random.choices(string.ascii_letters+string.digits, k=12))
+            idx += 1
+        elif len(parts) == 3:
+            ip, port, username = parts
+            password = ''.join(random.choices(string.ascii_letters+string.digits, k=12))
+        elif len(parts) >= 4:
+            ip, port, username, password = parts[:4]
+        else:
+            continue
+        db.execute('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix) VALUES (?,?,?,?,1,?,?,?)',
+            (ip, int(port), username, password, ip, port, username))
+        count += 1
+    db.commit()
+    db.close()
+    if count:
+        reload_3proxy()
+    return jsonify({'status': 'success', 'message': f'批量添加完成，共添加{count}条代理'})
 
-@app.route('/api/network/interfaces')
+@app.route('/delproxy/<int:pid>')
 @login_required
-def api_network_interfaces():
-    """获取网络接口列表"""
-    interfaces = get_network_interfaces()
-    return jsonify({'interfaces': interfaces})
+def delproxy(pid):
+    db = get_db()
+    db.execute('DELETE FROM proxy WHERE id=?', (pid,))
+    db.commit()
+    db.close()
+    reload_3proxy()
+    return jsonify({'status': 'success'})
 
-@app.route('/api/network/ip/add', methods=['POST'])
+@app.route('/batchdelproxy', methods=['POST'])
 @login_required
-def api_add_ip():
-    """添加IP地址"""
-    data = request.get_json()
-    interface = data.get('interface')
-    ip_range = data.get('ip_range')
-    
-    if not interface or not ip_range:
-        return jsonify({'error': '参数不完整'}), 400
-    
-    # 验证IP范围
-    if not validate_ip_range(ip_range):
-        return jsonify({'error': 'IP范围格式错误'}), 400
-    
-    # 展开IP范围
-    ips = expand_ip_range(ip_range)
-    if not ips:
-        return jsonify({'error': '无效的IP范围'}), 400
-    
-    if len(ips) > 1000:
-        return jsonify({'error': 'IP数量超过限制(1000)'}), 400
-    
-    # 添加IP地址
-    success = 0
-    failed = 0
-    
-    for ip in ips:
-        try:
-            # 使用/32掩码避免路由冲突
-            subprocess.run(['ip', 'addr', 'add', f'{ip}/32', 'dev', interface], 
-                         check=True, capture_output=True, text=True)
-            success += 1
-        except subprocess.CalledProcessError:
-            failed += 1
-    
-    # 保存到数据库
-    with db_pool.get_connection() as conn:
-        conn.execute(
-            "INSERT INTO ip_config (ip_str, type, iface, created) VALUES (?, ?, ?, datetime('now'))",
-            (ip_range, 'range', interface)
-        )
-        conn.commit()
-    
-    return jsonify({
-        'message': f'IP添加完成',
-        'success': success,
-        'failed': failed,
-        'total': len(ips)
-    })
+def batchdelproxy():
+    ids = request.form.getlist('ids')
+    db = get_db()
+    db.executemany('DELETE FROM proxy WHERE id=?', [(i,) for i in ids])
+    db.commit()
+    db.close()
+    reload_3proxy()
+    return jsonify({'status': 'success', 'message': f'已批量删除 {len(ids)} 条代理'})
 
-@app.route('/api/config/reload', methods=['POST'])
+@app.route('/batch_enable', methods=['POST'])
 @login_required
-def api_reload_config():
-    """重新加载配置"""
+def batch_enable():
+    ids = request.form.getlist('ids[]')
+    if not ids:
+        return jsonify({'status': 'error', 'message': 'No proxies selected'}), 400
+    db = get_db()
+    db.executemany('UPDATE proxy SET enabled=1 WHERE id=?', [(i,) for i in ids])
+    db.commit()
+    db.close()
+    reload_3proxy()
+    return jsonify({'status': 'success'})
+
+@app.route('/batch_disable', methods=['POST'])
+@login_required
+def batch_disable():
+    ids = request.form.getlist('ids[]')
+    if not ids:
+        return jsonify({'status': 'error', 'message': 'No proxies selected'}), 400
+    db = get_db()
+    db.executemany('UPDATE proxy SET enabled=0 WHERE id=?', [(i,) for i in ids])
+    db.commit()
+    db.close()
+    reload_3proxy()
+    return jsonify({'status': 'success'})
+
+@app.route('/enableproxy/<int:pid>')
+@login_required
+def enableproxy(pid):
+    db = get_db()
+    db.execute('UPDATE proxy SET enabled=1 WHERE id=?', (pid,))
+    db.commit()
+    db.close()
+    reload_3proxy()
+    return jsonify({'status': 'success'})
+
+@app.route('/disableproxy/<int:pid>')
+@login_required
+def disableproxy(pid):
+    db = get_db()
+    db.execute('UPDATE proxy SET enabled=0 WHERE id=?', (pid,))
+    db.commit()
+    db.close()
+    reload_3proxy()
+    return jsonify({'status': 'success'})
+
+@app.route('/adduser', methods=['POST'])
+@login_required
+def adduser():
+    username = request.form['username']
+    password = generate_password_hash(request.form['password'])
+    db = get_db()
     try:
-        config_generator.generate_configs()
-        return jsonify({'message': '配置重载成功'})
-    except Exception as e:
-        app.logger.error(f"配置重载失败: {e}")
-        return jsonify({'error': str(e)}), 500
+        db.execute('INSERT INTO users (username, password) VALUES (?,?)', (username, password))
+        db.commit()
+        db.close()
+        return jsonify({'status': 'success', 'message': '已添加用户'})
+    except:
+        db.close()
+        return jsonify({'status': 'error', 'message': '用户名已存在'})
 
-@app.route('/api/logs/view')
+@app.route('/deluser/<int:uid>')
 @login_required
-def api_view_logs():
-    """查看日志"""
-    log_type = request.args.get('type', 'proxy')
-    lines = request.args.get('lines', 100, type=int)
+def deluser(uid):
+    db = get_db()
+    db.execute('DELETE FROM users WHERE id=?', (uid,))
+    db.commit()
+    db.close()
+    return jsonify({'status': 'success'})
+
+@app.route('/export_selected', methods=['POST'])
+@login_required
+def export_selected():
+    csegs = request.form.getlist('csegs[]')
+    if not csegs:
+        return jsonify({'status': 'error', 'message': '未选择C段'}), 400
     
-    log_files = {
-        'proxy': '/var/log/3proxy/3proxy.log',
-        'webapp': '/var/log/3proxy/webapp.log',
-        'monitor': '/var/log/3proxy/monitor.log'
-    }
+    db = get_db()
+    output = ""
+    prefix_for_filename = None
     
-    log_file = log_files.get(log_type)
-    if not log_file or not os.path.exists(log_file):
-        return jsonify({'error': '日志文件不存在'}), 404
-    
-    try:
-        # 读取最后N行
-        result = subprocess.run(['tail', '-n', str(lines), log_file], 
-                              capture_output=True, text=True, check=True)
+    for cseg in csegs:
+        rows = db.execute("SELECT ip,port,username,password,user_prefix FROM proxy WHERE ip LIKE ? ORDER BY ip,port", 
+                         (cseg + '.%',)).fetchall()
         
-        return jsonify({
-            'log_type': log_type,
-            'content': result.stdout,
-            'lines': lines
-        })
-    except subprocess.CalledProcessError as e:
-        return jsonify({'error': f'读取日志失败: {e}'}), 500
-
-# 清理函数
-def cleanup():
-    """清理资源"""
-    executor.shutdown(wait=True)
-    app.logger.info('3proxy Enterprise shutdown')
-
-# 信号处理
-def signal_handler(signum, frame):
-    cleanup()
-    sys.exit(0)
-
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
-
-# 初始化数据库
-def init_database():
-    """初始化数据库"""
-    with db_pool.get_connection() as conn:
-        # 创建表
-        conn.executescript('''
-            CREATE TABLE IF NOT EXISTS proxy (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ip TEXT NOT NULL,
-                port INTEGER NOT NULL,
-                username TEXT NOT NULL,
-                password TEXT NOT NULL,
-                enabled INTEGER DEFAULT 1,
-                ip_range TEXT,
-                port_range TEXT,
-                user_prefix TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(ip, port)
-            );
-            
-            CREATE INDEX IF NOT EXISTS idx_proxy_ip ON proxy(ip);
-            CREATE INDEX IF NOT EXISTS idx_proxy_port ON proxy(port);
-            CREATE INDEX IF NOT EXISTS idx_proxy_enabled ON proxy(enabled);
-            CREATE INDEX IF NOT EXISTS idx_proxy_c_segment ON proxy(
-                substr(ip, 1, instr(ip||'.', '.')+(length(ip)-length(replace(ip,'.','')))-1)
-            );
-            
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT UNIQUE NOT NULL,
-                password TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            
-            CREATE TABLE IF NOT EXISTS ip_config (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ip_str TEXT NOT NULL,
-                type TEXT NOT NULL,
-                iface TEXT NOT NULL,
-                created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            
-            CREATE TABLE IF NOT EXISTS operation_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                operation TEXT NOT NULL,
-                details TEXT,
-                ip_address TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY(user_id) REFERENCES users(id)
-            );
-        ''')
+        # 获取第一个有user_prefix的代理作为文件名前缀
+        if not prefix_for_filename and rows:
+            for row in rows:
+                if row[4]:  # user_prefix不为空
+                    prefix_for_filename = row[4]
+                    break
         
-        # 创建默认管理员用户
-        admin_exists = conn.execute("SELECT id FROM users WHERE username = 'admin'").fetchone()
-        if not admin_exists:
-            admin_password = os.environ.get('ADMIN_PASSWORD', 'admin123456')
-            password_hash = generate_password_hash(admin_password)
-            conn.execute("INSERT INTO users (username, password) VALUES ('admin', ?)", (password_hash,))
-            conn.commit()
-            app.logger.info(f"Created default admin user")
-
-# 主函数
-if __name__ == '__main__':
-    # 初始化数据库
-    init_database()
+        for ip, port, user, pw, _ in rows:
+            output += f"{ip}:{port}:{user}:{pw}\n"
     
-    # 获取端口
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 9999
+    db.close()
     
-    # 开发模式
-    if os.environ.get('FLASK_ENV') == 'development':
-        app.run(host='0.0.0.0', port=port, debug=True)
-    else:
-        # 生产模式使用gunicorn
-        from gunicorn.app.base import BaseApplication
-        
-        class GunicornApp(BaseApplication):
-            def __init__(self, app, options=None):
-                self.options = options or {}
-                self.application = app
-                super().__init__()
-            
-            def load_config(self):
-                for key, value in self.options.items():
-                    self.cfg.set(key.lower(), value)
-            
-            def load(self):
-                return self.application
-        
-        options = {
-            'bind': f'0.0.0.0:{port}',
-            'workers': min(MAX_WORKERS, (psutil.cpu_count() or 1) * 2 + 1),
-            'worker_class': 'gevent',
-            'worker_connections': 1000,
-            'timeout': 120,
-            'keepalive': 5,
-            'max_requests': 10000,
-            'max_requests_jitter': 1000,
-            'preload_app': True,
-            'accesslog': '/var/log/3proxy/access.log',
-            'errorlog': '/var/log/3proxy/error.log',
-            'loglevel': 'info'
+    # 生成文件名
+    if not prefix_for_filename:
+        prefix_for_filename = 'proxy'
+    
+    # 将C段转换为文件名友好格式 (31.42.120 -> 31_42_120)
+    cseg_names = []
+    for cseg in sorted(csegs):
+        cseg_names.append(cseg.replace('.', '_'))
+    
+    filename = f"{prefix_for_filename}_{'_'.join(cseg_names)}.txt"
+    
+    mem = BytesIO()
+    mem.write(output.encode('utf-8'))
+    mem.seek(0)
+    
+    return Response(
+        mem.read(), 
+        mimetype='text/plain', 
+        headers={
+            'Content-Disposition': f'attachment; filename="{filename}"',
+            'Content-Type': 'text/plain; charset=utf-8'
         }
-        
-        GunicornApp(app, options).run()
-EOAPP
+    )
 
-    # 创建模板文件
-    print_info "创建Web界面模板..."
+@app.route('/export_selected_proxy', methods=['POST'])
+@login_required
+def export_selected_proxy():
+    ids = request.form.getlist('ids[]')
+    if not ids:
+        return jsonify({'status': 'error', 'message': 'No proxies selected'}), 400
+    db = get_db()
+    rows = db.execute('SELECT ip, port, username, password FROM proxy WHERE id IN (%s)' %
+                      ','.join('?'*len(ids)), tuple(ids)).fetchall()
+    db.close()
+    output = ''
+    for ip, port, user, pw in rows:
+        output += f"{ip}:{port}:{user}:{pw}\n"
+    mem = BytesIO()
+    mem.write(output.encode('utf-8'))
+    mem.seek(0)
+    filename = "proxy_export.txt"
+    return Response(mem.read(), mimetype='text/plain', headers={'Content-Disposition': f'attachment; filename={filename}'})
+
+@app.route('/add_ip_config', methods=['POST'])
+@login_required
+def add_ip_config():
+    ip_input = request.form.get('ip_input', '').strip()
+    iface = request.form.get('iface', detect_nic())
+    mode = request.form.get('mode', 'perm')
+    pattern_full = re.match(r"^(\d+\.\d+\.\d+\.)(\d+)-(\d+)$", ip_input)
+    pattern_short = re.match(r"^(\d+)-(\d+)$", ip_input)
+    if pattern_full:
+        base = pattern_full.group(1)
+        start = int(pattern_full.group(2))
+        end = int(pattern_full.group(3))
+        ip_range = f"{base}{{{start}..{end}}}"
+        ip_list = [f"{base}{i}" for i in range(start, end+1)]
+    elif pattern_short:
+        base = "192.168.1."
+        start = int(pattern_short.group(1))
+        end = int(pattern_short.group(2))
+        ip_range = f"{base}{{{start}..{end}}}"
+        ip_list = [f"{base}{i}" for i in range(start, end+1)]
+    elif '{' in ip_input and '..' in ip_input:
+        ip_range = ip_input
+        match = re.match(r"(\d+\.\d+\.\d+\.?)\{(\d+)\.\.(\d+)\}", ip_input)
+        if match:
+            base = match.group(1)
+            s = int(match.group(2))
+            e = int(match.group(3))
+            ip_list = [f"{base}{i}" for i in range(s, e+1)]
+        else:
+            ip_list = []
+    else:
+        ip_range = ip_input
+        ip_list = [ip.strip() for ip in re.split(r'[,\s]+', ip_input) if ip.strip()]
+    db = get_db()
+    db.execute('INSERT INTO ip_config (ip_str, type, iface, created) VALUES (?,?,?,datetime("now"))', (ip_range, 'range', iface))
+    db.commit()
+    db.close()
     
-    # login.html
-    cat > $WORKDIR/templates/login.html << 'EOHTML'
+    # 临时添加IP，使用不同的子网掩码策略
+    for i, ip in enumerate(ip_list):
+        # 为每个IP使用/32掩码，避免路由冲突
+        os.system(f"ip addr add {ip}/32 dev {iface} 2>/dev/null")
+        # 添加路由规则
+        os.system(f"ip route add {ip}/32 dev {iface} 2>/dev/null")
+    
+    # 永久添加
+    if mode == 'perm':
+        with open(INTERFACES_FILE, 'a+') as f:
+            f.write(f"\n# 3proxy IP配置 - {ip_range}\n")
+            for ip in ip_list:
+                f.write(f"up ip addr add {ip}/32 dev {iface} 2>/dev/null || true\n")
+                f.write(f"down ip addr del {ip}/32 dev {iface} 2>/dev/null || true\n")
+    
+    # 刷新ARP缓存
+    os.system("ip neigh flush all")
+    
+    return jsonify({'status': 'success', 'message': '已添加IP配置'})
+
+if __name__ == '__main__':
+    import sys
+    port = int(sys.argv[1]) if len(sys.argv)>1 else 9999
+    app.run('0.0.0.0', port, debug=False)
+EOF
+
+# --------- config_gen.py（3proxy配置生成） ---------
+cat > $WORKDIR/config_gen.py << 'EOF'
+import sqlite3
+db = sqlite3.connect('3proxy.db')
+cursor = db.execute('SELECT ip, port, username, password, enabled FROM proxy')
+cfg = [
+"daemon",
+"maxconn 100000",
+"nserver 8.8.8.8",
+"nserver 1.1.1.1",
+"nserver 8.8.4.4",
+"nscache 65536",
+"nscache6 65536",
+"stacksize 6291456",
+"timeouts 1 5 30 60 180 1800 15 60",
+"log /usr/local/etc/3proxy/3proxy.log D",
+"rotate 30",
+"archiver gz /usr/bin/gzip %F",
+"auth strong"
+]
+users = []
+user_set = set()
+for ip, port, user, pw, en in cursor:
+    if en and (user, pw) not in user_set:
+        users.append(f"{user}:CL:{pw}")
+        user_set.add((user, pw))
+
+# 分批添加用户，避免单行过长
+batch_size = 100
+for i in range(0, len(users), batch_size):
+    batch = users[i:i+batch_size]
+    cfg.append(f"users {' '.join(batch)}")
+
+db2 = sqlite3.connect('3proxy.db')
+for ip, port, user, pw, en in db2.execute('SELECT ip, port, username, password, enabled FROM proxy'):
+    if en:
+        cfg.append(f"auth strong\nallow {user}\nproxy -n -a -p{port} -i{ip} -e{ip}")
+open("/usr/local/etc/3proxy/3proxy.cfg", "w").write('\n'.join(cfg))
+EOF
+
+# --------- init_db.py（DB初始化） ---------
+cat > $WORKDIR/init_db.py << 'EOF'
+import sqlite3
+from werkzeug.security import generate_password_hash
+import os
+user = os.environ.get('ADMINUSER')
+passwd = os.environ.get('ADMINPASS')
+db = sqlite3.connect('3proxy.db')
+db.execute('''CREATE TABLE IF NOT EXISTS proxy (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ip TEXT, port INTEGER, username TEXT, password TEXT, enabled INTEGER DEFAULT 1,
+    ip_range TEXT, port_range TEXT, user_prefix TEXT
+)''')
+db.execute('''CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE, password TEXT
+)''')
+db.execute('''CREATE TABLE IF NOT EXISTS ip_config (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ip_str TEXT, type TEXT, iface TEXT, created TEXT
+)''')
+db.execute('INSERT OR IGNORE INTO users (username, password) VALUES (?,?)', (user, generate_password_hash(passwd)))
+db.commit()
+print("WebAdmin: "+user)
+print("Webpassword:  "+passwd)
+EOF
+
+# --------- login.html ---------
+cat > $WORKDIR/templates/login.html << 'EOF'
 <!DOCTYPE html>
 <html lang="zh">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>3proxy Enterprise - 登录</title>
+    <title>3proxy 登录</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
     <style>
         body {
-            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             display: flex;
             align-items: center;
             justify-content: center;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         }
-        
-        .login-container {
-            background: rgba(255, 255, 255, 0.95);
-            border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-            padding: 40px;
-            max-width: 450px;
-            width: 100%;
+        .login-card {
             backdrop-filter: blur(10px);
-            animation: fadeIn 0.5s ease-out;
+            background: rgba(255, 255, 255, 0.95);
+            border: none;
+            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.2);
+            animation: slideIn 0.5s ease-out;
         }
-        
-        @keyframes fadeIn {
+        @keyframes slideIn {
             from {
                 opacity: 0;
-                transform: translateY(-20px);
+                transform: translateY(-30px);
             }
             to {
                 opacity: 1;
                 transform: translateY(0);
             }
         }
-        
-        .login-header {
-            text-align: center;
-            margin-bottom: 30px;
-        }
-        
-        .login-header h1 {
-            font-size: 2rem;
-            font-weight: 700;
-            color: #2a5298;
-            margin-bottom: 10px;
-        }
-        
-        .login-header p {
-            color: #6c757d;
-            font-size: 1.1rem;
-        }
-        
-        .form-control {
-            border-radius: 10px;
-            padding: 12px 20px;
-            font-size: 1rem;
-            border: 2px solid #e0e0e0;
-            transition: all 0.3s ease;
-        }
-        
         .form-control:focus {
-            border-color: #2a5298;
-            box-shadow: 0 0 0 0.2rem rgba(42, 82, 152, 0.25);
+            border-color: #667eea;
+            box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
         }
-        
         .btn-login {
-            background: linear-gradient(135deg, #2a5298 0%, #1e3c72 100%);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             border: none;
-            border-radius: 10px;
-            padding: 12px 30px;
-            font-size: 1.1rem;
-            font-weight: 600;
-            color: white;
-            width: 100%;
-            transition: all 0.3s ease;
-            margin-top: 20px;
+            transition: transform 0.2s;
         }
-        
         .btn-login:hover {
             transform: translateY(-2px);
-            box-shadow: 0 10px 20px rgba(42, 82, 152, 0.3);
-        }
-        
-        .enterprise-badge {
-            display: inline-block;
-            background: #28a745;
-            color: white;
-            padding: 4px 12px;
-            border-radius: 20px;
-            font-size: 0.8rem;
-            font-weight: 600;
-            margin-top: 10px;
-        }
-        
-        .form-floating label {
-            color: #6c757d;
-        }
-        
-        .alert {
-            border-radius: 10px;
-            border: none;
-        }
-        
-        .system-info {
-            text-align: center;
-            margin-top: 30px;
-            color: #6c757d;
-            font-size: 0.9rem;
-        }
-        
-        .logo-icon {
-            font-size: 4rem;
-            color: #2a5298;
-            margin-bottom: 20px;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
         }
     </style>
 </head>
 <body>
-    <div class="login-container">
-        <div class="login-header">
-            <i class="bi bi-shield-lock logo-icon"></i>
-            <h1>3proxy Enterprise</h1>
-            <p>企业级代理管理系统</p>
-            <span class="enterprise-badge">支持百万级并发</span>
-        </div>
-        
-        <form method="POST" action="{{ url_for('login') }}">
-            <div class="form-floating mb-3">
-                <input type="text" class="form-control" id="username" name="username" 
-                       placeholder="用户名" required autofocus>
-                <label for="username">用户名</label>
-            </div>
-            
-            <div class="form-floating mb-3">
-                <input type="password" class="form-control" id="password" name="password" 
-                       placeholder="密码" required>
-                <label for="password">密码</label>
-            </div>
-            
-            <button type="submit" class="btn btn-login">
-                <i class="bi bi-box-arrow-in-right me-2"></i>登录系统
-            </button>
-        </form>
-        
-        {% with messages = get_flashed_messages(with_categories=true) %}
-            {% if messages %}
-                {% for category, message in messages %}
-                    <div class="alert alert-{{ 'danger' if category == 'danger' else category }} mt-3" role="alert">
-                        {{ message }}
-                    </div>
-                {% endfor %}
-            {% endif %}
-        {% endwith %}
-        
-        <div class="system-info">
-            <p class="mb-0">Version 2.0 Enterprise Edition</p>
-            <small>© 2024 3proxy Enterprise Management</small>
+<div class="container" style="max-width:400px;">
+    <div class="card login-card">
+        <div class="card-body p-5">
+            <h3 class="mb-4 text-center">3proxy 管理系统</h3>
+            <form method="post">
+                <div class="mb-3">
+                    <label class="form-label">用户名</label>
+                    <input type="text" class="form-control" name="username" autofocus required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">密码</label>
+                    <input type="password" class="form-control" name="password" required>
+                </div>
+                <button class="btn btn-primary btn-login w-100 mt-4" type="submit">登录</button>
+            </form>
+            {% with messages = get_flashed_messages() %}
+              {% if messages %}
+                <div class="alert alert-danger mt-3 mb-0">{{ messages[0] }}</div>
+              {% endif %}
+            {% endwith %}
         </div>
     </div>
+</div>
 </body>
 </html>
-EOHTML
+EOF
 
-    # index.html
-    cat > $WORKDIR/templates/index.html << 'EOHTML'
+# --------- index.html（主UI） ---------
+cat > $WORKDIR/templates/index.html << 'EOF'
 <!DOCTYPE html>
 <html lang="zh">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>3proxy Enterprise - 管理面板</title>
+    <meta charset="utf-8">
+    <title>3proxy 管理面板</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/datatables.net-bs5@1.13.8/css/dataTables.bootstrap5.min.css" rel="stylesheet">
     <style>
         :root {
-            --primary: #2a5298;
-            --primary-dark: #1e3c72;
-            --success: #28a745;
-            --info: #17a2b8;
-            --warning: #ffc107;
-            --danger: #dc3545;
-            --dark: #343a40;
-            --light: #f8f9fa;
-            --sidebar-width: 280px;
-        }
-        
-        * {
-            box-sizing: border-box;
+            --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            --success-gradient: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+            --warning-gradient: linear-gradient(135deg, #f2994a 0%, #f2c94c 100%);
+            --danger-gradient: linear-gradient(135deg, #eb3349 0%, #f45c43 100%);
+            --info-gradient: linear-gradient(135deg, #2196f3 0%, #21cbf3 100%);
+            --card-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+            --hover-shadow: 0 8px 25px rgba(0, 0, 0, 0.15);
+            --btn-radius: 8px;
         }
         
         body {
+            background: #f5f7fa;
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background-color: #f5f7fa;
-            overflow-x: hidden;
         }
         
-        /* 顶部导航栏 */
         .navbar {
-            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
-            box-shadow: 0 2px 4px rgba(0,0,0,.1);
-            padding: 0.5rem 1rem;
+            background: var(--primary-gradient);
+            box-shadow: var(--card-shadow);
         }
         
-        .navbar-brand {
-            font-weight: 700;
-            font-size: 1.4rem;
-            color: white !important;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-        
-        .navbar-brand i {
-            font-size: 1.6rem;
-        }
-        
-        /* 侧边栏 */
-        .sidebar {
-            position: fixed;
-            top: 56px;
-            left: 0;
-            bottom: 0;
-            width: var(--sidebar-width);
+        .nav-tabs {
+            border: none;
             background: white;
-            box-shadow: 2px 0 5px rgba(0,0,0,.05);
-            z-index: 100;
-            overflow-y: auto;
-            transition: transform 0.3s ease-in-out;
+            border-radius: 10px;
+            padding: 5px;
+            box-shadow: var(--card-shadow);
+            margin-bottom: 25px;
         }
         
-        .sidebar-header {
-            padding: 1.5rem;
-            border-bottom: 1px solid #e9ecef;
-        }
-        
-        .sidebar-menu {
-            padding: 1rem 0;
-        }
-        
-        .sidebar-item {
-            padding: 0.75rem 1.5rem;
-            color: #495057;
-            text-decoration: none;
-            display: flex;
-            align-items: center;
-            gap: 10px;
+        .nav-tabs .nav-link {
+            border: none;
+            color: #666;
+            padding: 12px 24px;
+            border-radius: 8px;
             transition: all 0.3s ease;
-            border-left: 3px solid transparent;
+            font-weight: 500;
         }
         
-        .sidebar-item:hover {
-            background-color: #f8f9fa;
-            color: var(--primary);
-            text-decoration: none;
+        .nav-tabs .nav-link:hover {
+            background: #f8f9fa;
+            color: #667eea;
         }
         
-        .sidebar-item.active {
-            background-color: rgba(42, 82, 152, 0.1);
-            color: var(--primary);
-            border-left-color: var(--primary);
-            font-weight: 600;
-        }
-        
-        .sidebar-item i {
-            font-size: 1.2rem;
-            width: 24px;
-            text-align: center;
-        }
-        
-        /* 主内容区 */
-        .main-content {
-            margin-left: var(--sidebar-width);
-            padding: 2rem;
-            min-height: calc(100vh - 56px);
-            transition: margin-left 0.3s ease-in-out;
-        }
-        
-        /* 统计卡片 */
-        .stat-card {
-            background: white;
-            border-radius: 12px;
-            padding: 1.5rem;
-            box-shadow: 0 2px 10px rgba(0,0,0,.08);
-            transition: all 0.3s ease;
-            border: 1px solid transparent;
-        }
-        
-        .stat-card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 5px 20px rgba(0,0,0,.1);
-        }
-        
-        .stat-card .stat-icon {
-            width: 60px;
-            height: 60px;
-            border-radius: 12px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 1.8rem;
+        .nav-tabs .nav-link.active {
+            background: var(--primary-gradient);
             color: white;
-            margin-bottom: 1rem;
         }
         
-        .stat-card.primary .stat-icon { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
-        .stat-card.success .stat-icon { background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%); }
-        .stat-card.info .stat-icon { background: linear-gradient(135deg, #2196f3 0%, #21cbf3 100%); }
-        .stat-card.warning .stat-icon { background: linear-gradient(135deg, #f2994a 0%, #f2c94c 100%); }
-        
-        .stat-card h3 {
-            font-size: 2rem;
-            font-weight: 700;
-            margin: 0;
-            color: #2d3436;
-        }
-        
-        .stat-card p {
-            margin: 0;
-            color: #636e72;
-            font-size: 0.9rem;
-        }
-        
-        /* 内容卡片 */
-        .content-card {
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 2px 10px rgba(0,0,0,.08);
-            margin-bottom: 2rem;
+        .card {
+            border: none;
+            border-radius: 15px;
+            box-shadow: var(--card-shadow);
+            transition: all 0.3s ease;
             overflow: hidden;
         }
         
-        .content-card-header {
-            padding: 1.5rem;
-            border-bottom: 1px solid #e9ecef;
-            display: flex;
-            justify-content: between;
-            align-items: center;
+        .card:hover {
+            transform: translateY(-5px);
+            box-shadow: var(--hover-shadow);
         }
         
-        .content-card-body {
-            padding: 1.5rem;
-        }
-        
-        /* 系统监控 */
-        .system-monitor {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-            gap: 1rem;
-            margin-bottom: 2rem;
-        }
-        
-        .monitor-item {
+        .proxy-card {
+            cursor: pointer;
             background: white;
-            border-radius: 12px;
-            padding: 1.5rem;
-            box-shadow: 0 2px 10px rgba(0,0,0,.08);
-        }
-        
-        .monitor-item h6 {
-            color: #636e72;
-            font-size: 0.9rem;
-            margin-bottom: 0.5rem;
-        }
-        
-        .monitor-value {
-            font-size: 1.8rem;
-            font-weight: 700;
-            color: #2d3436;
-        }
-        
-        .progress {
-            height: 8px;
-            border-radius: 4px;
-            margin-top: 0.5rem;
-        }
-        
-        /* 按钮样式 */
-        .btn {
-            border-radius: 8px;
-            padding: 0.5rem 1.2rem;
-            font-weight: 500;
+            border-radius: 15px;
+            padding: 25px;
+            margin-bottom: 20px;
+            position: relative;
+            overflow: hidden;
             transition: all 0.3s ease;
         }
         
-        .btn-primary {
-            background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+        .proxy-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 5px;
+            background: var(--primary-gradient);
+        }
+        
+        .proxy-card:hover {
+            transform: translateX(10px);
+            box-shadow: var(--hover-shadow);
+        }
+        
+        .stat-card {
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            border-radius: 15px;
+            padding: 20px;
+            text-align: center;
+            transition: all 0.3s ease;
+        }
+        
+        .stat-card:hover {
+            transform: scale(1.05);
+        }
+        
+        .stat-number {
+            font-size: 2.5rem;
+            font-weight: bold;
+            background: var(--primary-gradient);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        
+        .btn-gradient {
+            background: var(--primary-gradient);
+            color: white;
             border: none;
+            padding: 10px 25px;
+            border-radius: var(--btn-radius);
+            transition: all 0.3s ease;
+            font-weight: 500;
+            box-shadow: 0 2px 10px rgba(102, 126, 234, 0.3);
+        }
+        
+        .btn-gradient:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+            color: white;
+        }
+        
+        /* 统一按钮样式 */
+        .btn {
+            border-radius: var(--btn-radius);
+            transition: all 0.2s ease;
+            font-weight: 500;
+            border: none;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.2);
+            transition: left 0.3s ease;
+        }
+        
+        .btn:hover::before {
+            left: 100%;
+        }
+        
+        .btn-success {
+            background: var(--success-gradient);
+            box-shadow: 0 2px 10px rgba(17, 153, 142, 0.3);
+        }
+        
+        .btn-success:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(17, 153, 142, 0.4);
+            background: var(--success-gradient);
+        }
+        
+        .btn-warning {
+            background: var(--warning-gradient);
+            box-shadow: 0 2px 10px rgba(242, 153, 74, 0.3);
+            color: white;
+        }
+        
+        .btn-warning:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(242, 153, 74, 0.4);
+            background: var(--warning-gradient);
+            color: white;
+        }
+        
+        .btn-danger {
+            background: var(--danger-gradient);
+            box-shadow: 0 2px 10px rgba(235, 51, 73, 0.3);
+        }
+        
+        .btn-danger:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(235, 51, 73, 0.4);
+            background: var(--danger-gradient);
+        }
+        
+        .btn-info {
+            background: var(--info-gradient);
+            box-shadow: 0 2px 10px rgba(33, 150, 243, 0.3);
+        }
+        
+        .btn-info:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(33, 150, 243, 0.4);
+            background: var(--info-gradient);
+        }
+        
+        .btn-primary {
+            background: var(--primary-gradient);
+            box-shadow: 0 2px 10px rgba(102, 126, 234, 0.3);
         }
         
         .btn-primary:hover {
             transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(42, 82, 152, 0.3);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+            background: var(--primary-gradient);
         }
         
-        /* 表格样式 */
-        .table {
-            font-size: 0.95rem;
+        .btn-outline-secondary {
+            background: white;
+            border: 1px solid #e0e0e0;
+            color: #666;
         }
         
-        .table thead th {
-            border-bottom: 2px solid #dee2e6;
-            color: #495057;
-            font-weight: 600;
-            text-transform: uppercase;
+        .btn-outline-secondary:hover {
+            background: #f8f9fa;
+            border-color: #667eea;
+            color: #667eea;
+            transform: translateY(-1px);
+        }
+        
+        .btn-sm {
+            padding: 6px 12px;
+            font-size: 0.875rem;
+        }
+        
+        .btn-group .btn {
+            border-radius: 0;
+        }
+        
+        .btn-group .btn:first-child {
+            border-radius: var(--btn-radius) 0 0 var(--btn-radius);
+        }
+        
+        .btn-group .btn:last-child {
+            border-radius: 0 var(--btn-radius) var(--btn-radius) 0;
+        }
+        
+        /* 徽章样式统一 */
+        .badge {
+            font-weight: 500;
+            padding: 5px 12px;
+            border-radius: 20px;
             font-size: 0.85rem;
-            letter-spacing: 0.5px;
         }
         
-        /* 响应式 */
-        .sidebar-toggle {
+        .badge.bg-secondary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+        }
+        
+        .badge.bg-success {
+            background: var(--success-gradient) !important;
+        }
+        
+        .badge.bg-primary {
+            background: var(--primary-gradient) !important;
+        }
+        
+        .badge.bg-info {
+            background: var(--info-gradient) !important;
+        }
+        
+        /* 输入框美化 */
+        .form-control {
+            border-radius: var(--btn-radius);
+            border: 1px solid #e0e0e0;
+            padding: 12px 15px;
+            transition: all 0.3s ease;
+        }
+        
+        .form-control:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
+        }
+        
+        .form-control-sm {
+            padding: 6px 10px;
+            font-size: 0.875rem;
+        }
+        
+        /* 复选框美化 */
+        .form-check-input {
+            width: 1.2em;
+            height: 1.2em;
+            border-radius: 4px;
+            border: 2px solid #ddd;
+            transition: all 0.2s ease;
+        }
+        
+        .form-check-input:checked {
+            background-color: #667eea;
+            border-color: #667eea;
+        }
+        
+        .form-check-input:hover {
+            border-color: #667eea;
+            cursor: pointer;
+        }
+        
+        .form-control, .form-select {
+            border-radius: 10px;
+            border: 1px solid #e0e0e0;
+            padding: 12px 15px;
+            transition: all 0.3s ease;
+        }
+        
+        .form-control:focus, .form-select:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
+        }
+        
+        .modal-content {
+            border-radius: 20px;
+            border: none;
+        }
+        
+        .modal-header {
+            background: var(--primary-gradient);
+            color: white;
+            border-radius: 20px 20px 0 0;
+            border: none;
+        }
+        
+        .badge-status {
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-weight: normal;
+            font-size: 0.85rem;
+        }
+        
+        .loading-spinner {
             display: none;
             position: fixed;
-            bottom: 20px;
-            right: 20px;
-            width: 50px;
-            height: 50px;
-            border-radius: 50%;
-            background: var(--primary);
-            color: white;
-            border: none;
-            box-shadow: 0 2px 10px rgba(0,0,0,.2);
-            z-index: 1000;
-        }
-        
-        @media (max-width: 768px) {
-            .sidebar {
-                transform: translateX(-100%);
-            }
-            
-            .sidebar.show {
-                transform: translateX(0);
-            }
-            
-            .main-content {
-                margin-left: 0;
-            }
-            
-            .sidebar-toggle {
-                display: flex;
-                align-items: center;
-                justify-content: center;
-            }
-        }
-        
-        /* 加载动画 */
-        .spinner-wrapper {
-            position: fixed;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(255, 255, 255, 0.9);
-            display: flex;
-            align-items: center;
-            justify-content: center;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
             z-index: 9999;
         }
         
-        .spinner-border {
-            width: 3rem;
-            height: 3rem;
-            border-width: 0.3rem;
+        .loading-spinner.show {
+            display: block;
         }
         
-        /* 工具提示 */
-        .tooltip-inner {
-            max-width: 300px;
-            padding: 0.5rem 1rem;
-            border-radius: 8px;
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
         }
         
-        /* 批量操作进度 */
-        .operation-progress {
+        .animate-fade-in {
+            animation: fadeIn 0.5s ease-out;
+        }
+        
+        .toast-container {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            z-index: 1050;
+        }
+        
+        .system-monitor {
+            background: white;
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        
+        .progress {
+            height: 10px;
+            border-radius: 5px;
+            overflow: hidden;
+        }
+        
+        .progress-bar {
+            background: var(--primary-gradient);
+            transition: width 0.6s ease;
+        }
+        
+        .dark-mode {
+            background: #1a1a2e;
+            color: #eee;
+        }
+        
+        .dark-mode .card, .dark-mode .nav-tabs {
+            background: #16213e;
+            color: #eee;
+        }
+        
+        .dark-mode .form-control, .dark-mode .form-select {
+            background: #0f3460;
+            color: #eee;
+            border-color: #2a2a3e;
+        }
+        
+        .switch-mode {
             position: fixed;
             bottom: 20px;
             right: 20px;
-            width: 300px;
-            background: white;
-            border-radius: 12px;
-            box-shadow: 0 5px 20px rgba(0,0,0,.15);
-            padding: 1rem;
             z-index: 1000;
-        }
-        
-        /* 代理组卡片 */
-        .proxy-group-card {
-            background: white;
-            border-radius: 12px;
-            padding: 1.5rem;
-            margin-bottom: 1rem;
-            box-shadow: 0 2px 10px rgba(0,0,0,.08);
+            width: 50px;
+            height: 50px;
+            border-radius: 50%;
+            background: var(--primary-gradient);
+            color: white;
+            border: none;
+            box-shadow: var(--card-shadow);
             transition: all 0.3s ease;
-            cursor: pointer;
-            border: 2px solid transparent;
         }
         
-        .proxy-group-card:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 5px 20px rgba(0,0,0,.1);
-            border-color: var(--primary);
-        }
-        
-        .proxy-group-card.selected {
-            border-color: var(--primary);
-            background: rgba(42, 82, 152, 0.05);
-        }
-        
-        /* 标签样式 */
-        .badge {
-            padding: 0.4rem 0.8rem;
-            border-radius: 6px;
-            font-weight: 500;
-            font-size: 0.85rem;
-        }
-        
-        /* 自定义滚动条 */
-        ::-webkit-scrollbar {
-            width: 8px;
-            height: 8px;
-        }
-        
-        ::-webkit-scrollbar-track {
-            background: #f1f1f1;
-        }
-        
-        ::-webkit-scrollbar-thumb {
-            background: #888;
-            border-radius: 4px;
-        }
-        
-        ::-webkit-scrollbar-thumb:hover {
-            background: #555;
+        .switch-mode:hover {
+            transform: scale(1.1);
+            box-shadow: var(--hover-shadow);
         }
     </style>
 </head>
 <body>
-    <!-- 顶部导航 -->
-    <nav class="navbar navbar-dark fixed-top">
+    <!-- 导航栏 -->
+    <nav class="navbar navbar-dark mb-4">
         <div class="container-fluid">
-            <a class="navbar-brand" href="#">
-                <i class="bi bi-shield-check"></i>
-                3proxy Enterprise
-            </a>
+            <span class="navbar-brand mb-0 h1">
+                <i class="bi bi-shield-check"></i> 3proxy 管理系统
+            </span>
             <div class="d-flex align-items-center">
-                <span class="text-white me-3">
-                    <i class="bi bi-person-circle"></i> {{ current_user.username }}
-                </span>
-                <a href="{{ url_for('logout') }}" class="btn btn-outline-light btn-sm">
+                <span class="text-white me-3" id="currentTime"></span>
+                <a href="/logout" class="btn btn-outline-light btn-sm">
                     <i class="bi bi-box-arrow-right"></i> 退出
                 </a>
             </div>
         </div>
     </nav>
-    
-    <!-- 侧边栏 -->
-    <aside class="sidebar" id="sidebar">
-        <div class="sidebar-header">
-            <h5 class="mb-0">控制面板</h5>
-            <small class="text-muted">Enterprise Edition</small>
-        </div>
-        <nav class="sidebar-menu">
-            <a href="#" class="sidebar-item active" data-page="dashboard">
-                <i class="bi bi-speedometer2"></i>
-                <span>仪表板</span>
-            </a>
-            <a href="#" class="sidebar-item" data-page="proxies">
-                <i class="bi bi-hdd-network"></i>
-                <span>代理管理</span>
-            </a>
-            <a href="#" class="sidebar-item" data-page="batch">
-                <i class="bi bi-layers"></i>
-                <span>批量操作</span>
-            </a>
-            <a href="#" class="sidebar-item" data-page="network">
-                <i class="bi bi-diagram-3"></i>
-                <span>网络配置</span>
-            </a>
-            <a href="#" class="sidebar-item" data-page="users">
-                <i class="bi bi-people"></i>
-                <span>用户管理</span>
-            </a>
-            <a href="#" class="sidebar-item" data-page="logs">
-                <i class="bi bi-file-text"></i>
-                <span>日志查看</span>
-            </a>
-            <a href="#" class="sidebar-item" data-page="settings">
-                <i class="bi bi-gear"></i>
-                <span>系统设置</span>
-            </a>
-        </nav>
-    </aside>
-    
+
     <!-- 主内容区 -->
-    <main class="main-content">
-        <div id="content-area">
-            <!-- 内容将通过JavaScript动态加载 -->
+    <div class="container-fluid px-4">
+        <!-- 系统监控 -->
+        <div class="system-monitor animate-fade-in">
+            <h5 class="mb-3"><i class="bi bi-speedometer2"></i> 系统监控</h5>
+            <div class="row g-3">
+                <div class="col-md-3">
+                    <div class="stat-card">
+                        <div class="stat-number" id="cpuUsage">0%</div>
+                        <small>CPU 使用率</small>
+                        <div class="progress mt-2">
+                            <div class="progress-bar" id="cpuProgress" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="stat-card">
+                        <div class="stat-number" id="memUsage">0%</div>
+                        <small>内存使用率</small>
+                        <div class="progress mt-2">
+                            <div class="progress-bar" id="memProgress" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="stat-card">
+                        <div class="stat-number" id="diskUsage">0%</div>
+                        <small>磁盘使用率</small>
+                        <div class="progress mt-2">
+                            <div class="progress-bar" id="diskProgress" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="stat-card">
+                        <div class="stat-number" id="proxyStatus">
+                            <i class="bi bi-circle-fill text-danger"></i>
+                        </div>
+                        <small>3proxy 状态</small>
+                        <div class="mt-1">
+                            <small id="proxyInfo">未运行</small>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
-    </main>
-    
-    <!-- 侧边栏切换按钮（移动端） -->
-    <button class="sidebar-toggle" id="sidebarToggle">
-        <i class="bi bi-list"></i>
-    </button>
-    
-    <!-- 批量操作进度提示 -->
-    <div class="operation-progress" id="operationProgress" style="display: none;">
-        <h6 class="mb-2">批量操作进行中</h6>
-        <div class="progress mb-2">
-            <div class="progress-bar progress-bar-striped progress-bar-animated" 
-                 role="progressbar" style="width: 0%"></div>
-        </div>
-        <small class="text-muted">
-            <span id="operationStatus">处理中...</span>
-        </small>
-    </div>
-    
-    <!-- 加载动画 -->
-    <div class="spinner-wrapper" id="loadingSpinner" style="display: none;">
-        <div class="spinner-border text-primary" role="status">
-            <span class="visually-hidden">加载中...</span>
-        </div>
-    </div>
-    
-    <!-- Scripts -->
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/datatables.net@1.13.8/js/jquery.dataTables.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/datatables.net-bs5@1.13.8/js/dataTables.bootstrap5.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-    
-    <script>
-        // 全局变量
-        let currentPage = 'dashboard';
-        let refreshInterval = null;
-        let selectedProxies = new Set();
-        let selectedGroups = new Set();
-        
-        // 工具函数
-        function showLoading() {
-            $('#loadingSpinner').show();
-        }
-        
-        function hideLoading() {
-            $('#loadingSpinner').hide();
-        }
-        
-        function showToast(message, type = 'success') {
-            const toastHtml = `
-                <div class="toast align-items-center text-white bg-${type} border-0" role="alert">
-                    <div class="d-flex">
-                        <div class="toast-body">${message}</div>
-                        <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
-                    </div>
-                </div>
-            `;
-            
-            const toastContainer = document.querySelector('.toast-container') || createToastContainer();
-            const toastElement = $(toastHtml).appendTo(toastContainer);
-            const toast = new bootstrap.Toast(toastElement[0]);
-            toast.show();
-            
-            toastElement.on('hidden.bs.toast', function() {
-                $(this).remove();
-            });
-        }
-        
-        function createToastContainer() {
-            const container = document.createElement('div');
-            container.className = 'toast-container position-fixed top-0 end-0 p-3';
-            document.body.appendChild(container);
-            return container;
-        }
-        
-        // API请求封装
-        async function api(url, options = {}) {
-            try {
-                const response = await fetch(url, {
-                    ...options,
-                    headers: {
-                        'Content-Type': 'application/json',
-                        ...options.headers
-                    }
-                });
-                
-                if (!response.ok) {
-                    const error = await response.json();
-                    throw new Error(error.error || '请求失败');
-                }
-                
-                return await response.json();
-            } catch (error) {
-                showToast(error.message, 'danger');
-                throw error;
-            }
-        }
-        
-        // 页面加载函数
-        async function loadDashboard() {
-            const html = `
-                <div class="d-flex justify-content-between align-items-center mb-4">
-                    <h2>仪表板</h2>
-                    <button class="btn btn-primary btn-sm" onclick="refreshDashboard()">
-                        <i class="bi bi-arrow-clockwise"></i> 刷新
-                    </button>
-                </div>
-                
-                <!-- 统计卡片 -->
-                <div class="row mb-4" id="statsCards">
-                    <div class="col-md-3">
-                        <div class="stat-card primary">
-                            <div class="stat-icon">
-                                <i class="bi bi-hdd-stack"></i>
-                            </div>
-                            <h3 id="totalProxies">-</h3>
-                            <p>总代理数</p>
-                        </div>
-                    </div>
-                    <div class="col-md-3">
-                        <div class="stat-card success">
-                            <div class="stat-icon">
-                                <i class="bi bi-check-circle"></i>
-                            </div>
-                            <h3 id="enabledProxies">-</h3>
-                            <p>启用代理</p>
-                        </div>
-                    </div>
-                    <div class="col-md-3">
-                        <div class="stat-card info">
-                            <div class="stat-icon">
-                                <i class="bi bi-diagram-3"></i>
-                            </div>
-                            <h3 id="cSegments">-</h3>
-                            <p>C段数量</p>
-                        </div>
-                    </div>
-                    <div class="col-md-3">
-                        <div class="stat-card warning">
-                            <div class="stat-icon">
-                                <i class="bi bi-percent"></i>
-                            </div>
-                            <h3 id="utilization">-</h3>
-                            <p>使用率</p>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- 系统监控 -->
-                <div class="content-card">
-                    <div class="content-card-header">
-                        <h5 class="mb-0">系统监控</h5>
-                    </div>
-                    <div class="content-card-body">
-                        <div class="system-monitor" id="systemMonitor">
-                            <!-- 动态加载 -->
-                        </div>
-                    </div>
-                </div>
-            `;
-            
-            $('#content-area').html(html);
-            await refreshDashboard();
-            
-            // 设置自动刷新
-            if (refreshInterval) clearInterval(refreshInterval);
-            refreshInterval = setInterval(refreshDashboard, 5000);
-        }
-        
-        async function refreshDashboard() {
-            try {
-                // 获取统计数据
-                const stats = await api('/api/dashboard/stats');
-                $('#totalProxies').text(stats.total_proxies.toLocaleString());
-                $('#enabledProxies').text(stats.enabled_proxies.toLocaleString());
-                $('#cSegments').text(stats.c_segments);
-                $('#utilization').text(stats.utilization + '%');
-                
-                // 获取系统状态
-                const systemStatus = await api('/api/system/status');
-                
-                const monitorHtml = `
-                    <div class="monitor-item">
-                        <h6>CPU使用率</h6>
-                        <div class="monitor-value">${systemStatus.cpu.percent}%</div>
-                        <div class="progress">
-                            <div class="progress-bar bg-primary" style="width: ${systemStatus.cpu.percent}%"></div>
-                        </div>
-                    </div>
-                    <div class="monitor-item">
-                        <h6>内存使用</h6>
-                        <div class="monitor-value">${systemStatus.memory.percent}%</div>
-                        <div class="progress">
-                            <div class="progress-bar bg-success" style="width: ${systemStatus.memory.percent}%"></div>
-                        </div>
-                        <small class="text-muted">${systemStatus.memory.used}GB / ${systemStatus.memory.total}GB</small>
-                    </div>
-                    <div class="monitor-item">
-                        <h6>磁盘使用</h6>
-                        <div class="monitor-value">${systemStatus.disk.percent}%</div>
-                        <div class="progress">
-                            <div class="progress-bar bg-info" style="width: ${systemStatus.disk.percent}%"></div>
-                        </div>
-                        <small class="text-muted">${systemStatus.disk.used}GB / ${systemStatus.disk.total}GB</small>
-                    </div>
-                    <div class="monitor-item">
-                        <h6>3proxy状态</h6>
-                        <div class="monitor-value">
-                            ${systemStatus.proxy.running ? 
-                                '<span class="text-success"><i class="bi bi-check-circle-fill"></i> 运行中</span>' : 
-                                '<span class="text-danger"><i class="bi bi-x-circle-fill"></i> 已停止</span>'}
-                        </div>
-                        ${systemStatus.proxy.running ? 
-                            `<small class="text-muted">PID: ${systemStatus.proxy.pid} | 连接: ${systemStatus.proxy.connections}</small>` : ''}
-                    </div>
-                `;
-                
-                $('#systemMonitor').html(monitorHtml);
-                
-            } catch (error) {
-                console.error('Dashboard refresh error:', error);
-            }
-        }
-        
-        async function loadProxies() {
-            const html = `
-                <div class="d-flex justify-content-between align-items-center mb-4">
-                    <h2>代理管理</h2>
-                    <div>
-                        <button class="btn btn-success btn-sm" onclick="showBatchAddModal()">
-                            <i class="bi bi-plus-circle"></i> 批量添加
-                        </button>
-                        <button class="btn btn-primary btn-sm" onclick="loadProxyGroups()">
-                            <i class="bi bi-arrow-clockwise"></i> 刷新
-                        </button>
-                    </div>
-                </div>
-                
-                <!-- 搜索栏 -->
-                <div class="content-card mb-3">
-                    <div class="content-card-body">
-                        <div class="row">
-                            <div class="col-md-6">
-                                <input type="text" class="form-control" id="searchInput" 
-                                       placeholder="搜索IP地址或C段...">
-                            </div>
-                            <div class="col-md-6">
-                                <div class="btn-group" role="group">
-                                    <button class="btn btn-outline-primary" onclick="exportSelected()">
-                                        <i class="bi bi-download"></i> 导出选中
-                                    </button>
-                                    <button class="btn btn-outline-success" onclick="enableSelected()">
-                                        <i class="bi bi-check-circle"></i> 启用选中
-                                    </button>
-                                    <button class="btn btn-outline-warning" onclick="disableSelected()">
-                                        <i class="bi bi-pause-circle"></i> 禁用选中
-                                    </button>
-                                    <button class="btn btn-outline-danger" onclick="deleteSelected()">
-                                        <i class="bi bi-trash"></i> 删除选中
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-                
-                <!-- 代理组列表 -->
-                <div id="proxyGroupsList">
-                    <!-- 动态加载 -->
-                </div>
-                
-                <!-- 分页 -->
-                <nav id="pagination">
-                    <!-- 动态加载 -->
-                </nav>
-            `;
-            
-            $('#content-area').html(html);
-            
-            // 清除自动刷新
-            if (refreshInterval) {
-                clearInterval(refreshInterval);
-                refreshInterval = null;
-            }
-            
-            // 加载代理组
-            await loadProxyGroups();
-            
-            // 搜索功能
-            $('#searchInput').on('input', debounce(function() {
-                loadProxyGroups(1, $(this).val());
-            }, 500));
-        }
-        
-        async function loadProxyGroups(page = 1, search = '') {
-            showLoading();
-            try {
-                const data = await api(`/api/proxy/groups?page=${page}&per_page=20&search=${encodeURIComponent(search)}`);
-                
-                let html = '';
-                data.groups.forEach(group => {
-                    html += `
-                        <div class="proxy-group-card ${selectedGroups.has(group.c_segment) ? 'selected' : ''}" 
-                             data-segment="${group.c_segment}">
-                            <div class="row align-items-center">
-                                <div class="col-md-1">
-                                    <div class="form-check">
-                                        <input class="form-check-input group-checkbox" type="checkbox" 
-                                               value="${group.c_segment}" 
-                                               ${selectedGroups.has(group.c_segment) ? 'checked' : ''}>
-                                    </div>
-                                </div>
-                                <div class="col-md-3">
-                                    <h5 class="mb-1">${group.c_segment}</h5>
-                                    <small class="text-muted">端口: ${group.port_range}</small>
-                                </div>
-                                <div class="col-md-4">
-                                    <span class="badge bg-primary me-2">总数: ${group.total}</span>
-                                    <span class="badge bg-success me-2">启用: ${group.enabled}</span>
-                                    <span class="badge bg-secondary">禁用: ${group.disabled}</span>
-                                </div>
-                                <div class="col-md-4 text-end">
-                                    <button class="btn btn-sm btn-primary" onclick="viewGroupDetail('${group.c_segment}')">
-                                        <i class="bi bi-eye"></i> 查看
-                                    </button>
-                                    <button class="btn btn-sm btn-success" onclick="toggleGroup('${group.c_segment}', true)">
-                                        <i class="bi bi-check-circle"></i> 全部启用
-                                    </button>
-                                    <button class="btn btn-sm btn-warning" onclick="toggleGroup('${group.c_segment}', false)">
-                                        <i class="bi bi-pause-circle"></i> 全部禁用
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    `;
-                });
-                
-                $('#proxyGroupsList').html(html || '<p class="text-center text-muted">暂无数据</p>');
-                
-                // 渲染分页
-                renderPagination(data.page, data.pages, (p) => loadProxyGroups(p, search));
-                
-                // 绑定复选框事件
-                $('.group-checkbox').on('change', function() {
-                    const segment = $(this).val();
-                    if ($(this).is(':checked')) {
-                        selectedGroups.add(segment);
-                        $(this).closest('.proxy-group-card').addClass('selected');
-                    } else {
-                        selectedGroups.delete(segment);
-                        $(this).closest('.proxy-group-card').removeClass('selected');
-                    }
-                });
-                
-            } catch (error) {
-                console.error('Load proxy groups error:', error);
-            } finally {
-                hideLoading();
-            }
-        }
-        
-        async function viewGroupDetail(cSegment) {
-            // 创建模态框显示代理详情
-            const modalHtml = `
-                <div class="modal fade" id="proxyDetailModal" tabindex="-1">
-                    <div class="modal-dialog modal-xl">
-                        <div class="modal-content">
-                            <div class="modal-header">
-                                <h5 class="modal-title">代理组详情 - ${cSegment}</h5>
-                                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                            </div>
-                            <div class="modal-body">
-                                <div id="proxyDetailContent">
-                                    <div class="text-center">
-                                        <div class="spinner-border" role="status">
-                                            <span class="visually-hidden">加载中...</span>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            `;
-            
-            // 移除旧的模态框
-            $('#proxyDetailModal').remove();
-            $('body').append(modalHtml);
-            
-            const modal = new bootstrap.Modal(document.getElementById('proxyDetailModal'));
-            modal.show();
-            
-            // 加载数据
-            try {
-                const data = await api(`/api/proxy/group/${cSegment}?per_page=1000`);
-                
-                let tableHtml = `
-                    <div class="mb-3">
-                        <button class="btn btn-sm btn-outline-primary" onclick="selectAllInGroup()">
-                            <i class="bi bi-check-square"></i> 全选
-                        </button>
-                        <button class="btn btn-sm btn-outline-secondary" onclick="unselectAllInGroup()">
-                            <i class="bi bi-square"></i> 取消全选
-                        </button>
-                    </div>
-                    <div class="table-responsive">
-                        <table class="table table-sm" id="proxyDetailTable">
-                            <thead>
-                                <tr>
-                                    <th width="40">
-                                        <input type="checkbox" class="form-check-input" id="selectAllProxies">
-                                    </th>
-                                    <th>ID</th>
-                                    <th>IP地址</th>
-                                    <th>端口</th>
-                                    <th>用户名</th>
-                                    <th>密码</th>
-                                    <th>状态</th>
-                                    <th>操作</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                `;
-                
-                data.proxies.forEach(proxy => {
-                    tableHtml += `
-                        <tr>
-                            <td>
-                                <input type="checkbox" class="form-check-input proxy-checkbox" 
-                                       value="${proxy.id}">
-                            </td>
-                            <td>${proxy.id}</td>
-                            <td>${proxy.ip}</td>
-                            <td>${proxy.port}</td>
-                            <td><code>${proxy.username}</code></td>
-                            <td>
-                                <div class="input-group input-group-sm">
-                                    <input type="text" class="form-control" value="${proxy.password}" readonly>
-                                    <button class="btn btn-outline-secondary" onclick="copyToClipboard('${proxy.password}')">
-                                        <i class="bi bi-clipboard"></i>
-                                    </button>
-                                </div>
-                            </td>
-                            <td>
-                                ${proxy.enabled ? 
-                                    '<span class="badge bg-success">启用</span>' : 
-                                    '<span class="badge bg-secondary">禁用</span>'}
-                            </td>
-                            <td>
-                                <button class="btn btn-sm ${proxy.enabled ? 'btn-warning' : 'btn-success'}" 
-                                        onclick="toggleProxy(${proxy.id}, ${!proxy.enabled})">
-                                    ${proxy.enabled ? '禁用' : '启用'}
-                                </button>
-                            </td>
-                        </tr>
-                    `;
-                });
-                
-                tableHtml += '</tbody></table></div>';
-                
-                $('#proxyDetailContent').html(tableHtml);
-                
-                // 初始化DataTable
-                $('#proxyDetailTable').DataTable({
-                    pageLength: 50,
-                    order: [[2, 'asc'], [3, 'asc']],
-                    language: {
-                        url: '//cdn.datatables.net/plug-ins/1.13.8/i18n/zh.json'
-                    }
-                });
-                
-                // 绑定全选
-                $('#selectAllProxies').on('change', function() {
-                    $('.proxy-checkbox').prop('checked', $(this).is(':checked'));
-                });
-                
-            } catch (error) {
-                $('#proxyDetailContent').html(`
-                    <div class="alert alert-danger">
-                        加载失败: ${error.message}
-                    </div>
-                `);
-            }
-        }
-        
-        async function loadBatchOperations() {
-            const html = `
-                <div class="d-flex justify-content-between align-items-center mb-4">
-                    <h2>批量操作</h2>
-                </div>
-                
+
+        <!-- 标签页 -->
+        <ul class="nav nav-tabs" id="mainTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="proxy-tab" data-bs-toggle="tab" data-bs-target="#proxy-pane">
+                    <i class="bi bi-hdd-network"></i> 代理管理
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="user-tab" data-bs-toggle="tab" data-bs-target="#user-pane">
+                    <i class="bi bi-people"></i> 用户管理
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="ip-tab" data-bs-toggle="tab" data-bs-target="#ip-pane">
+                    <i class="bi bi-diagram-3"></i> IP管理
+                </button>
+            </li>
+        </ul>
+
+        <!-- 标签内容 -->
+        <div class="tab-content">
+            <!-- 代理管理 -->
+            <div class="tab-pane fade show active animate-fade-in" id="proxy-pane" role="tabpanel">
                 <div class="row">
-                    <div class="col-md-6">
-                        <div class="content-card">
-                            <div class="content-card-header">
-                                <h5 class="mb-0">批量添加代理</h5>
-                            </div>
-                            <div class="content-card-body">
+                    <div class="col-lg-4">
+                        <div class="card mb-3">
+                            <div class="card-body">
+                                <h5 class="card-title"><i class="bi bi-plus-circle"></i> 批量添加代理</h5>
                                 <form id="batchAddForm">
                                     <div class="mb-3">
                                         <label class="form-label">IP范围</label>
-                                        <input type="text" class="form-control" name="ip_range" 
-                                               placeholder="例: 192.168.1.1-254" required>
-                                        <small class="text-muted">支持格式: x.x.x.1-254 或 x.x.x.1-x.x.x.254</small>
+                                        <input type="text" class="form-control" name="iprange" placeholder="192.168.1.2-254">
                                     </div>
-                                    <div class="row">
-                                        <div class="col-md-6">
-                                            <div class="mb-3">
-                                                <label class="form-label">起始端口</label>
-                                                <input type="number" class="form-control" name="port_start" 
-                                                       value="10000" min="1024" max="65535" required>
-                                            </div>
-                                        </div>
-                                        <div class="col-md-6">
-                                            <div class="mb-3">
-                                                <label class="form-label">结束端口</label>
-                                                <input type="number" class="form-control" name="port_end" 
-                                                       value="60000" min="1024" max="65535" required>
-                                            </div>
-                                        </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">端口范围</label>
+                                        <input type="text" class="form-control" name="portrange" placeholder="20000-30000">
                                     </div>
                                     <div class="mb-3">
                                         <label class="form-label">用户名前缀</label>
-                                        <input type="text" class="form-control" name="user_prefix" 
-                                               value="user" required>
+                                        <input type="text" class="form-control" name="userprefix" placeholder="user">
                                     </div>
+                                    <button type="submit" class="btn btn-gradient w-100">
+                                        <i class="bi bi-cloud-upload"></i> 批量添加
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+
+                        <div class="card">
+                            <div class="card-body">
+                                <h5 class="card-title"><i class="bi bi-file-text"></i> 手动批量添加</h5>
+                                <form id="manualBatchForm">
                                     <div class="mb-3">
-                                        <label class="form-label">密码长度</label>
-                                        <input type="number" class="form-control" name="password_length" 
-                                               value="12" min="8" max="32" required>
+                                        <textarea name="batchproxy" class="form-control" rows="6" 
+                                                  placeholder="每行一个：ip,端口 或 ip:端口"></textarea>
                                     </div>
-                                    <button type="submit" class="btn btn-primary">
-                                        <i class="bi bi-plus-circle"></i> 批量添加
+                                    <button type="submit" class="btn btn-gradient w-100">
+                                        <i class="bi bi-upload"></i> 添加
                                     </button>
                                 </form>
                             </div>
                         </div>
                     </div>
-                    
-                    <div class="col-md-6">
-                        <div class="content-card">
-                            <div class="content-card-header">
-                                <h5 class="mb-0">导入代理</h5>
-                            </div>
-                            <div class="content-card-body">
-                                <form id="importForm">
-                                    <div class="mb-3">
-                                        <label class="form-label">选择文件</label>
-                                        <input type="file" class="form-control" name="file" 
-                                               accept=".txt,.csv" required>
-                                        <small class="text-muted">
-                                            支持格式: IP:端口:用户名:密码 (每行一个)
-                                        </small>
+
+                    <div class="col-lg-8">
+                        <div class="card">
+                            <div class="card-body">
+                                <div class="d-flex justify-content-between align-items-center mb-3">
+                                    <h5 class="card-title mb-0">
+                                        <i class="bi bi-list-ul"></i> 代理组列表
+                                    </h5>
+                                    <div>
+                                        <button class="btn btn-sm btn-outline-primary" id="refreshGroups">
+                                            <i class="bi bi-arrow-clockwise"></i> 刷新
+                                        </button>
+                                        <button class="btn btn-sm btn-outline-success" id="exportGroups">
+                                            <i class="bi bi-download"></i> 导出选中
+                                        </button>
                                     </div>
-                                    <button type="submit" class="btn btn-primary">
-                                        <i class="bi bi-upload"></i> 导入
-                                    </button>
-                                </form>
+                                </div>
                                 
-                                <hr class="my-4">
-                                
-                                <h6>快速导出</h6>
-                                <div class="btn-group" role="group">
-                                    <button class="btn btn-outline-primary" onclick="exportAll('txt')">
-                                        <i class="bi bi-file-text"></i> 导出TXT
-                                    </button>
-                                    <button class="btn btn-outline-primary" onclick="exportAll('json')">
-                                        <i class="bi bi-file-code"></i> 导出JSON
-                                    </button>
+                                <div id="proxyGroups" class="overflow-auto" style="max-height: 600px;">
+                                    <!-- 代理组卡片将在这里动态生成 -->
                                 </div>
                             </div>
                         </div>
                     </div>
                 </div>
-            `;
-            
-            $('#content-area').html(html);
-            
-            // 绑定表单提交
-            $('#batchAddForm').on('submit', async function(e) {
-                e.preventDefault();
-                const formData = new FormData(this);
-                const data = Object.fromEntries(formData);
-                
-                showLoading();
-                try {
-                    const result = await api('/api/proxy/batch/add', {
-                        method: 'POST',
-                        body: JSON.stringify(data)
-                    });
-                    
-                    showToast(result.message, 'success');
-                    trackOperation(result.operation_id);
-                    this.reset();
-                } catch (error) {
-                    console.error('Batch add error:', error);
-                } finally {
-                    hideLoading();
-                }
-            });
-            
-            $('#importForm').on('submit', async function(e) {
-                e.preventDefault();
-                const formData = new FormData(this);
-                
-                showLoading();
-                try {
-                    const response = await fetch('/api/proxy/import', {
-                        method: 'POST',
-                        body: formData
-                    });
-                    
-                    const result = await response.json();
-                    if (response.ok) {
-                        showToast(result.message, 'success');
-                        trackOperation(result.operation_id);
-                        this.reset();
-                    } else {
-                        throw new Error(result.error);
-                    }
-                } catch (error) {
-                    showToast(error.message, 'danger');
-                } finally {
-                    hideLoading();
-                }
-            });
-        }
-        
-        async function loadNetworkConfig() {
-            const html = `
-                <div class="d-flex justify-content-between align-items-center mb-4">
-                    <h2>网络配置</h2>
-                </div>
-                
-                <div class="content-card">
-                    <div class="content-card-header">
-                        <h5 class="mb-0">IP地址管理</h5>
-                    </div>
-                    <div class="content-card-body">
-                        <form id="addIpForm" class="row g-3 mb-4">
-                            <div class="col-md-3">
-                                <label class="form-label">网络接口</label>
-                                <select class="form-select" name="interface" id="interfaceSelect" required>
-                                    <!-- 动态加载 -->
-                                </select>
-                            </div>
-                            <div class="col-md-6">
-                                <label class="form-label">IP范围</label>
-                                <input type="text" class="form-control" name="ip_range" 
-                                       placeholder="例: 192.168.1.1-254" required>
-                            </div>
-                            <div class="col-md-3">
-                                <label class="form-label">&nbsp;</label>
-                                <button type="submit" class="btn btn-primary d-block w-100">
-                                    <i class="bi bi-plus-circle"></i> 添加IP
-                                </button>
-                            </div>
-                        </form>
-                        
-                        <div id="interfacesList">
-                            <!-- 动态加载 -->
-                        </div>
-                    </div>
-                </div>
-            `;
-            
-            $('#content-area').html(html);
-            
-            // 加载网络接口
-            const interfaces = await api('/api/network/interfaces');
-            let options = '';
-            interfaces.interfaces.forEach(iface => {
-                options += `<option value="${iface.name}">${iface.name} (${iface.ip})</option>`;
-            });
-            $('#interfaceSelect').html(options);
-            
-            // 显示接口信息
-            let ifaceHtml = '<h6>当前网络接口</h6><div class="table-responsive"><table class="table"><thead><tr><th>接口</th><th>IP地址</th><th>子网掩码</th></tr></thead><tbody>';
-            interfaces.interfaces.forEach(iface => {
-                ifaceHtml += `<tr><td>${iface.name}</td><td>${iface.ip}</td><td>${iface.netmask}</td></tr>`;
-            });
-            ifaceHtml += '</tbody></table></div>';
-            $('#interfacesList').html(ifaceHtml);
-            
-            // 绑定表单
-            $('#addIpForm').on('submit', async function(e) {
-                e.preventDefault();
-                const formData = new FormData(this);
-                const data = Object.fromEntries(formData);
-                
-                showLoading();
-                try {
-                    const result = await api('/api/network/ip/add', {
-                        method: 'POST',
-                        body: JSON.stringify(data)
-                    });
-                    
-                    showToast(`${result.message} (成功: ${result.success}, 失败: ${result.failed})`, 'success');
-                    this.reset();
-                } catch (error) {
-                    console.error('Add IP error:', error);
-                } finally {
-                    hideLoading();
-                }
-            });
-        }
-        
-        async function loadUsers() {
-            const html = `
-                <div class="d-flex justify-content-between align-items-center mb-4">
-                    <h2>用户管理</h2>
-                </div>
-                
-                <div class="content-card">
-                    <div class="content-card-header">
-                        <h5 class="mb-0">系统用户</h5>
-                    </div>
-                    <div class="content-card-body">
+            </div>
+
+            <!-- 用户管理 -->
+            <div class="tab-pane fade" id="user-pane" role="tabpanel">
+                <div class="card animate-fade-in">
+                    <div class="card-body">
+                        <h5 class="card-title"><i class="bi bi-person-plus"></i> Web用户管理</h5>
                         <form id="addUserForm" class="row g-3 mb-4">
                             <div class="col-md-5">
-                                <label class="form-label">用户名</label>
-                                <input type="text" class="form-control" name="username" required>
+                                <input type="text" name="username" class="form-control" placeholder="用户名" required>
                             </div>
                             <div class="col-md-5">
-                                <label class="form-label">密码</label>
-                                <input type="password" class="form-control" name="password" required>
+                                <input type="password" name="password" class="form-control" placeholder="密码" required>
                             </div>
                             <div class="col-md-2">
-                                <label class="form-label">&nbsp;</label>
-                                <button type="submit" class="btn btn-primary d-block w-100">
-                                    <i class="bi bi-person-plus"></i> 添加
-                                </button>
+                                <button type="submit" class="btn btn-gradient w-100">添加</button>
                             </div>
                         </form>
-                        
                         <div id="usersList">
-                            <!-- 动态加载 -->
+                            <!-- 用户列表将在这里动态生成 -->
                         </div>
                     </div>
                 </div>
-            `;
-            
-            $('#content-area').html(html);
-            
-            // 加载用户列表
-            await refreshUsersList();
-            
-            // 绑定表单
-            $('#addUserForm').on('submit', async function(e) {
-                e.preventDefault();
-                const formData = new FormData(this);
-                const data = Object.fromEntries(formData);
-                
-                showLoading();
-                try {
-                    const result = await api('/api/users/add', {
-                        method: 'POST',
-                        body: JSON.stringify(data)
-                    });
-                    
-                    showToast(result.message, 'success');
-                    this.reset();
-                    await refreshUsersList();
-                } catch (error) {
-                    console.error('Add user error:', error);
-                } finally {
-                    hideLoading();
-                }
-            });
-        }
-        
-        async function refreshUsersList() {
-            const data = await api('/api/users');
-            let html = '<div class="table-responsive"><table class="table"><thead><tr><th>ID</th><th>用户名</th><th>操作</th></tr></thead><tbody>';
-            
-            data.users.forEach(user => {
-                html += `
-                    <tr>
-                        <td>${user.id}</td>
-                        <td>${user.username}</td>
-                        <td>
-                            ${user.username !== 'admin' ? 
-                                `<button class="btn btn-sm btn-danger" onclick="deleteUser(${user.id})">
-                                    <i class="bi bi-trash"></i> 删除
-                                </button>` : 
-                                '<span class="text-muted">系统用户</span>'}
-                        </td>
-                    </tr>
-                `;
-            });
-            
-            html += '</tbody></table></div>';
-            $('#usersList').html(html);
-        }
-        
-        async function deleteUser(userId) {
-            if (!confirm('确定要删除此用户吗？')) return;
-            
-            try {
-                const result = await api(`/api/users/delete/${userId}`, { method: 'DELETE' });
-                showToast(result.message, 'success');
-                await refreshUsersList();
-            } catch (error) {
-                console.error('Delete user error:', error);
-            }
-        }
-        
-        async function loadLogs() {
-            const html = `
-                <div class="d-flex justify-content-between align-items-center mb-4">
-                    <h2>日志查看</h2>
-                </div>
-                
-                <div class="content-card">
-                    <div class="content-card-header">
-                        <h5 class="mb-0">系统日志</h5>
-                    </div>
-                    <div class="content-card-body">
-                        <div class="row mb-3">
-                            <div class="col-md-4">
-                                <select class="form-select" id="logTypeSelect">
-                                    <option value="proxy">3proxy日志</option>
-                                    <option value="webapp">Web应用日志</option>
-                                    <option value="monitor">监控日志</option>
+            </div>
+
+            <!-- IP管理 -->
+            <div class="tab-pane fade" id="ip-pane" role="tabpanel">
+                <div class="card animate-fade-in">
+                    <div class="card-body">
+                        <h5 class="card-title"><i class="bi bi-diagram-3"></i> IP批量管理</h5>
+                        <form id="addIpForm" class="row g-3 mb-4">
+                            <div class="col-md-2">
+                                <input type="text" name="iface" class="form-control" placeholder="网卡" value="eth0">
+                            </div>
+                            <div class="col-md-5">
+                                <input type="text" name="ip_input" class="form-control" 
+                                       placeholder="192.168.1.2-254 或 192.168.1.2,192.168.1.3" required>
+                            </div>
+                            <div class="col-md-3">
+                                <select name="mode" class="form-select">
+                                    <option value="perm">永久</option>
+                                    <option value="temp">临时</option>
                                 </select>
                             </div>
-                            <div class="col-md-4">
-                                <input type="number" class="form-control" id="logLines" 
-                                       value="100" min="10" max="1000" placeholder="显示行数">
+                            <div class="col-md-2">
+                                <button type="submit" class="btn btn-gradient w-100">添加</button>
                             </div>
-                            <div class="col-md-4">
-                                <button class="btn btn-primary" onclick="loadLogContent()">
-                                    <i class="bi bi-arrow-clockwise"></i> 刷新日志
-                                </button>
-                            </div>
-                        </div>
-                        
-                        <div id="logContent" style="height: 500px; overflow-y: auto; background: #f8f9fa; padding: 1rem; border-radius: 8px; font-family: monospace; font-size: 0.9rem;">
-                            <!-- 日志内容 -->
+                        </form>
+                        <div id="ipConfigsList">
+                            <!-- IP配置列表将在这里动态生成 -->
                         </div>
                     </div>
                 </div>
-            `;
-            
-            $('#content-area').html(html);
-            await loadLogContent();
+            </div>
+        </div>
+    </div>
+
+    <!-- 代理详情模态框 -->
+    <div class="modal fade" id="proxyDetailModal" tabindex="-1">
+        <div class="modal-dialog modal-xl">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">代理详情</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div id="proxyDetailContent">
+                        <!-- 代理详情将在这里动态生成 -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast 通知容器 -->
+    <div class="toast-container"></div>
+
+    <!-- 加载动画 -->
+    <div class="loading-spinner">
+        <div class="spinner-border text-primary" style="width: 3rem; height: 3rem;">
+            <span class="visually-hidden">Loading...</span>
+        </div>
+    </div>
+
+    <!-- 深色模式切换 -->
+    <button class="switch-mode" id="darkModeToggle">
+        <i class="bi bi-moon-fill"></i>
+    </button>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // 全局变量
+        let selectedGroups = new Set();
+        let selectedProxies = new Set();
+
+        // 工具函数
+        function showLoading() {
+            document.querySelector('.loading-spinner').classList.add('show');
         }
-        
-        async function loadLogContent() {
-            const logType = $('#logTypeSelect').val();
-            const lines = $('#logLines').val();
+
+        function hideLoading() {
+            document.querySelector('.loading-spinner').classList.remove('show');
+        }
+
+        function showToast(message, type = 'success') {
+            const toast = document.createElement('div');
+            toast.className = `toast align-items-center text-white bg-${type} border-0`;
+            toast.innerHTML = `
+                <div class="d-flex">
+                    <div class="toast-body">${message}</div>
+                    <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+                </div>
+            `;
+            document.querySelector('.toast-container').appendChild(toast);
+            const bsToast = new bootstrap.Toast(toast);
+            bsToast.show();
+            toast.addEventListener('hidden.bs.toast', () => toast.remove());
+        }
+
+        // 时间更新
+        function updateTime() {
+            const now = new Date();
+            document.getElementById('currentTime').textContent = 
+                now.toLocaleString('zh-CN', { hour12: false });
+        }
+        setInterval(updateTime, 1000);
+        updateTime();
+
+        // 系统监控
+        function updateSystemStatus() {
+            fetch('/api/system_status')
+                .then(res => res.json())
+                .then(data => {
+                    // CPU
+                    document.getElementById('cpuUsage').textContent = data.cpu.toFixed(1) + '%';
+                    document.getElementById('cpuProgress').style.width = data.cpu + '%';
+                    
+                    // 内存
+                    document.getElementById('memUsage').textContent = data.memory.percent.toFixed(1) + '%';
+                    document.getElementById('memProgress').style.width = data.memory.percent + '%';
+                    
+                    // 磁盘
+                    document.getElementById('diskUsage').textContent = data.disk.percent.toFixed(1) + '%';
+                    document.getElementById('diskProgress').style.width = data.disk.percent + '%';
+                    
+                    // 3proxy状态
+                    const statusIcon = document.getElementById('proxyStatus');
+                    const statusInfo = document.getElementById('proxyInfo');
+                    if (data.proxy.running) {
+                        statusIcon.innerHTML = '<i class="bi bi-circle-fill text-success"></i>';
+                        statusInfo.textContent = `PID: ${data.proxy.pid} | 连接: ${data.proxy.connections}`;
+                    } else {
+                        statusIcon.innerHTML = '<i class="bi bi-circle-fill text-danger"></i>';
+                        statusInfo.textContent = '未运行';
+                    }
+                });
+        }
+        setInterval(updateSystemStatus, 5000);
+        updateSystemStatus();
+
+        // 加载代理组
+        function loadProxyGroups() {
+            // 加载前先验证选中的组是否还存在
+            const currentSelected = new Set(selectedGroups);
             
             showLoading();
-            try {
-                const data = await api(`/api/logs/view?type=${logType}&lines=${lines}`);
-                $('#logContent').html(`<pre>${escapeHtml(data.content)}</pre>`);
-                
-                // 滚动到底部
-                const logDiv = document.getElementById('logContent');
-                logDiv.scrollTop = logDiv.scrollHeight;
-            } catch (error) {
-                $('#logContent').html(`<div class="alert alert-danger">加载日志失败: ${error.message}</div>`);
-            } finally {
-                hideLoading();
-            }
-        }
-        
-        async function loadSettings() {
-            const html = `
-                <div class="d-flex justify-content-between align-items-center mb-4">
-                    <h2>系统设置</h2>
-                </div>
-                
-                <div class="row">
-                    <div class="col-md-6">
-                        <div class="content-card">
-                            <div class="content-card-header">
-                                <h5 class="mb-0">配置管理</h5>
-                            </div>
-                            <div class="content-card-body">
-                                <button class="btn btn-primary mb-3" onclick="reloadConfig()">
-                                    <i class="bi bi-arrow-clockwise"></i> 重新加载配置
-                                </button>
-                                <p class="text-muted">
-                                    重新生成并加载3proxy配置文件，应用所有更改。
-                                </p>
-                            </div>
-                        </div>
-                    </div>
+            fetch('/api/proxy_groups')
+                .then(res => res.json())
+                .then(groups => {
+                    const container = document.getElementById('proxyGroups');
+                    container.innerHTML = '';
                     
-                    <div class="col-md-6">
-                        <div class="content-card">
-                            <div class="content-card-header">
-                                <h5 class="mb-0">系统信息</h5>
+                    // 获取当前存在的C段列表
+                    const existingSegments = new Set(groups.map(g => g.c_segment));
+                    
+                    // 清理已不存在的选中项
+                    currentSelected.forEach(cseg => {
+                        if (!existingSegments.has(cseg)) {
+                            selectedGroups.delete(cseg);
+                        }
+                    });
+                    
+                    groups.forEach(group => {
+                        const card = document.createElement('div');
+                        card.className = 'proxy-card';
+                        
+                        // 如果这个组在选中集合中，添加选中样式
+                        if (selectedGroups.has(group.c_segment)) {
+                            card.classList.add('selected');
+                        }
+                        card.innerHTML = `
+                            <div class="row align-items-center">
+                                <div class="col-md-7">
+                                    <h6 class="mb-2 d-flex align-items-center">
+                                        <input type="checkbox" class="form-check-input me-2" 
+                                               data-group="${group.c_segment}" onclick="event.stopPropagation();">
+                                        <i class="bi bi-hdd-network text-primary me-2"></i>
+                                        <strong>${group.c_segment}.x</strong>
+                                    </h6>
+                                    <div class="d-flex flex-wrap gap-2 mb-2">
+                                        <span class="badge rounded-pill bg-primary">
+                                            <i class="bi bi-layers"></i> ${group.total} 个
+                                        </span>
+                                        <span class="badge rounded-pill bg-success">
+                                            <i class="bi bi-check-circle"></i> ${group.enabled} 启用
+                                        </span>
+                                        <span class="badge rounded-pill bg-info">
+                                            <i class="bi bi-arrow-down-up"></i> ${group.traffic} MB
+                                        </span>
+                                    </div>
+                                    <small class="text-muted d-block">
+                                        ${group.ip_range ? `<i class="bi bi-diagram-3"></i> ${group.ip_range}` : ''}
+                                        ${group.port_range ? `<i class="bi bi-ethernet"></i> ${group.port_range}` : ''}
+                                        ${group.user_prefix ? `<i class="bi bi-person"></i> ${group.user_prefix}` : ''}
+                                    </small>
+                                </div>
+                                <div class="col-md-5 text-end">
+                                    <div class="btn-toolbar justify-content-end" role="toolbar">
+                                        <div class="btn-group btn-group-sm" role="group">
+                                            <button class="btn btn-primary" 
+                                                    onclick="event.stopPropagation(); viewProxyGroup('${group.c_segment}')"
+                                                    title="查看详情">
+                                                <i class="bi bi-eye"></i> 查看
+                                            </button>
+                                            <button class="btn btn-success" 
+                                                    onclick="event.stopPropagation(); toggleGroup('${group.c_segment}', 'enable')"
+                                                    title="启用全部">
+                                                <i class="bi bi-play-circle"></i> 启用
+                                            </button>
+                                            <button class="btn btn-warning" 
+                                                    onclick="event.stopPropagation(); toggleGroup('${group.c_segment}', 'disable')"
+                                                    title="禁用全部">
+                                                <i class="bi bi-pause-circle"></i> 禁用
+                                            </button>
+                                            <button class="btn btn-danger" 
+                                                    onclick="event.stopPropagation(); deleteGroup('${group.c_segment}')"
+                                                    title="删除整组">
+                                                <i class="bi bi-trash"></i> 删除
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
-                            <div class="content-card-body">
-                                <table class="table table-sm">
-                                    <tr>
-                                        <td>版本</td>
-                                        <td>3proxy Enterprise 2.0</td>
-                                    </tr>
-                                    <tr>
-                                        <td>安装路径</td>
-                                        <td>/opt/3proxy-enterprise</td>
-                                    </tr>
-                                    <tr>
-                                        <td>配置目录</td>
-                                        <td>/usr/local/etc/3proxy</td>
-                                    </tr>
-                                    <tr>
-                                        <td>日志目录</td>
-                                        <td>/var/log/3proxy</td>
-                                    </tr>
-                                </table>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            `;
+                        `;
+                        
+                        // 点击卡片切换选中状态
+                        card.addEventListener('click', (e) => {
+                            // 如果点击的是按钮或输入框，不处理
+                            if (e.target.closest('button') || e.target.closest('input')) {
+                                return;
+                            }
+                            
+                            const checkbox = card.querySelector('input[type="checkbox"]');
+                            checkbox.checked = !checkbox.checked;
+                            
+                            if (checkbox.checked) {
+                                selectedGroups.add(group.c_segment);
+                                card.classList.add('selected');
+                            } else {
+                                selectedGroups.delete(group.c_segment);
+                                card.classList.remove('selected');
+                            }
+                        });
+                        
+                        // 复选框事件（阻止冒泡）
+                        const checkbox = card.querySelector('input[type="checkbox"]');
+                        
+                        // 如果这个组在选中集合中，勾选复选框
+                        if (selectedGroups.has(group.c_segment)) {
+                            checkbox.checked = true;
+                        }
+                        
+                        checkbox.addEventListener('change', (e) => {
+                            e.stopPropagation();
+                            if (e.target.checked) {
+                                selectedGroups.add(group.c_segment);
+                                card.classList.add('selected');
+                            } else {
+                                selectedGroups.delete(group.c_segment);
+                                card.classList.remove('selected');
+                            }
+                        });
+                        
+                        container.appendChild(card);
+                    });
+                    hideLoading();
+                })
+                .catch(err => {
+                    hideLoading();
+                    showToast('加载失败: ' + err.message, 'danger');
+                });
+        }
+
+        // 查看代理组详情
+        function viewProxyGroup(cSegment) {
+            // 清空之前的选择
+            selectedProxies.clear();
             
-            $('#content-area').html(html);
-        }
-        
-        // 批量操作跟踪
-        function trackOperation(operationId) {
-            const checkStatus = async () => {
-                try {
-                    const status = await api(`/api/proxy/batch/operation/${operationId}`);
+            showLoading();
+            fetch(`/api/proxy_group/${cSegment}`)
+                .then(res => res.json())
+                .then(proxies => {
+                    const content = document.getElementById('proxyDetailContent');
+                    const firstProxy = proxies[0] || {};
                     
-                    if (status.status === 'running') {
-                        // 显示进度
-                        const progress = Math.round((status.processed / status.total) * 100);
-                        $('#operationProgress').show();
-                        $('#operationProgress .progress-bar').css('width', progress + '%');
-                        $('#operationStatus').text(`已处理 ${status.processed}/${status.total}`);
+                    // 构建完整的HTML，确保表格结构正确
+                    let html = `
+                        <div class="detail-header">
+                            <h5>${cSegment}.x 段代理详情</h5>
+                            <div class="info-row">
+                                ${firstProxy.ip_range ? `<span class="info-item"><i class="bi bi-diagram-3"></i> IP范围: <strong>${firstProxy.ip_range}</strong></span>` : ''}
+                                ${firstProxy.port_range ? `<span class="info-item"><i class="bi bi-ethernet"></i> 端口范围: <strong>${firstProxy.port_range}</strong></span>` : ''}
+                                ${firstProxy.user_prefix ? `<span class="info-item"><i class="bi bi-person"></i> 用户前缀: <strong>${firstProxy.user_prefix}</strong></span>` : ''}
+                                <span class="info-item"><i class="bi bi-list"></i> 代理总数: <strong>${proxies.length}</strong></span>
+                            </div>
+                        </div>
                         
-                        // 继续检查
-                        setTimeout(() => checkStatus(), 1000);
-                    } else {
-                        // 操作完成
-                        $('#operationProgress').fadeOut(3000);
-                        showToast(`操作完成: 成功 ${status.success}, 失败 ${status.failed}`, 
-                                 status.failed > 0 ? 'warning' : 'success');
+                        <div class="action-bar">
+                            <div class="d-flex align-items-center justify-content-between">
+                                <div class="d-flex align-items-center gap-3">
+                                    <input type="checkbox" class="form-check-input" id="selectAllCheck">
+                                    <label for="selectAllCheck" class="mb-0">全选</label>
+                                    <span class="text-muted">已选择 <span id="selectedCount">0</span> 项</span>
+                                </div>
+                                <div class="d-flex gap-2">
+                                    <button class="btn btn-sm btn-success" onclick="batchEnableProxies()">
+                                        <i class="bi bi-check-circle-fill"></i> 启用
+                                    </button>
+                                    <button class="btn btn-sm btn-warning" onclick="batchDisableProxies()">
+                                        <i class="bi bi-pause-circle-fill"></i> 禁用
+                                    </button>
+                                    <button class="btn btn-sm btn-danger" onclick="batchDeleteProxies()">
+                                        <i class="bi bi-trash-fill"></i> 删除
+                                    </button>
+                                    <button class="btn btn-sm btn-info" onclick="exportSelectedProxies()">
+                                        <i class="bi bi-download"></i> 导出
+                                    </button>
+                                    <input type="text" class="form-control form-control-sm" style="width:200px; border-radius: 8px;"
+                                           placeholder="搜索..." onkeyup="filterProxyTable(this.value)">
+                                </div>
+                            </div>
+                        </div>
                         
-                        // 刷新当前页面
-                        if (currentPage === 'proxies') {
-                            loadProxyGroups();
+                        <div style="overflow-x: auto;">
+                            <table class="table table-sm" style="width: 100%; min-width: 900px;">
+                                <thead style="background: #343a40; color: white;">
+                                    <tr>
+                                        <th style="width: 40px; text-align: center;">选</th>
+                                        <th style="width: 60px;">ID</th>
+                                        <th style="width: 120px;">IP地址</th>
+                                        <th style="width: 80px; text-align: center;">端口</th>
+                                        <th style="width: 120px;">用户名</th>
+                                        <th style="width: 200px;">密码</th>
+                                        <th style="width: 70px; text-align: center;">状态</th>
+                                        <th style="width: 100px; text-align: center;">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody>`;
+                    
+                    // 逐行构建表格内容
+                    proxies.forEach((proxy, index) => {
+                        const rowClass = index % 2 === 0 ? 'table-light' : '';
+                        html += `
+                            <tr class="proxy-row ${rowClass}">
+                                <td style="text-align: center; padding: 8px 4px;">
+                                    <input type="checkbox" class="form-check-input proxy-check" 
+                                           data-id="${proxy.id}" onchange="updateSelectedCount()">
+                                </td>
+                                <td style="padding: 8px 4px;">
+                                    <small class="text-muted">#${proxy.id}</small>
+                                </td>
+                                <td style="padding: 8px 4px;">
+                                    <span class="font-monospace" style="font-size: 0.9rem;">${proxy.ip}</span>
+                                </td>
+                                <td style="padding: 8px 4px;">
+                                    <span class="badge bg-info" style="font-family: monospace;">${proxy.port}</span>
+                                </td>
+                                <td style="padding: 8px 4px;">
+                                    <code style="color: #d63384; font-size: 0.9rem;">${proxy.username}</code>
+                                </td>
+                                <td style="padding: 8px 4px;">
+                                    <div style="display: flex; align-items: center; gap: 4px;">
+                                        <input type="text" class="form-control form-control-sm" 
+                                               value="${proxy.password}" readonly 
+                                               style="font-family: monospace; font-size: 0.85rem; background: #f8f9fa; border-radius: 6px;">
+                                        <button class="btn btn-sm btn-outline-secondary" 
+                                                style="padding: 4px 10px; border-radius: 6px;"
+                                                onclick="copyPassword('${proxy.password.replace(/'/g, "\\'")}', ${proxy.id})"
+                                                title="复制密码">
+                                            <i class="bi bi-clipboard" style="font-size: 0.9rem;"></i>
+                                        </button>
+                                    </div>
+                                </td>
+                                <td style="text-align: center; padding: 8px 4px;">
+                                    ${proxy.enabled ? 
+                                        '<span class="badge bg-success" style="font-size: 0.8rem;"><i class="bi bi-check-circle-fill me-1"></i>启用</span>' : 
+                                        '<span class="badge bg-secondary" style="font-size: 0.8rem;"><i class="bi bi-x-circle-fill me-1"></i>禁用</span>'}
+                                </td>
+                                <td style="text-align: center; padding: 8px 4px;">
+                                    <button class="btn btn-sm ${proxy.enabled ? 'btn-warning' : 'btn-success'}" 
+                                            style="padding: 4px 10px; margin-right: 4px; border-radius: 6px;"
+                                            onclick="toggleProxy(${proxy.id}, ${!proxy.enabled})"
+                                            title="${proxy.enabled ? '禁用' : '启用'}">
+                                        <i class="bi bi-${proxy.enabled ? 'pause-circle' : 'play-circle'}-fill" style="font-size: 0.9rem;"></i>
+                                    </button>
+                                    <button class="btn btn-sm btn-danger" 
+                                            style="padding: 4px 10px; border-radius: 6px;"
+                                            onclick="deleteProxy(${proxy.id})"
+                                            title="删除">
+                                        <i class="bi bi-trash-fill" style="font-size: 0.9rem;"></i>
+                                    </button>
+                                </td>
+                            </tr>`;
+                    });
+                    
+                    html += `
+                                </tbody>
+                            </table>
+                        </div>
+                    `;
+                    
+                    // 一次性设置内容
+                    content.innerHTML = html;
+                    
+                    // 绑定事件
+                    document.getElementById('selectAllCheck').addEventListener('change', (e) => {
+                        document.querySelectorAll('.proxy-check').forEach(cb => {
+                            cb.checked = e.target.checked;
+                            const id = cb.getAttribute('data-id');
+                            if (e.target.checked) {
+                                selectedProxies.add(id);
+                            } else {
+                                selectedProxies.delete(id);
+                            }
+                        });
+                        updateSelectedCount();
+                    });
+                    
+                    // 初始化选中数量
+                    updateSelectedCount();
+                    
+                    hideLoading();
+                    const modal = new bootstrap.Modal(document.getElementById('proxyDetailModal'));
+                    
+                    // 监听模态框关闭事件，清空选择
+                    document.getElementById('proxyDetailModal').addEventListener('hidden.bs.modal', function () {
+                        selectedProxies.clear();
+                        updateSelectedCount();
+                    }, { once: true });
+                    
+                    modal.show();
+                })
+                .catch(err => {
+                    hideLoading();
+                    showToast('加载失败: ' + err.message, 'danger');
+                });
+        }
+
+        // 更新选中数量
+        function updateSelectedCount() {
+            const count = document.querySelectorAll('.proxy-check:checked').length;
+            document.getElementById('selectedCount').textContent = count;
+        }
+
+        // 过滤代理表格
+        function filterProxyTable(value) {
+            const rows = document.querySelectorAll('.proxy-row');
+            const searchTerm = value.toLowerCase();
+            rows.forEach(row => {
+                const text = row.textContent.toLowerCase();
+                row.style.display = text.includes(searchTerm) ? '' : 'none';
+            });
+        }
+
+        // 代理组操作
+        function deleteGroup(cSegment) {
+            if (!confirm(`确定要删除 ${cSegment}.x 段的所有代理吗？`)) return;
+            
+            showLoading();
+            fetch(`/api/delete_group/${cSegment}`, { method: 'POST' })
+                .then(res => res.json())
+                .then(data => {
+                    hideLoading();
+                    showToast(`已删除 ${cSegment}.x 段代理组`);
+                    // 从选中集合中移除已删除的组
+                    selectedGroups.delete(cSegment);
+                    loadProxyGroups();
+                })
+                .catch(err => {
+                    hideLoading();
+                    showToast('删除失败: ' + err.message, 'danger');
+                });
+        }
+
+        function toggleGroup(cSegment, action) {
+            showLoading();
+            fetch(`/api/toggle_group/${cSegment}/${action}`, { method: 'POST' })
+                .then(res => res.json())
+                .then(data => {
+                    hideLoading();
+                    showToast(`已${action === 'enable' ? '启用' : '禁用'} ${cSegment}.x 段代理组`);
+                    loadProxyGroups();
+                })
+                .catch(err => {
+                    hideLoading();
+                    showToast('操作失败: ' + err.message, 'danger');
+                });
+        }
+
+        // 单个代理操作
+        function toggleProxy(id, enable) {
+            const action = enable ? 'enableproxy' : 'disableproxy';
+            fetch(`/${action}/${id}`)
+                .then(res => res.json())
+                .then(data => {
+                    showToast(`代理已${enable ? '启用' : '禁用'}`);
+                    // 刷新当前模态框内容
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('proxyDetailModal'));
+                    if (modal) {
+                        const detailHeader = document.querySelector('.detail-header h5');
+                        if (detailHeader) {
+                            const cSegment = detailHeader.textContent.split('.')[0].trim();
+                            viewProxyGroup(cSegment);
                         }
                     }
-                } catch (error) {
-                    console.error('Track operation error:', error);
-                    $('#operationProgress').hide();
-                }
-            };
-            
-            checkStatus();
-        }
-        
-        // 工具函数
-        function debounce(func, wait) {
-            let timeout;
-            return function executedFunction(...args) {
-                const later = () => {
-                    clearTimeout(timeout);
-                    func(...args);
-                };
-                clearTimeout(timeout);
-                timeout = setTimeout(later, wait);
-            };
-        }
-        
-        function escapeHtml(text) {
-            const map = {
-                '&': '&amp;',
-                '<': '&lt;',
-                '>': '&gt;',
-                '"': '&quot;',
-                "'": '&#039;'
-            };
-            return text.replace(/[&<>"']/g, m => map[m]);
-        }
-        
-        function copyToClipboard(text) {
-            navigator.clipboard.writeText(text).then(() => {
-                showToast('已复制到剪贴板', 'success');
-            }).catch(() => {
-                showToast('复制失败', 'danger');
-            });
-        }
-        
-        function renderPagination(currentPage, totalPages, callback) {
-            if (totalPages <= 1) {
-                $('#pagination').empty();
-                return;
-            }
-            
-            let html = '<ul class="pagination justify-content-center">';
-            
-            // 上一页
-            html += `<li class="page-item ${currentPage === 1 ? 'disabled' : ''}">
-                        <a class="page-link" href="#" data-page="${currentPage - 1}">上一页</a>
-                     </li>`;
-            
-            // 页码
-            const range = 2;
-            for (let i = Math.max(1, currentPage - range); i <= Math.min(totalPages, currentPage + range); i++) {
-                html += `<li class="page-item ${i === currentPage ? 'active' : ''}">
-                            <a class="page-link" href="#" data-page="${i}">${i}</a>
-                         </li>`;
-            }
-            
-            // 下一页
-            html += `<li class="page-item ${currentPage === totalPages ? 'disabled' : ''}">
-                        <a class="page-link" href="#" data-page="${currentPage + 1}">下一页</a>
-                     </li>`;
-            
-            html += '</ul>';
-            
-            $('#pagination').html(html);
-            
-            // 绑定点击事件
-            $('#pagination .page-link').on('click', function(e) {
-                e.preventDefault();
-                const page = parseInt($(this).data('page'));
-                if (page && !$(this).parent().hasClass('disabled')) {
-                    callback(page);
-                }
-            });
-        }
-        
-        // 代理操作函数
-        async function toggleProxy(proxyId, enable) {
-            try {
-                await api('/api/proxy/batch/toggle', {
-                    method: 'POST',
-                    body: JSON.stringify({
-                        ids: [proxyId],
-                        enabled: enable
-                    })
+                })
+                .catch(err => {
+                    showToast('操作失败: ' + err.message, 'danger');
                 });
-                
-                showToast(`代理已${enable ? '启用' : '禁用'}`, 'success');
-                
-                // 刷新模态框内容
-                const modal = bootstrap.Modal.getInstance(document.getElementById('proxyDetailModal'));
-                if (modal) {
-                    const modalTitle = $('#proxyDetailModal .modal-title').text();
-                    const cSegment = modalTitle.split(' - ')[1];
-                    if (cSegment) {
-                        viewGroupDetail(cSegment);
+        }
+
+        function deleteProxy(id) {
+            if (!confirm('确定要删除此代理吗？')) return;
+            
+            fetch(`/delproxy/${id}`)
+                .then(res => res.json())
+                .then(data => {
+                    showToast('代理已删除');
+                    const modal = bootstrap.Modal.getInstance(document.getElementById('proxyDetailModal'));
+                    if (modal) {
+                        const detailHeader = document.querySelector('.detail-header h5');
+                        if (detailHeader) {
+                            const cSegment = detailHeader.textContent.split('.')[0].trim();
+                            viewProxyGroup(cSegment);
+                        }
                     }
-                }
-            } catch (error) {
-                console.error('Toggle proxy error:', error);
-            }
+                    loadProxyGroups();
+                })
+                .catch(err => {
+                    showToast('删除失败: ' + err.message, 'danger');
+                });
         }
-        
-        async function toggleGroup(cSegment, enable) {
-            if (!confirm(`确定要${enable ? '启用' : '禁用'}整个C段的代理吗？`)) return;
-            
-            showLoading();
-            try {
-                // 先获取该组所有代理ID
-                const data = await api(`/api/proxy/group/${cSegment}?per_page=10000`);
-                const ids = data.proxies.map(p => p.id);
-                
-                if (ids.length > 0) {
-                    const result = await api('/api/proxy/batch/toggle', {
-                        method: 'POST',
-                        body: JSON.stringify({
-                            ids: ids,
-                            enabled: enable
-                        })
-                    });
-                    
-                    showToast(result.message, 'success');
-                    trackOperation(result.operation_id);
-                }
-            } catch (error) {
-                console.error('Toggle group error:', error);
-            } finally {
-                hideLoading();
-            }
-        }
-        
-        async function exportSelected() {
-            if (selectedGroups.size === 0) {
-                showToast('请先选择要导出的代理组', 'warning');
+
+        // 批量操作函数
+        function batchEnableProxies() {
+            if (selectedProxies.size === 0) {
+                showToast('请先选择代理', 'warning');
                 return;
             }
             
-            try {
-                const response = await fetch('/api/proxy/export', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        format: 'txt',
-                        c_segments: Array.from(selectedGroups)
-                    })
+            const formData = new FormData();
+            selectedProxies.forEach(id => formData.append('ids[]', id));
+            
+            fetch('/batch_enable', { method: 'POST', body: formData })
+                .then(res => res.json())
+                .then(data => {
+                    showToast('批量启用成功');
+                    selectedProxies.clear();
+                    updateSelectedCount();
+                    // 重新加载当前代理组
+                    const cSegment = document.querySelector('.detail-header h5').textContent.split('.')[0];
+                    viewProxyGroup(cSegment);
                 });
-                
-                if (response.ok) {
-                    const blob = await response.blob();
-                    const url = window.URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = 'proxies_export.txt';
-                    a.click();
-                    window.URL.revokeObjectURL(url);
-                    
-                    showToast('导出成功', 'success');
-                } else {
-                    throw new Error('导出失败');
-                }
-            } catch (error) {
-                showToast(error.message, 'danger');
-            }
         }
-        
-        async function exportAll(format) {
-            try {
-                const response = await fetch('/api/proxy/export', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ format: format })
+
+        function batchDisableProxies() {
+            if (selectedProxies.size === 0) {
+                showToast('请先选择代理', 'warning');
+                return;
+            }
+            
+            const formData = new FormData();
+            selectedProxies.forEach(id => formData.append('ids[]', id));
+            
+            fetch('/batch_disable', { method: 'POST', body: formData })
+                .then(res => res.json())
+                .then(data => {
+                    showToast('批量禁用成功');
+                    selectedProxies.clear();
+                    updateSelectedCount();
+                    const cSegment = document.querySelector('.detail-header h5').textContent.split('.')[0];
+                    viewProxyGroup(cSegment);
                 });
-                
-                if (response.ok) {
-                    const blob = await response.blob();
-                    const url = window.URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `proxies_all.${format}`;
-                    a.click();
-                    window.URL.revokeObjectURL(url);
-                    
-                    showToast('导出成功', 'success');
-                } else {
-                    throw new Error('导出失败');
-                }
-            } catch (error) {
-                showToast(error.message, 'danger');
+        }
+
+        function batchDeleteProxies() {
+            if (selectedProxies.size === 0) {
+                showToast('请先选择代理', 'warning');
+                return;
             }
+            
+            if (!confirm(`确定要删除选中的 ${selectedProxies.size} 个代理吗？`)) return;
+            
+            const formData = new FormData();
+            selectedProxies.forEach(id => formData.append('ids', id));
+            
+            fetch('/batchdelproxy', { method: 'POST', body: formData })
+                .then(res => res.json())
+                .then(data => {
+                    showToast('批量删除成功');
+                    selectedProxies.clear();
+                    updateSelectedCount();
+                    bootstrap.Modal.getInstance(document.getElementById('proxyDetailModal')).hide();
+                    loadProxyGroups();
+                });
         }
-        
-        async function enableSelected() {
-            await batchToggleSelected(true);
+
+        function exportSelectedProxies() {
+            if (selectedProxies.size === 0) {
+                showToast('请先选择代理', 'warning');
+                return;
+            }
+            
+            const formData = new FormData();
+            selectedProxies.forEach(id => formData.append('ids[]', id));
+            
+            fetch('/export_selected_proxy', { method: 'POST', body: formData })
+                .then(res => res.blob())
+                .then(blob => {
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = 'proxy_export.txt';
+                    a.click();
+                    URL.revokeObjectURL(a.href);
+                    showToast('导出成功');
+                    // 导出后清空选择
+                    selectedProxies.clear();
+                    updateSelectedCount();
+                    // 取消全选
+                    const selectAllCheck = document.getElementById('selectAllCheck');
+                    if (selectAllCheck) selectAllCheck.checked = false;
+                });
         }
-        
-        async function disableSelected() {
-            await batchToggleSelected(false);
-        }
-        
-        async function batchToggleSelected(enable) {
+
+        // 导出选中的代理组
+        document.getElementById('exportGroups').addEventListener('click', () => {
             if (selectedGroups.size === 0) {
                 showToast('请先选择代理组', 'warning');
                 return;
             }
             
-            if (!confirm(`确定要${enable ? '启用' : '禁用'}选中的代理组吗？`)) return;
+            const formData = new FormData();
+            selectedGroups.forEach(cseg => formData.append('csegs[]', cseg));
             
             showLoading();
-            try {
-                // 获取所有选中组的代理ID
-                let allIds = [];
-                for (const cSegment of selectedGroups) {
-                    const data = await api(`/api/proxy/group/${cSegment}?per_page=10000`);
-                    allIds = allIds.concat(data.proxies.map(p => p.id));
-                }
-                
-                if (allIds.length > 0) {
-                    const result = await api('/api/proxy/batch/toggle', {
-                        method: 'POST',
-                        body: JSON.stringify({
-                            ids: allIds,
-                            enabled: enable
-                        })
-                    });
+            fetch('/export_selected', { method: 'POST', body: formData })
+                .then(res => {
+                    if (!res.ok) throw new Error('Export failed');
                     
-                    showToast(result.message, 'success');
-                    trackOperation(result.operation_id);
-                }
-            } catch (error) {
-                console.error('Batch toggle error:', error);
-            } finally {
-                hideLoading();
-            }
-        }
-        
-        async function deleteSelected() {
-            if (selectedGroups.size === 0) {
-                showToast('请先选择代理组', 'warning');
-                return;
-            }
-            
-            if (!confirm('确定要删除选中的代理组吗？此操作不可恢复！')) return;
-            
-            showLoading();
-            try {
-                // 获取所有选中组的代理ID
-                let allIds = [];
-                for (const cSegment of selectedGroups) {
-                    const data = await api(`/api/proxy/group/${cSegment}?per_page=10000`);
-                    allIds = allIds.concat(data.proxies.map(p => p.id));
-                }
-                
-                if (allIds.length > 0) {
-                    const result = await api('/api/proxy/batch/delete', {
-                        method: 'POST',
-                        body: JSON.stringify({ ids: allIds })
-                    });
+                    // 从响应头获取文件名
+                    const contentDisposition = res.headers.get('Content-Disposition');
+                    let filename = 'proxy_export.txt';
+                    if (contentDisposition) {
+                        const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+                        if (filenameMatch && filenameMatch[1]) {
+                            filename = filenameMatch[1].replace(/['"]/g, '');
+                        }
+                    }
                     
-                    showToast(result.message, 'success');
-                    trackOperation(result.operation_id);
+                    return res.blob().then(blob => ({ blob, filename }));
+                })
+                .then(({ blob, filename }) => {
+                    hideLoading();
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = filename;
+                    a.click();
+                    URL.revokeObjectURL(a.href);
+                    showToast(`导出成功: ${filename}`);
                     
-                    // 清空选择
+                    // 导出后清空选择
                     selectedGroups.clear();
-                }
-            } catch (error) {
-                console.error('Batch delete error:', error);
-            } finally {
-                hideLoading();
-            }
-        }
-        
-        async function reloadConfig() {
-            if (!confirm('确定要重新加载配置吗？这将重启3proxy服务。')) return;
+                    // 取消所有复选框的选中状态
+                    document.querySelectorAll('.proxy-card input[type="checkbox"]').forEach(cb => {
+                        cb.checked = false;
+                    });
+                    // 移除所有卡片的选中样式
+                    document.querySelectorAll('.proxy-card.selected').forEach(card => {
+                        card.classList.remove('selected');
+                    });
+                })
+                .catch(err => {
+                    hideLoading();
+                    showToast('导出失败: ' + err.message, 'danger');
+                });
+        });
+
+        // 表单提交
+        document.getElementById('batchAddForm').addEventListener('submit', (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
             
             showLoading();
-            try {
-                const result = await api('/api/config/reload', { method: 'POST' });
-                showToast(result.message, 'success');
-            } catch (error) {
-                console.error('Reload config error:', error);
-            } finally {
-                hideLoading();
-            }
+            fetch('/batchaddproxy', { method: 'POST', body: formData })
+                .then(res => res.json())
+                .then(data => {
+                    hideLoading();
+                    if (data.status === 'success') {
+                        showToast(data.message);
+                        e.target.reset();
+                        loadProxyGroups();
+                    } else {
+                        showToast(data.message, 'danger');
+                    }
+                });
+        });
+
+        document.getElementById('manualBatchForm').addEventListener('submit', (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            
+            showLoading();
+            fetch('/batchaddproxy', { method: 'POST', body: formData })
+                .then(res => res.json())
+                .then(data => {
+                    hideLoading();
+                    if (data.status === 'success') {
+                        showToast(data.message);
+                        e.target.reset();
+                        loadProxyGroups();
+                    } else {
+                        showToast(data.message, 'danger');
+                    }
+                });
+        });
+
+        // 用户管理
+        function loadUsers() {
+            fetch('/api/users')
+                .then(res => res.json())
+                .then(users => {
+                    const container = document.getElementById('usersList');
+                    container.innerHTML = `
+                        <div class="table-responsive">
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>用户名</th>
+                                        <th>操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                    `;
+                    
+                    users.forEach(user => {
+                        container.innerHTML += `
+                            <tr>
+                                <td>${user.id}</td>
+                                <td>${user.username}</td>
+                                <td>
+                                    ${user.username !== 'admin' ? 
+                                        `<button class="btn btn-sm btn-danger" onclick="deleteUser(${user.id})">
+                                            <i class="bi bi-trash"></i> 删除
+                                        </button>` : 
+                                        '<span class="text-muted">系统用户</span>'}
+                                </td>
+                            </tr>
+                        `;
+                    });
+                    
+                    container.innerHTML += '</tbody></table></div>';
+                });
         }
-        
-        // 初始化
-        $(document).ready(function() {
-            // 侧边栏切换
-            $('#sidebarToggle').on('click', function() {
-                $('#sidebar').toggleClass('show');
-            });
+
+        document.getElementById('addUserForm').addEventListener('submit', (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
             
-            // 侧边栏菜单点击
-            $('.sidebar-item').on('click', function(e) {
-                e.preventDefault();
-                
-                // 更新活动状态
-                $('.sidebar-item').removeClass('active');
-                $(this).addClass('active');
-                
-                // 加载对应页面
-                const page = $(this).data('page');
-                currentPage = page;
-                
-                // 清除定时器
-                if (refreshInterval) {
-                    clearInterval(refreshInterval);
-                    refreshInterval = null;
-                }
-                
-                // 清空选择
-                selectedGroups.clear();
-                selectedProxies.clear();
-                
-                // 加载页面内容
-                switch (page) {
-                    case 'dashboard':
-                        loadDashboard();
-                        break;
-                    case 'proxies':
-                        loadProxies();
-                        break;
-                    case 'batch':
-                        loadBatchOperations();
-                        break;
-                    case 'network':
-                        loadNetworkConfig();
-                        break;
-                    case 'users':
+            fetch('/adduser', { method: 'POST', body: formData })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        showToast(data.message);
+                        e.target.reset();
                         loadUsers();
-                        break;
-                    case 'logs':
-                        loadLogs();
-                        break;
-                    case 'settings':
-                        loadSettings();
-                        break;
-                }
-                
-                // 移动端关闭侧边栏
-                if ($(window).width() < 768) {
-                    $('#sidebar').removeClass('show');
-                }
-            });
+                    } else {
+                        showToast(data.message, 'danger');
+                    }
+                });
+        });
+
+        function deleteUser(id) {
+            if (!confirm('确定要删除此用户吗？')) return;
             
-            // 默认加载仪表板
-            loadDashboard();
+            fetch(`/deluser/${id}`)
+                .then(res => res.json())
+                .then(data => {
+                    showToast('用户已删除');
+                    loadUsers();
+                });
+        }
+
+        // IP配置管理
+        function loadIpConfigs() {
+            fetch('/api/ip_configs')
+                .then(res => res.json())
+                .then(configs => {
+                    const container = document.getElementById('ipConfigsList');
+                    container.innerHTML = `
+                        <div class="table-responsive">
+                            <table class="table">
+                                <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>IP配置</th>
+                                        <th>类型</th>
+                                        <th>网卡</th>
+                                        <th>创建时间</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                    `;
+                    
+                    configs.forEach(config => {
+                        container.innerHTML += `
+                            <tr>
+                                <td>${config.id}</td>
+                                <td><code>${config.ip_str}</code></td>
+                                <td>${config.type}</td>
+                                <td>${config.iface}</td>
+                                <td>${config.created}</td>
+                            </tr>
+                        `;
+                    });
+                    
+                    container.innerHTML += '</tbody></table></div>';
+                });
+        }
+
+        document.getElementById('addIpForm').addEventListener('submit', (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
             
-            // 响应式处理
-            $(window).on('resize', function() {
-                if ($(window).width() >= 768) {
-                    $('#sidebar').removeClass('show');
-                }
-            });
+            showLoading();
+            fetch('/add_ip_config', { method: 'POST', body: formData })
+                .then(res => res.json())
+                .then(data => {
+                    hideLoading();
+                    if (data.status === 'success') {
+                        showToast(data.message);
+                        e.target.reset();
+                        loadIpConfigs();
+                    } else {
+                        showToast(data.message, 'danger');
+                    }
+                });
+        });
+
+        // 深色模式
+        document.getElementById('darkModeToggle').addEventListener('click', () => {
+            document.body.classList.toggle('dark-mode');
+            const icon = document.querySelector('#darkModeToggle i');
+            if (document.body.classList.contains('dark-mode')) {
+                icon.className = 'bi bi-sun-fill';
+                localStorage.setItem('darkMode', 'true');
+            } else {
+                icon.className = 'bi bi-moon-fill';
+                localStorage.setItem('darkMode', 'false');
+            }
+        });
+
+        // 标签页切换事件
+        document.getElementById('user-tab').addEventListener('shown.bs.tab', loadUsers);
+        document.getElementById('ip-tab').addEventListener('shown.bs.tab', loadIpConfigs);
+
+        // 刷新按钮
+        document.getElementById('refreshGroups').addEventListener('click', loadProxyGroups);
+
+        // 初始化
+        window.addEventListener('DOMContentLoaded', () => {
+            // 恢复深色模式设置
+            if (localStorage.getItem('darkMode') === 'true') {
+                document.body.classList.add('dark-mode');
+                document.querySelector('#darkModeToggle i').className = 'bi bi-sun-fill';
+            }
+            
+            // 清空全局选择集合
+            selectedGroups.clear();
+            selectedProxies.clear();
+            
+            // 加载初始数据
+            loadProxyGroups();
         });
     </script>
 </body>
 </html>
-EOHTML
-    
-    print_success "Web应用创建完成"
-}
+EOF
 
-function create_systemd_services() {
-    print_info "创建系统服务..."
-    
-    # 3proxy服务
-    cat > /etc/systemd/system/3proxy-enterprise.service << 'EOF'
+# --------- Systemd服务启动 ---------
+cat > /etc/systemd/system/3proxy-web.service <<EOF
 [Unit]
-Description=3proxy Enterprise Proxy Server
+Description=3proxy Web管理后台
 After=network.target
 
 [Service]
-Type=forking
-PIDFile=/run/3proxy/3proxy.pid
-ExecStartPre=/bin/mkdir -p /run/3proxy
-ExecStart=/usr/local/bin/3proxy-enterprise.sh
-ExecReload=/bin/kill -HUP $MAINPID
+WorkingDirectory=$WORKDIR
+ExecStart=$WORKDIR/venv/bin/python3 $WORKDIR/manage.py $PORT
 Restart=always
-RestartSec=5
-LimitNOFILE=10000000
-LimitNPROC=10000000
-LimitSTACK=67108864
-KillMode=process
+User=root
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-    # Web管理服务
-    cat > /etc/systemd/system/3proxy-web.service << 'EOF'
+cat > /etc/systemd/system/3proxy-autostart.service <<EOF
 [Unit]
-Description=3proxy Enterprise Web Management
-After=network.target redis-server.service
+Description=3proxy代理自动启动
+After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/3proxy-enterprise
-Environment="FLASK_ENV=production"
-Environment="ADMIN_PASSWORD=ADMIN_PASS_PLACEHOLDER"
-ExecStart=/opt/3proxy-enterprise/venv/bin/python /opt/3proxy-enterprise/app.py 9999
+WorkingDirectory=$WORKDIR
+ExecStart=/usr/local/bin/3proxy-optimize.sh
 Restart=always
-RestartSec=5
 User=root
-LimitNOFILE=100000
+LimitNOFILE=1000000
+LimitNPROC=1000000
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-    # 使用Supervisor管理多个worker进程
-    cat > /etc/supervisor/conf.d/3proxy-web.conf << 'EOF'
-[program:3proxy-web]
-command=/opt/3proxy-enterprise/venv/bin/gunicorn -c /opt/3proxy-enterprise/gunicorn_config.py app:app
-directory=/opt/3proxy-enterprise
-user=root
-autostart=true
-autorestart=true
-redirect_stderr=true
-stdout_logfile=/var/log/3proxy/web.log
-environment=FLASK_ENV="production"
-EOF
+cd $WORKDIR
+export ADMINUSER
+export ADMINPASS
+$WORKDIR/venv/bin/python3 init_db.py
 
-    # Gunicorn配置文件
-    cat > $WORKDIR/gunicorn_config.py << 'EOF'
-import multiprocessing
-import os
-
-bind = "0.0.0.0:9999"
-workers = min(multiprocessing.cpu_count() * 2 + 1, 16)
-worker_class = "gevent"
-worker_connections = 1000
-timeout = 120
-keepalive = 5
-max_requests = 10000
-max_requests_jitter = 1000
-preload_app = True
-accesslog = "/var/log/3proxy/access.log"
-errorlog = "/var/log/3proxy/error.log"
-loglevel = "info"
-
-# 性能优化
-backlog = 2048
-daemon = False
-pidfile = "/run/3proxy/gunicorn.pid"
-EOF
-
-    # Nginx反向代理配置
-    cat > /etc/nginx/sites-available/3proxy-enterprise << 'EOF'
-server {
-    listen 80;
-    server_name _;
-    
-    location / {
-        proxy_pass http://127.0.0.1:9999;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        
-        # WebSocket支持
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        
-        # 超时设置
-        proxy_connect_timeout 60s;
-        proxy_send_timeout 60s;
-        proxy_read_timeout 60s;
-        
-        # 缓冲设置
-        proxy_buffering off;
-        proxy_buffer_size 4k;
-        proxy_buffers 8 4k;
-        proxy_busy_buffers_size 8k;
-        
-        # 上传大小限制
-        client_max_body_size 100M;
-    }
-    
-    # 静态文件
-    location /static {
-        alias /opt/3proxy-enterprise/static;
-        expires 30d;
-        add_header Cache-Control "public, immutable";
-    }
-}
-EOF
-
-    # 启用Nginx站点
-    ln -sf /etc/nginx/sites-available/3proxy-enterprise /etc/nginx/sites-enabled/
-    
-    # 重载systemd
-    systemctl daemon-reload
-    
-    print_success "系统服务创建完成"
-}
-
-function initialize_database() {
-    print_info "初始化数据库..."
-    
-    cd $WORKDIR
-    source venv/bin/activate
-    
-    # 创建初始化脚本
-    cat > init_db.py << 'EOF'
-#!/usr/bin/env python3
-import os
-import sqlite3
-from werkzeug.security import generate_password_hash
-
-# 创建数据库
-db_path = '/opt/3proxy-enterprise/3proxy.db'
-conn = sqlite3.connect(db_path)
-
-# 启用WAL模式
-conn.execute('PRAGMA journal_mode=WAL')
-conn.execute('PRAGMA synchronous=NORMAL')
-
-# 创建表
-conn.executescript('''
-    CREATE TABLE IF NOT EXISTS proxy (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ip TEXT NOT NULL,
-        port INTEGER NOT NULL,
-        username TEXT NOT NULL,
-        password TEXT NOT NULL,
-        enabled INTEGER DEFAULT 1,
-        ip_range TEXT,
-        port_range TEXT,
-        user_prefix TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(ip, port)
-    );
-    
-    CREATE INDEX IF NOT EXISTS idx_proxy_ip ON proxy(ip);
-    CREATE INDEX IF NOT EXISTS idx_proxy_port ON proxy(port);
-    CREATE INDEX IF NOT EXISTS idx_proxy_enabled ON proxy(enabled);
-    CREATE INDEX IF NOT EXISTS idx_proxy_c_segment ON proxy(
-        substr(ip, 1, instr(ip, '.') + instr(substr(ip, instr(ip, '.') + 1), '.') + instr(substr(ip, instr(ip, '.') + instr(substr(ip, instr(ip, '.') + 1), '.') + 1), '.'))
-    );
-    
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
-        password TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    
-    CREATE TABLE IF NOT EXISTS ip_config (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ip_str TEXT NOT NULL,
-        type TEXT NOT NULL,
-        iface TEXT NOT NULL,
-        created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    
-    CREATE TABLE IF NOT EXISTS operation_log (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        operation TEXT NOT NULL,
-        details TEXT,
-        ip_address TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(user_id) REFERENCES users(id)
-    );
-''')
-
-# 创建管理员用户
-admin_user = os.environ.get('ADMINUSER', 'admin')
-admin_pass = os.environ.get('ADMINPASS', 'admin123456')
-password_hash = generate_password_hash(admin_pass)
-
-conn.execute("INSERT OR IGNORE INTO users (username, password) VALUES (?, ?)", 
-             (admin_user, password_hash))
-conn.commit()
-conn.close()
-
-print(f"数据库初始化完成")
-print(f"管理员用户: {admin_user}")
-print(f"管理员密码: {admin_pass}")
-EOF
-
-    # 运行初始化
-    export ADMINUSER="admin$RANDOM"
-    export ADMINPASS=$(tr -dc 'A-Za-z0-9!@# </dev/urandom | head -c 16)
-    
-    python init_db.py
-    
-    # 保存凭据
-    cat > $CREDS_FILE << EOF
-========================================
-3proxy Enterprise 管理系统
-========================================
-访问地址: http://$(get_local_ip)
-管理员用户: $ADMINUSER
+# 保存登录凭据
+cat > $CREDS_FILE <<EOF
+Web管理地址: http://$(get_local_ip):${PORT}
+管理员用户名: $ADMINUSER
 管理员密码: $ADMINPASS
 安装时间: $(date)
-
-系统信息:
-- 安装目录: $WORKDIR
-- 配置目录: $PROXYCFG_DIR
-- 日志目录: $LOGDIR
-- 数据库: $WORKDIR/3proxy.db
-
-注意事项:
-- 首次登录后请及时修改密码
-- 定期备份数据库文件
-- 查看日志: tail -f $LOGDIR/*.log
-========================================
 EOF
+chmod 600 $CREDS_FILE
 
-    chmod 600 $CREDS_FILE
-    
-    # 更新服务文件中的密码
-    sed -i "s/ADMIN_PASS_PLACEHOLDER/$ADMINPASS/g" /etc/systemd/system/3proxy-web.service
-    
-    print_success "数据库初始化完成"
-}
+systemctl daemon-reload
+systemctl enable 3proxy-web
+systemctl enable 3proxy-autostart
+systemctl restart 3proxy-web
+systemctl restart 3proxy-autostart
 
-function start_services() {
-    print_info "启动服务..."
-    
-    # 启动Redis
-    systemctl start redis-server
-    
-    # 启动Nginx
-    systemctl restart nginx
-    
-    # 启动3proxy
-    systemctl enable 3proxy-enterprise
-    systemctl start 3proxy-enterprise
-    
-    # 启动Web管理
-    systemctl enable 3proxy-web
-    systemctl start 3proxy-web
-    
-    # 启动Supervisor
-    systemctl restart supervisor
-    
-    print_success "所有服务已启动"
-}
-
-function uninstall_system() {
-    print_warning "开始卸载3proxy Enterprise系统..."
-    
-    # 停止服务
-    systemctl stop 3proxy-enterprise 2>/dev/null || true
-    systemctl stop 3proxy-web 2>/dev/null || true
-    systemctl disable 3proxy-enterprise 2>/dev/null || true
-    systemctl disable 3proxy-web 2>/dev/null || true
-    
-    # 删除文件
-    rm -rf $WORKDIR
-    rm -rf $PROXYCFG_DIR
-    rm -rf $LOGDIR
-    rm -rf $CACHE_DIR
-    rm -rf $RUNTIME_DIR
-    rm -f /usr/local/bin/3proxy
-    rm -f /usr/local/bin/3proxy-enterprise.sh
-    rm -f /etc/systemd/system/3proxy-enterprise.service
-    rm -f /etc/systemd/system/3proxy-web.service
-    rm -f /etc/supervisor/conf.d/3proxy-web.conf
-    rm -f /etc/nginx/sites-enabled/3proxy-enterprise
-    rm -f /etc/nginx/sites-available/3proxy-enterprise
-    rm -f /etc/logrotate.d/3proxy
-    rm -f /etc/cron.d/3proxy-*
-    
-    # 重载systemd
-    systemctl daemon-reload
-    
-    print_success "3proxy Enterprise系统已完全卸载"
-}
-
-# 主程序
-case "$1" in
-    "uninstall")
-        uninstall_system
-        exit 0
-        ;;
-    "reinstall")
-        uninstall_system
-        print_info "准备重新安装..."
-        ;;
-    "show")
-        show_credentials
-        exit 0
-        ;;
-esac
-
-# 安装流程
-print_info "========== 3proxy Enterprise 安装程序 =========="
-print_info "版本: 2.0 Enterprise Edition"
-print_info "支持: 百万级代理并发管理"
-print_info "=============================================="
-
-# 检查系统
-check_system
-
-# 系统优化
-optimize_system
-
-# 创建目录
-setup_directories
-
-# 安装依赖
-install_dependencies
-
-# 编译3proxy
-compile_3proxy
-
-# 设置初始配置
-setup_initial_config
-
-# 设置日志轮转
-setup_log_rotation
-
-# 设置备份
-setup_backup
-
-# 设置监控
-setup_monitoring
-
-# 创建Web应用
-create_web_application
-
-# 创建系统服务
-create_systemd_services
-
-# 初始化数据库
-initialize_database
-
-# 启动服务
-start_services
-
-# 显示安装信息
-print_success "\n========== 安装完成 =========="
-cat $CREDS_FILE
-print_info "\n常用命令:"
-print_info "查看登录信息: bash $0 show"
-print_info "卸载系统: bash $0 uninstall" 
-print_info "重新安装: bash $0 reinstall"
-print_info "查看日志: tail -f /var/log/3proxy/*.log"
-print_info "重启服务: systemctl restart 3proxy-enterprise 3proxy-web"
-
-print_warning "\n重要提示:"
-print_warning "1. 请妥善保管管理员账号密码"
-print_warning "2. 建议配置防火墙规则保护管理端口"
-print_warning "3. 定期备份 $WORKDIR/3proxy.db 数据库文件"
-print_warning "4. 系统已优化支持千万级并发连接"
+echo -e "\n========= 部署完成！========="
+MYIP=$(get_local_ip)
+echo -e "浏览器访问：\n  \033[36mhttp://$MYIP:${PORT}\033[0m"
+echo "Web管理用户名: $ADMINUSER"
+echo "Web管理密码:  $ADMINPASS"
+echo -e "\n功能说明："
+echo "1. 代理组采用卡片式设计，点击查看详情"
+echo "2. 系统监控实时显示CPU、内存、磁盘使用情况"
+echo "3. 自动备份每天凌晨2点执行"
+echo "4. 系统已自动优化内核参数"
+echo -e "\n常用命令："
+echo "查看登录信息: bash $0 show"
+echo "卸载系统: bash $0 uninstall"
+echo "重新安装: bash $0 reinstall"
