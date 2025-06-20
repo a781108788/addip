@@ -254,10 +254,16 @@ PORT=$((RANDOM%55534+10000))
 ADMINUSER="admin$RANDOM"
 ADMINPASS=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
 
+# 先安装基础包
+echo -e "\n========= 0. 安装基础依赖 =========\n"
+apt update
+apt install -y curl
+
 echo -e "\n========= 1. 自动安装 3proxy =========\n"
 apt update
 apt install -y gcc make git wget python3 python3-pip python3-venv sqlite3 cron \
-    conntrack htop iotop sysstat net-tools ipset iptables-persistent
+    conntrack htop iotop sysstat net-tools ipset iptables-persistent \
+    libssl-dev zlib1g-dev build-essential
 
 # 编译安装3proxy - 使用最新版本以支持大规模并发
 if [ ! -f "$THREEPROXY_PATH" ]; then
@@ -265,8 +271,15 @@ if [ ! -f "$THREEPROXY_PATH" ]; then
     rm -rf 3proxy
     git clone --depth=1 https://github.com/3proxy/3proxy.git
     cd 3proxy
-    # 优化编译选项
-    make -f Makefile.Linux CFLAGS="-O3 -march=native -mtune=native -fomit-frame-pointer" LDFLAGS="-Wl,-O1"
+    # 创建配置文件
+    cat > Makefile.inc <<EOF
+BUILDDIR = ../bin/
+CC = gcc
+CFLAGS = -O3 -fomit-frame-pointer -pthread
+LDFLAGS = -O3 -pthread
+EOF
+    # 编译
+    make -f Makefile.Linux
     mkdir -p /usr/local/bin /usr/local/etc/3proxy
     cp bin/3proxy /usr/local/bin/3proxy
     chmod +x /usr/local/bin/3proxy
@@ -336,16 +349,18 @@ EOF
 
 chmod +x /usr/local/bin/3proxy-monitor.sh
 
-# 创建监控服务
+# 创建监控服务  
 cat > /etc/systemd/system/3proxy-monitor.service <<EOF
 [Unit]
 Description=3proxy性能监控
 After=3proxy-autostart.service
+Requires=3proxy-autostart.service
 
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/3proxy-monitor.sh
 Restart=always
+RestartSec=10
 User=root
 
 [Install]
@@ -426,6 +441,9 @@ class DatabasePool:
                 conn.commit()
                 result = cursor.lastrowid
             return result
+        except Exception as e:
+            conn.rollback()
+            raise e
         finally:
             self.return_connection(conn)
 
@@ -457,11 +475,9 @@ class User(UserMixin):
 
 @login_manager.user_loader
 def load_user(user_id):
-    db = get_db()
-    cur = db.execute("SELECT id,username,password FROM users WHERE id=?", (user_id,))
-    row = cur.fetchone()
-    db.close()
-    if row:
+    result = db_pool.execute("SELECT id,username,password FROM users WHERE id=?", (user_id,))
+    if result:
+        row = result[0]
         return User(row[0], row[1], row[2])
     return None
 
@@ -482,14 +498,15 @@ def reload_3proxy():
 @app.route('/login', methods=['GET','POST'])
 def login():
     if request.method == 'POST':
-        db = get_db()
-        cur = db.execute('SELECT id,username,password FROM users WHERE username=?', (request.form['username'],))
-        row = cur.fetchone()
-        db.close()
-        if row and check_password_hash(row[2], request.form['password']):
-            user = User(row[0], row[1], row[2])
-            login_user(user)
-            return redirect('/')
+        username = request.form['username']
+        password = request.form['password']
+        result = db_pool.execute('SELECT id,username,password FROM users WHERE username=?', (username,))
+        if result:
+            row = result[0]
+            if check_password_hash(row[2], password):
+                user = User(row[0], row[1], row[2])
+                login_user(user)
+                return redirect('/')
         flash('登录失败')
     return render_template('login.html')
 
@@ -571,13 +588,13 @@ def api_proxy_groups():
 @app.route('/api/proxy_group/<c_segment>')
 @login_required
 def api_proxy_group_detail(c_segment):
-    db = get_db()
-    proxies = db.execute('SELECT id,ip,port,username,password,enabled,ip_range,port_range,user_prefix FROM proxy WHERE ip LIKE ? ORDER BY ip,port', 
-                        (c_segment + '.%',)).fetchall()
-    db.close()
+    rows = db_pool.execute(
+        'SELECT id,ip,port,username,password,enabled,ip_range,port_range,user_prefix FROM proxy WHERE ip LIKE ? ORDER BY ip,port', 
+        (c_segment + '.%',)
+    )
     
     result = []
-    for p in proxies:
+    for p in rows:
         result.append({
             'id': p[0],
             'ip': p[1],
@@ -680,17 +697,13 @@ def get_traffic_stats():
 @app.route('/api/users')
 @login_required
 def api_users():
-    db = get_db()
-    users = db.execute('SELECT id,username FROM users').fetchall()
-    db.close()
+    users = db_pool.execute('SELECT id,username FROM users')
     return jsonify([{'id': u[0], 'username': u[1]} for u in users])
 
 @app.route('/api/ip_configs')
 @login_required
 def api_ip_configs():
-    db = get_db()
-    configs = db.execute('SELECT id,ip_str,type,iface,created FROM ip_config ORDER BY id DESC').fetchall()
-    db.close()
+    configs = db_pool.execute('SELECT id,ip_str,type,iface,created FROM ip_config ORDER BY id DESC')
     return jsonify([{
         'id': c[0],
         'ip_str': c[1],
@@ -2754,8 +2767,7 @@ Wants=network-online.target
 Type=forking
 PIDFile=/var/run/3proxy.pid
 WorkingDirectory=$WORKDIR
-ExecStartPre=/usr/local/bin/3proxy-optimize.sh
-ExecStart=/usr/local/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
+ExecStart=/usr/local/bin/3proxy-optimize.sh
 ExecReload=/bin/kill -USR1 \$MAINPID
 ExecStop=/bin/kill -TERM \$MAINPID
 Restart=always
@@ -2763,8 +2775,8 @@ RestartSec=3
 User=root
 
 # 资源限制
-LimitNOFILE=${FILE_MAX:-16000000}
-LimitNPROC=${FILE_MAX:-16000000}
+LimitNOFILE=16000000
+LimitNPROC=16000000
 LimitCORE=infinity
 LimitMEMLOCK=infinity
 
