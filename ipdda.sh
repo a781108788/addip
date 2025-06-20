@@ -455,16 +455,30 @@ echo -e "\n========= 2. 编译安装3proxy =========\n"
 if [ ! -f "$THREEPROXY_PATH" ]; then
     cd /tmp
     rm -rf 3proxy
-    git clone --depth=1 https://github.com/3proxy/3proxy.git
+    
+    # 使用正确的3proxy仓库
+    git clone --depth=1 https://github.com/z3APA3A/3proxy.git
     cd 3proxy
     
     # 企业级编译优化
-    make -f Makefile.Linux CFLAGS="-O3 -march=native -mtune=native -pipe -fomit-frame-pointer" \
-        LDFLAGS="-Wl,-O1 -Wl,--as-needed"
+    # 修复编译命令，确保在正确的目录下
+    make -f Makefile.Linux
     
+    # 确保目录存在
     mkdir -p /usr/local/bin /usr/local/etc/3proxy $PROXYCFG_DIR $LOGDIR
-    cp bin/3proxy /usr/local/bin/3proxy
+    
+    # 检查编译结果并复制
+    if [ -f "src/3proxy" ]; then
+        cp src/3proxy /usr/local/bin/3proxy
+    elif [ -f "bin/3proxy" ]; then
+        cp bin/3proxy /usr/local/bin/3proxy
+    else
+        echo -e "\033[31m错误：3proxy编译失败，未找到可执行文件\033[0m"
+        exit 1
+    fi
+    
     chmod +x /usr/local/bin/3proxy
+    echo -e "\033[32m3proxy编译安装成功\033[0m"
 fi
 
 # 创建基础配置文件
