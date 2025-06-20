@@ -1,4 +1,1366 @@
-else:
+#!/bin/bash
+set -e
+
+# 企业级3proxy管理系统 - 支持万级代理规模
+# 兼容 Debian 11/12，优化为128G内存32核服务器
+
+WORKDIR=/opt/3proxy-enterprise
+THREEPROXY_PATH=/usr/local/bin/3proxy
+PROXYCFG_DIR=/usr/local/etc/3proxy
+PROXYCFG_PATH=$PROXYCFG_DIR/3proxy.cfg
+LOGDIR=/var/log/3proxy
+LOGFILE=$LOGDIR/3proxy.log
+CREDS_FILE=/opt/3proxy-enterprise/.credentials
+CACHE_DIR=/var/cache/3proxy
+RUNTIME_DIR=/run/3proxy
+
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;36m'
+NC='\033[0m'
+
+function print_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+function print_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+function print_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+function print_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+function get_local_ip() {
+    local pubip lanip
+    pubip=$(curl -s --connect-timeout 5 ifconfig.me || curl -s --connect-timeout 5 ip.sb || curl -s --connect-timeout 5 icanhazip.com || echo "")
+    lanip=$(hostname -I 2>/dev/null | awk '{print $1}' || ip route get 1 2>/dev/null | awk '{print $NF;exit}' || echo "127.0.0.1")
+    if [[ -n "$pubip" && "$pubip" != "$lanip" ]]; then
+        echo "$pubip"
+    else
+        echo "$lanip"
+    fi
+}
+
+function show_credentials() {
+    if [ -f "$CREDS_FILE" ]; then
+        echo -e "\n========= 3proxy Enterprise 登录信息 ========="
+        cat "$CREDS_FILE"
+        echo -e "============================================\n"
+    else
+        print_error "未找到登录凭据文件。请运行安装脚本。"
+    fi
+}
+
+function check_system() {
+    print_info "检查系统环境..."
+    
+    # 检查操作系统
+    if ! grep -qE "Debian GNU/Linux (11|12)" /etc/os-release 2>/dev/null; then
+        print_warning "当前系统可能不是 Debian 11/12，继续安装可能遇到兼容性问题"
+    fi
+    
+    # 检查内存
+    total_mem=$(free -g | awk '/^Mem:/{print $2}')
+    if [ "$total_mem" -lt 16 ]; then
+        print_warning "系统内存小于16GB，建议升级硬件以获得最佳性能"
+    fi
+    
+    # 检查CPU核心数
+    cpu_cores=$(nproc)
+    if [ "$cpu_cores" -lt 8 ]; then
+        print_warning "CPU核心数小于8，可能影响并发性能"
+    fi
+    
+    print_success "系统检查完成 (内存: ${total_mem}GB, CPU: ${cpu_cores}核)"
+}
+
+function optimize_system() {
+    print_info "执行系统性能优化..."
+    
+    # 检查是否已经优化过
+    if grep -q "# 3proxy Enterprise Performance Tuning" /etc/sysctl.conf 2>/dev/null; then
+        print_warning "系统已经优化过，跳过..."
+        return
+    fi
+    
+    # 备份原始配置
+    cp /etc/sysctl.conf /etc/sysctl.conf.bak.$(date +%Y%m%d%H%M%S)
+    
+    # 企业级内核参数优化
+    cat >> /etc/sysctl.conf <<'EOF'
+
+# 3proxy Enterprise Performance Tuning
+# 针对128G内存32核服务器优化，支持百万级并发连接
+
+# 基础网络设置
+net.ipv4.ip_forward = 1
+net.ipv4.conf.all.forwarding = 1
+net.ipv4.conf.default.forwarding = 1
+net.ipv6.conf.all.forwarding = 1
+
+# TCP优化 - 支持大规模并发
+net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_fin_timeout = 10
+net.ipv4.tcp_keepalive_time = 120
+net.ipv4.tcp_keepalive_probes = 3
+net.ipv4.tcp_keepalive_intvl = 10
+net.ipv4.tcp_max_syn_backlog = 262144
+net.ipv4.tcp_max_tw_buckets = 2000000
+net.ipv4.tcp_timestamps = 1
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_no_metrics_save = 1
+net.ipv4.tcp_syn_retries = 2
+net.ipv4.tcp_synack_retries = 2
+net.ipv4.tcp_orphan_retries = 1
+net.ipv4.tcp_retries2 = 5
+
+# 端口范围 - 最大化可用端口
+net.ipv4.ip_local_port_range = 1024 65535
+net.ipv4.ip_local_reserved_ports = 3128,8080,8888,9999
+
+# 连接跟踪 - 支持千万级并发
+net.netfilter.nf_conntrack_max = 10000000
+net.netfilter.nf_conntrack_buckets = 2500000
+net.netfilter.nf_conntrack_tcp_timeout_established = 600
+net.netfilter.nf_conntrack_tcp_timeout_time_wait = 30
+net.netfilter.nf_conntrack_tcp_timeout_close_wait = 30
+net.netfilter.nf_conntrack_tcp_timeout_fin_wait = 30
+net.netfilter.nf_conntrack_generic_timeout = 120
+
+# 套接字缓冲区 - 针对128G内存优化
+net.core.somaxconn = 262144
+net.core.netdev_max_backlog = 262144
+net.core.optmem_max = 134217728
+net.ipv4.tcp_mem = 786432 1048576 134217728
+net.ipv4.udp_mem = 786432 1048576 134217728
+net.ipv4.tcp_rmem = 4096 87380 134217728
+net.ipv4.tcp_wmem = 4096 65536 134217728
+net.core.rmem_max = 134217728
+net.core.wmem_max = 134217728
+net.core.rmem_default = 524288
+net.core.wmem_default = 524288
+net.ipv4.tcp_congestion_control = bbr
+net.core.default_qdisc = fq
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_mtu_probing = 1
+
+# ARP表优化
+net.ipv4.neigh.default.gc_thresh1 = 8192
+net.ipv4.neigh.default.gc_thresh2 = 32768
+net.ipv4.neigh.default.gc_thresh3 = 65536
+net.ipv6.neigh.default.gc_thresh1 = 8192
+net.ipv6.neigh.default.gc_thresh2 = 32768
+net.ipv6.neigh.default.gc_thresh3 = 65536
+
+# 路由缓存
+net.ipv4.route.max_size = 8388608
+net.ipv4.route.gc_timeout = 300
+
+# 文件系统优化
+fs.file-max = 10000000
+fs.nr_open = 10000000
+fs.inotify.max_user_instances = 65536
+fs.inotify.max_user_watches = 1048576
+fs.aio-max-nr = 1048576
+
+# 内存管理优化
+vm.swappiness = 10
+vm.dirty_ratio = 15
+vm.dirty_background_ratio = 5
+vm.max_map_count = 655360
+vm.overcommit_memory = 1
+
+# 安全相关
+net.ipv4.conf.all.rp_filter = 0
+net.ipv4.conf.default.rp_filter = 0
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.all.secure_redirects = 0
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+net.ipv4.icmp_ignore_bogus_error_responses = 1
+
+# CPU调度优化
+kernel.sched_migration_cost_ns = 5000000
+kernel.sched_autogroup_enabled = 0
+EOF
+    
+    # 立即应用
+    sysctl -p >/dev/null 2>&1
+    
+    # 加载必要的内核模块
+    modprobe nf_conntrack >/dev/null 2>&1
+    modprobe nf_conntrack_ipv4 >/dev/null 2>&1 || true  # Debian 12可能不需要
+    
+    # 设置conntrack hashsize
+    echo 2500000 > /sys/module/nf_conntrack/parameters/hashsize 2>/dev/null || true
+    
+    # 优化limits
+    if ! grep -q "# 3proxy Enterprise limits" /etc/security/limits.conf 2>/dev/null; then
+        cat >> /etc/security/limits.conf <<'EOF'
+
+# 3proxy Enterprise limits
+* soft nofile 10000000
+* hard nofile 10000000
+* soft nproc 10000000
+* hard nproc 10000000
+* soft stack 65536
+* hard stack 65536
+root soft nofile 10000000
+root hard nofile 10000000
+root soft nproc 10000000
+root hard nproc 10000000
+EOF
+    fi
+    
+    # 优化systemd限制
+    mkdir -p /etc/systemd/system.conf.d
+    cat > /etc/systemd/system.conf.d/3proxy-limits.conf <<'EOF'
+[Manager]
+DefaultLimitNOFILE=10000000
+DefaultLimitNPROC=10000000
+DefaultLimitSTACK=67108864
+DefaultTasksMax=infinity
+EOF
+    
+    # 创建优化的启动脚本
+    cat > /usr/local/bin/3proxy-enterprise.sh <<'EOF'
+#!/bin/bash
+# 3proxy Enterprise启动脚本
+
+# 设置运行时限制
+ulimit -n 10000000
+ulimit -u 10000000
+ulimit -s 65536
+
+# CPU亲和性设置 - 将3proxy绑定到特定CPU核心
+CORES=$(nproc)
+if [ $CORES -ge 32 ]; then
+    # 为3proxy预留后16个核心
+    taskset -c 16-31 /usr/local/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
+else
+    # 使用所有可用核心
+    /usr/local/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
+fi
+EOF
+    
+    chmod +x /usr/local/bin/3proxy-enterprise.sh
+    
+    # 禁用透明大页
+    echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
+    echo never > /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null || true
+    
+    print_success "系统优化完成！已配置为支持千万级并发连接"
+}
+
+function setup_directories() {
+    print_info "创建必要的目录结构..."
+    
+    # 创建目录
+    mkdir -p $WORKDIR/{templates,static,backups,configs,scripts}
+    mkdir -p $PROXYCFG_DIR
+    mkdir -p $LOGDIR
+    mkdir -p $CACHE_DIR
+    mkdir -p $RUNTIME_DIR
+    
+    # 设置权限
+    chmod 755 $WORKDIR
+    chmod 755 $PROXYCFG_DIR
+    chmod 755 $LOGDIR
+    chmod 755 $CACHE_DIR
+    chmod 755 $RUNTIME_DIR
+    
+    print_success "目录创建完成"
+}
+
+function install_dependencies() {
+    print_info "安装依赖包..."
+    
+    # 更新包列表
+    apt update
+    
+    # 安装编译工具和基础包
+    apt install -y gcc make git wget curl \
+        python3 python3-pip python3-venv python3-dev \
+        sqlite3 libsqlite3-dev \
+        redis-server \
+        nginx \
+        supervisor \
+        htop iotop iftop \
+        net-tools dnsutils \
+        cron logrotate \
+        build-essential \
+        libssl-dev libffi-dev \
+        libevent-dev \
+        libmaxminddb0 libmaxminddb-dev mmdb-bin
+    
+    # 启动Redis（用于缓存）
+    systemctl enable redis-server
+    systemctl start redis-server
+    
+    print_success "依赖安装完成"
+}
+
+function compile_3proxy() {
+    print_info "编译安装3proxy..."
+    
+    if [ ! -f "$THREEPROXY_PATH" ]; then
+        cd /tmp
+        rm -rf 3proxy
+        git clone --depth=1 https://github.com/3proxy/3proxy.git
+        cd 3proxy
+        
+        # 修改编译配置以支持更多连接
+        sed -i 's/MAXUSERS 128/MAXUSERS 100000/g' src/structures.h 2>/dev/null || true
+        
+        # 编译
+        make -f Makefile.Linux
+        make -f Makefile.Linux install
+        
+        # 确保二进制文件存在
+        if [ ! -f /usr/local/bin/3proxy ]; then
+            cp src/3proxy /usr/local/bin/3proxy
+        fi
+        
+        chmod +x /usr/local/bin/3proxy
+        
+        print_success "3proxy编译安装完成"
+    else
+        print_warning "3proxy已安装，跳过编译"
+    fi
+}
+
+function setup_initial_config() {
+    print_info "创建初始配置..."
+    
+    # 创建基础配置文件
+    cat > $PROXYCFG_PATH <<'EOF'
+# 3proxy Enterprise Configuration
+# 支持百万级并发连接
+
+daemon
+pidfile /run/3proxy/3proxy.pid
+config /usr/local/etc/3proxy/3proxy.cfg
+monitor /usr/local/etc/3proxy/3proxy.cfg
+
+# 性能参数
+maxconn 1000000
+stacksize 262144
+
+# DNS配置
+nserver 8.8.8.8
+nserver 8.8.4.4
+nserver 1.1.1.1
+nserver 1.0.0.1
+nscache 262144
+nscache6 65536
+
+# 超时设置（优化为快速释放资源）
+timeouts 1 3 10 30 60 180 1800 15 60
+
+# 日志配置
+log /var/log/3proxy/3proxy.log D
+logformat "L%t %N.%p %E %U %C:%c %R:%r %O %I %h %T"
+rotate 100M
+archiver gz /usr/bin/gzip %F
+
+# 访问控制
+auth none
+
+# 认证方式将由Python动态生成
+# 代理配置将由Python动态生成
+EOF
+    
+    print_success "初始配置创建完成"
+}
+
+function setup_log_rotation() {
+    print_info "配置日志轮转..."
+    
+    cat > /etc/logrotate.d/3proxy <<'EOF'
+/var/log/3proxy/*.log {
+    daily
+    rotate 7
+    maxsize 1G
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0644 root root
+    sharedscripts
+    postrotate
+        /usr/bin/killall -USR1 3proxy 2>/dev/null || true
+    endscript
+}
+EOF
+    
+    print_success "日志轮转配置完成"
+}
+
+function setup_backup() {
+    print_info "设置自动备份..."
+    
+    # 创建备份脚本
+    cat > $WORKDIR/scripts/backup.sh <<'EOF'
+#!/bin/bash
+BACKUP_DIR="/opt/3proxy-enterprise/backups"
+DB_FILE="/opt/3proxy-enterprise/3proxy.db"
+CONFIG_DIR="/usr/local/etc/3proxy"
+DATE=$(date +%Y%m%d_%H%M%S)
+RETENTION_DAYS=7
+
+# 确保备份目录存在
+mkdir -p "$BACKUP_DIR"
+
+# 清理旧备份
+find "$BACKUP_DIR" -name "backup_*.tar.gz" -mtime +$RETENTION_DAYS -delete 2>/dev/null || true
+
+# 创建新备份
+cd /
+tar -czf "$BACKUP_DIR/backup_$DATE.tar.gz" \
+    "$DB_FILE" \
+    "$CONFIG_DIR" \
+    --exclude="$CONFIG_DIR/*.log*" \
+    2>/dev/null || true
+
+echo "[$(date)] Backup completed: backup_$DATE.tar.gz"
+
+# 如果备份目录超过10GB，删除最旧的备份
+BACKUP_SIZE=$(du -sb "$BACKUP_DIR" | awk '{print $1}')
+if [ $BACKUP_SIZE -gt 10737418240 ]; then
+    ls -t "$BACKUP_DIR"/backup_*.tar.gz | tail -n +10 | xargs rm -f 2>/dev/null || true
+fi
+EOF
+    
+    chmod +x $WORKDIR/scripts/backup.sh
+    
+    # 设置定时备份
+    echo "0 2 * * * root $WORKDIR/scripts/backup.sh >> $LOGDIR/backup.log 2>&1" > /etc/cron.d/3proxy-backup
+    
+    print_success "自动备份已设置（每天凌晨2点）"
+}
+
+function setup_monitoring() {
+    print_info "设置监控脚本..."
+    
+    # 创建监控脚本
+    cat > $WORKDIR/scripts/monitor.sh <<'EOF'
+#!/bin/bash
+# 3proxy监控脚本
+
+PIDFILE="/run/3proxy/3proxy.pid"
+LOGFILE="/var/log/3proxy/monitor.log"
+MAX_MEMORY_MB=65536  # 最大内存使用量(MB)
+MAX_CPU_PERCENT=800  # 最大CPU使用率(800% = 8核心满载)
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> $LOGFILE
+}
+
+# 检查3proxy是否运行
+if [ -f "$PIDFILE" ]; then
+    PID=$(cat $PIDFILE)
+    if ! kill -0 $PID 2>/dev/null; then
+        log "ERROR: 3proxy进程不存在，正在重启..."
+        systemctl restart 3proxy-enterprise
+        exit 1
+    fi
+    
+    # 获取进程信息
+    STATS=$(ps -p $PID -o pid,vsz,rss,pcpu,comm --no-headers)
+    if [ -n "$STATS" ]; then
+        VSZ=$(echo $STATS | awk '{print $2}')
+        RSS=$(echo $STATS | awk '{print $3}')
+        CPU=$(echo $STATS | awk '{print $4}')
+        
+        RSS_MB=$((RSS/1024))
+        
+        # 检查内存使用
+        if [ $RSS_MB -gt $MAX_MEMORY_MB ]; then
+            log "WARNING: 内存使用过高 (${RSS_MB}MB > ${MAX_MEMORY_MB}MB)"
+            # 可以在这里添加告警通知
+        fi
+        
+        # 检查CPU使用
+        CPU_INT=$(echo $CPU | cut -d. -f1)
+        if [ $CPU_INT -gt $MAX_CPU_PERCENT ]; then
+            log "WARNING: CPU使用过高 (${CPU}% > ${MAX_CPU_PERCENT}%)"
+        fi
+        
+        # 记录统计信息
+        echo "$(date '+%s')|$RSS_MB|$CPU" >> /var/log/3proxy/stats.log
+    fi
+else
+    log "ERROR: PID文件不存在，正在重启3proxy..."
+    systemctl restart 3proxy-enterprise
+fi
+
+# 清理旧的统计数据（保留24小时）
+tail -n 1440 /var/log/3proxy/stats.log > /var/log/3proxy/stats.log.tmp 2>/dev/null
+mv -f /var/log/3proxy/stats.log.tmp /var/log/3proxy/stats.log 2>/dev/null || true
+EOF
+    
+    chmod +x $WORKDIR/scripts/monitor.sh
+    
+    # 设置定时监控（每分钟）
+    echo "* * * * * root $WORKDIR/scripts/monitor.sh" > /etc/cron.d/3proxy-monitor
+    
+    print_success "监控脚本设置完成"
+}
+
+function create_web_application() {
+    print_info "创建Web管理应用..."
+    
+    cd $WORKDIR
+    
+    # 创建Python虚拟环境
+    python3 -m venv venv
+    source venv/bin/activate
+    
+    # 安装Python包
+    pip install --upgrade pip
+    pip install flask flask_login flask_wtf wtforms \
+                werkzeug psutil redis \
+                gunicorn gevent \
+                sqlalchemy alembic \
+                click python-dotenv \
+                --no-cache-dir
+    
+    # 创建主应用文件
+    cat > $WORKDIR/app.py << 'EOAPP'
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+3proxy Enterprise Management System
+支持百万级代理管理的高性能Web管理系统
+"""
+
+import os
+import sys
+import sqlite3
+import random
+import string
+import re
+import json
+import time
+import threading
+import queue
+import psutil
+import redis
+import hashlib
+import datetime
+import subprocess
+import signal
+from collections import defaultdict, OrderedDict
+from functools import wraps, lru_cache
+from contextlib import contextmanager
+
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, Response, g
+from flask_login import LoginManager, login_user, login_required, logout_user, UserMixin, current_user
+from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
+from logging.handlers import RotatingFileHandler
+
+# 配置常量
+DB_PATH = '/opt/3proxy-enterprise/3proxy.db'
+REDIS_HOST = 'localhost'
+REDIS_PORT = 6379
+REDIS_DB = 0
+CACHE_TTL = 300  # 缓存5分钟
+BATCH_SIZE = 1000  # 批量操作大小
+MAX_WORKERS = 16  # 最大工作线程数
+CONFIG_CHUNK_SIZE = 10000  # 配置文件分片大小
+
+# 初始化Flask应用
+app = Flask(__name__, 
+    template_folder='templates',
+    static_folder='static',
+    static_url_path='/static'
+)
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'enterprise-secret-key-change-in-production')
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
+
+# 初始化日志
+def setup_logging():
+    if not app.debug:
+        file_handler = RotatingFileHandler(
+            '/var/log/3proxy/webapp.log',
+            maxBytes=10485760,
+            backupCount=10
+        )
+        file_handler.setFormatter(logging.Formatter(
+            '%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'
+        ))
+        file_handler.setLevel(logging.INFO)
+        app.logger.addHandler(file_handler)
+        app.logger.setLevel(logging.INFO)
+        app.logger.info('3proxy Enterprise startup')
+
+setup_logging()
+
+# 初始化登录管理器
+login_manager = LoginManager(app)
+login_manager.login_view = 'login'
+login_manager.login_message = '请先登录'
+
+# 初始化Redis连接池
+redis_pool = redis.ConnectionPool(
+    host=REDIS_HOST,
+    port=REDIS_PORT,
+    db=REDIS_DB,
+    max_connections=100,
+    decode_responses=True
+)
+
+# 线程池
+executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+
+# 数据库连接池
+class DatabasePool:
+    def __init__(self, database, max_connections=50):
+        self.database = database
+        self.max_connections = max_connections
+        self.pool = queue.Queue(maxsize=max_connections)
+        self.lock = threading.Lock()
+        self._initialize_pool()
+    
+    def _initialize_pool(self):
+        for _ in range(self.max_connections):
+            conn = sqlite3.connect(self.database, timeout=30.0)
+            conn.row_factory = sqlite3.Row
+            conn.execute('PRAGMA journal_mode=WAL')
+            conn.execute('PRAGMA synchronous=NORMAL')
+            conn.execute('PRAGMA cache_size=10000')
+            conn.execute('PRAGMA temp_store=MEMORY')
+            self.pool.put(conn)
+    
+    @contextmanager
+    def get_connection(self):
+        conn = self.pool.get()
+        try:
+            yield conn
+        finally:
+            self.pool.put(conn)
+
+# 初始化数据库连接池
+db_pool = DatabasePool(DB_PATH)
+
+# Redis缓存装饰器
+def redis_cache(key_prefix, ttl=CACHE_TTL):
+    def decorator(f):
+        @wraps(f)
+        def wrapped(*args, **kwargs):
+            r = redis.Redis(connection_pool=redis_pool)
+            
+            # 生成缓存键
+            cache_key = f"{key_prefix}:{hashlib.md5(str(args).encode() + str(kwargs).encode()).hexdigest()}"
+            
+            # 尝试从缓存获取
+            cached = r.get(cache_key)
+            if cached:
+                return json.loads(cached)
+            
+            # 执行函数
+            result = f(*args, **kwargs)
+            
+            # 存入缓存
+            r.setex(cache_key, ttl, json.dumps(result))
+            
+            return result
+        return wrapped
+    return decorator
+
+# 用户模型
+class User(UserMixin):
+    def __init__(self, id, username, password_hash):
+        self.id = id
+        self.username = username
+        self.password_hash = password_hash
+    
+    def check_password(self, password):
+        return check_password_hash(self.password_hash, password)
+    
+    @staticmethod
+    def get(user_id):
+        with db_pool.get_connection() as conn:
+            cur = conn.execute("SELECT id, username, password FROM users WHERE id = ?", (user_id,))
+            row = cur.fetchone()
+            if row:
+                return User(row['id'], row['username'], row['password'])
+        return None
+    
+    @staticmethod
+    def get_by_username(username):
+        with db_pool.get_connection() as conn:
+            cur = conn.execute("SELECT id, username, password FROM users WHERE username = ?", (username,))
+            row = cur.fetchone()
+            if row:
+                return User(row['id'], row['username'], row['password'])
+        return None
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User.get(user_id)
+
+# 代理配置生成器（支持分片）
+class ProxyConfigGenerator:
+    def __init__(self):
+        self.config_dir = '/usr/local/etc/3proxy'
+        self.chunk_size = CONFIG_CHUNK_SIZE
+    
+    def generate_configs(self):
+        """生成3proxy配置文件（支持分片）"""
+        app.logger.info("开始生成代理配置...")
+        
+        with db_pool.get_connection() as conn:
+            # 获取所有启用的代理
+            cursor = conn.execute(
+                "SELECT ip, port, username, password FROM proxy WHERE enabled = 1 ORDER BY id"
+            )
+            
+            # 生成主配置文件
+            self._generate_main_config()
+            
+            # 生成用户认证文件
+            users_dict = {}
+            proxy_configs = []
+            
+            for row in cursor:
+                ip, port, username, password = row
+                users_dict[username] = password
+                proxy_configs.append((ip, port, username))
+            
+            # 写入用户文件（分片）
+            self._write_users_file(users_dict)
+            
+            # 写入代理配置（分片）
+            self._write_proxy_configs(proxy_configs)
+        
+        app.logger.info(f"配置生成完成，共{len(proxy_configs)}个代理")
+        
+        # 重载3proxy
+        self._reload_3proxy()
+    
+    def _generate_main_config(self):
+        """生成主配置文件"""
+        config = """# 3proxy Enterprise Configuration
+# Auto-generated - DO NOT EDIT MANUALLY
+
+daemon
+pidfile /run/3proxy/3proxy.pid
+monitor /usr/local/etc/3proxy/
+
+# 性能参数
+maxconn 1000000
+stacksize 262144
+
+# DNS配置
+nserver 8.8.8.8
+nserver 8.8.4.4
+nserver 1.1.1.1
+nscache 262144
+nscache6 65536
+
+# 超时设置
+timeouts 1 3 10 30 60 180 1800 15 60
+
+# 日志配置
+log /var/log/3proxy/3proxy.log D
+logformat "L%t %N.%p %E %U %C:%c %R:%r %O %I %h %T"
+rotate 100M
+
+# 包含其他配置文件
+include /usr/local/etc/3proxy/users.cfg
+include /usr/local/etc/3proxy/proxies/*.cfg
+"""
+        
+        with open(f"{self.config_dir}/3proxy.cfg", 'w') as f:
+            f.write(config)
+    
+    def _write_users_file(self, users_dict):
+        """写入用户认证文件（支持大量用户）"""
+        os.makedirs(f"{self.config_dir}/proxies", exist_ok=True)
+        
+        with open(f"{self.config_dir}/users.cfg", 'w') as f:
+            f.write("# Users configuration\n")
+            f.write("auth strong\n")
+            
+            # 分批写入用户
+            users_list = [f"{user}:CL:{passwd}" for user, passwd in users_dict.items()]
+            for i in range(0, len(users_list), 1000):
+                batch = users_list[i:i+1000]
+                f.write(f"users {' '.join(batch)}\n")
+    
+    def _write_proxy_configs(self, proxy_configs):
+        """写入代理配置（分片）"""
+        # 清理旧配置
+        import glob
+        for old_file in glob.glob(f"{self.config_dir}/proxies/*.cfg"):
+            os.remove(old_file)
+        
+        # 分片写入
+        for i in range(0, len(proxy_configs), self.chunk_size):
+            chunk = proxy_configs[i:i+self.chunk_size]
+            chunk_id = i // self.chunk_size
+            
+            with open(f"{self.config_dir}/proxies/proxy_{chunk_id:04d}.cfg", 'w') as f:
+                f.write(f"# Proxy chunk {chunk_id}\n")
+                
+                for ip, port, username in chunk:
+                    f.write(f"auth strong\n")
+                    f.write(f"allow {username}\n")
+                    f.write(f"proxy -n -a -p{port} -i{ip} -e{ip}\n")
+                    f.write("\n")
+    
+    def _reload_3proxy(self):
+        """重载3proxy配置"""
+        try:
+            # 发送SIGHUP信号重载配置
+            subprocess.run(['pkill', '-HUP', '3proxy'], check=False)
+            app.logger.info("3proxy配置重载成功")
+        except Exception as e:
+            app.logger.error(f"3proxy重载失败: {e}")
+            # 如果重载失败，尝试重启
+            try:
+                subprocess.run(['systemctl', 'restart', '3proxy-enterprise'], check=True)
+                app.logger.info("3proxy重启成功")
+            except Exception as e2:
+                app.logger.error(f"3proxy重启失败: {e2}")
+
+# 实例化配置生成器
+config_generator = ProxyConfigGenerator()
+
+# 批量操作管理器
+class BatchOperationManager:
+    def __init__(self):
+        self.operations = {}
+        self.lock = threading.Lock()
+    
+    def create_operation(self, operation_type, total_items):
+        """创建批量操作"""
+        op_id = hashlib.md5(f"{operation_type}:{time.time()}".encode()).hexdigest()
+        
+        with self.lock:
+            self.operations[op_id] = {
+                'type': operation_type,
+                'total': total_items,
+                'processed': 0,
+                'success': 0,
+                'failed': 0,
+                'status': 'running',
+                'start_time': time.time(),
+                'errors': []
+            }
+        
+        return op_id
+    
+    def update_progress(self, op_id, success=True, error=None):
+        """更新操作进度"""
+        with self.lock:
+            if op_id in self.operations:
+                op = self.operations[op_id]
+                op['processed'] += 1
+                
+                if success:
+                    op['success'] += 1
+                else:
+                    op['failed'] += 1
+                    if error:
+                        op['errors'].append(error)
+                
+                if op['processed'] >= op['total']:
+                    op['status'] = 'completed'
+                    op['end_time'] = time.time()
+    
+    def get_status(self, op_id):
+        """获取操作状态"""
+        with self.lock:
+            return self.operations.get(op_id, {})
+
+# 实例化批量操作管理器
+batch_manager = BatchOperationManager()
+
+# 工具函数
+def get_network_interfaces():
+    """获取网络接口列表"""
+    interfaces = []
+    for name, addrs in psutil.net_if_addrs().items():
+        if name != 'lo':  # 排除回环接口
+            for addr in addrs:
+                if addr.family == 2:  # IPv4
+                    interfaces.append({
+                        'name': name,
+                        'ip': addr.address,
+                        'netmask': addr.netmask
+                    })
+    return interfaces
+
+def validate_ip_range(ip_range):
+    """验证IP范围格式"""
+    # 支持格式: 192.168.1.1-254 或 192.168.1.1-192.168.1.254
+    pattern = r'^(\d{1,3}\.){3}\d{1,3}-(\d{1,3}|(\d{1,3}\.){3}\d{1,3})$'
+    return re.match(pattern, ip_range) is not None
+
+def expand_ip_range(ip_range):
+    """展开IP范围"""
+    ips = []
+    
+    if '-' in ip_range:
+        parts = ip_range.split('-')
+        if '.' in parts[1]:
+            # 完整IP范围: 192.168.1.1-192.168.1.254
+            start_ip = parts[0]
+            end_ip = parts[1]
+            
+            start_parts = [int(x) for x in start_ip.split('.')]
+            end_parts = [int(x) for x in end_ip.split('.')]
+            
+            current = start_parts[:]
+            while current <= end_parts:
+                ips.append('.'.join(map(str, current)))
+                
+                current[3] += 1
+                for i in range(3, 0, -1):
+                    if current[i] > 255:
+                        current[i] = 0
+                        current[i-1] += 1
+                
+                if current[0] > 255:
+                    break
+        else:
+            # 简短格式: 192.168.1.1-254
+            base = '.'.join(parts[0].split('.')[:-1])
+            start = int(parts[0].split('.')[-1])
+            end = int(parts[1])
+            
+            for i in range(start, end + 1):
+                if i <= 255:
+                    ips.append(f"{base}.{i}")
+    
+    return ips
+
+# 路由处理函数
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        
+        user = User.get_by_username(username)
+        if user and user.check_password(password):
+            login_user(user, remember=True)
+            next_page = request.args.get('next')
+            return redirect(next_page) if next_page else redirect(url_for('index'))
+        
+        flash('用户名或密码错误', 'danger')
+    
+    return render_template('login.html')
+
+@app.route('/logout')
+@login_required
+def logout():
+    logout_user()
+    return redirect(url_for('login'))
+
+@app.route('/')
+@login_required
+def index():
+    return render_template('index.html')
+
+# API路由
+@app.route('/api/dashboard/stats')
+@login_required
+@redis_cache('dashboard_stats', ttl=60)
+def api_dashboard_stats():
+    """获取仪表板统计信息"""
+    with db_pool.get_connection() as conn:
+        # 总代理数
+        total = conn.execute("SELECT COUNT(*) FROM proxy").fetchone()[0]
+        
+        # 启用的代理数
+        enabled = conn.execute("SELECT COUNT(*) FROM proxy WHERE enabled = 1").fetchone()[0]
+        
+        # C段统计 - 使用简化的方法
+        c_segments = conn.execute(
+            "SELECT COUNT(DISTINCT substr(ip, 1, instr(ip||'.', '.')+(length(ip)-length(replace(ip,'.','')))-1)) FROM proxy"
+        ).fetchone()[0]
+        
+        # 端口范围
+        port_range = conn.execute(
+            "SELECT MIN(port), MAX(port) FROM proxy"
+        ).fetchone()
+    
+    return jsonify({
+        'total_proxies': total,
+        'enabled_proxies': enabled,
+        'disabled_proxies': total - enabled,
+        'c_segments': c_segments,
+        'port_range': f"{port_range[0]}-{port_range[1]}" if port_range[0] else "N/A",
+        'utilization': round(enabled / total * 100, 2) if total > 0 else 0
+    })
+
+@app.route('/api/system/status')
+@login_required
+def api_system_status():
+    """获取系统状态"""
+    # CPU使用率
+    cpu_percent = psutil.cpu_percent(interval=1, percpu=True)
+    cpu_avg = sum(cpu_percent) / len(cpu_percent)
+    
+    # 内存信息
+    memory = psutil.virtual_memory()
+    
+    # 磁盘信息
+    disk = psutil.disk_usage('/')
+    
+    # 网络IO
+    net_io = psutil.net_io_counters()
+    
+    # 3proxy进程信息
+    proxy_info = {'running': False, 'pid': None, 'cpu': 0, 'memory': 0, 'connections': 0}
+    for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_info', 'connections']):
+        try:
+            if proc.info['name'] == '3proxy':
+                proxy_info['running'] = True
+                proxy_info['pid'] = proc.info['pid']
+                proxy_info['cpu'] = proc.cpu_percent(interval=0.1)
+                proxy_info['memory'] = proc.memory_info().rss / 1024 / 1024  # MB
+                proxy_info['connections'] = len(proc.connections())
+                break
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    
+    return jsonify({
+        'cpu': {
+            'percent': round(cpu_avg, 2),
+            'cores': len(cpu_percent),
+            'per_core': [round(p, 2) for p in cpu_percent]
+        },
+        'memory': {
+            'total': round(memory.total / 1024 / 1024 / 1024, 2),  # GB
+            'used': round(memory.used / 1024 / 1024 / 1024, 2),
+            'available': round(memory.available / 1024 / 1024 / 1024, 2),
+            'percent': round(memory.percent, 2)
+        },
+        'disk': {
+            'total': round(disk.total / 1024 / 1024 / 1024, 2),  # GB
+            'used': round(disk.used / 1024 / 1024 / 1024, 2),
+            'free': round(disk.free / 1024 / 1024 / 1024, 2),
+            'percent': round(disk.percent, 2)
+        },
+        'network': {
+            'bytes_sent': round(net_io.bytes_sent / 1024 / 1024, 2),  # MB
+            'bytes_recv': round(net_io.bytes_recv / 1024 / 1024, 2),
+            'packets_sent': net_io.packets_sent,
+            'packets_recv': net_io.packets_recv
+        },
+        'proxy': proxy_info,
+        'timestamp': datetime.datetime.now().isoformat()
+    })
+
+@app.route('/api/proxy/groups')
+@login_required
+def api_proxy_groups():
+    """获取代理组列表（C段分组）"""
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 20, type=int)
+    search = request.args.get('search', '')
+    
+    with db_pool.get_connection() as conn:
+        # 构建查询 - 使用简化的C段提取方法
+        query = """
+            SELECT 
+                substr(ip, 1, instr(ip||'.', '.')+(length(ip)-length(replace(ip,'.','')))-1) as c_segment,
+                COUNT(*) as total,
+                SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) as enabled,
+                MIN(port) as min_port,
+                MAX(port) as max_port,
+                GROUP_CONCAT(DISTINCT user_prefix) as prefixes
+            FROM proxy
+        """
+        
+        if search:
+            query += " WHERE ip LIKE ?"
+            params = (f"%{search}%",)
+        else:
+            params = ()
+        
+        query += " GROUP BY c_segment ORDER BY c_segment"
+        
+        # 获取总数
+        count_query = "SELECT COUNT(DISTINCT substr(ip, 1, instr(ip||'.', '.')+(length(ip)-length(replace(ip,'.','')))-1)) FROM proxy"
+        if search:
+            count_query += " WHERE ip LIKE ?"
+        
+        total = conn.execute(count_query, params).fetchone()[0]
+        
+        # 分页查询
+        query += f" LIMIT {per_page} OFFSET {(page - 1) * per_page}"
+        
+        cursor = conn.execute(query, params)
+        groups = []
+        
+        for row in cursor:
+            groups.append({
+                'c_segment': row['c_segment'],
+                'total': row['total'],
+                'enabled': row['enabled'],
+                'disabled': row['total'] - row['enabled'],
+                'port_range': f"{row['min_port']}-{row['max_port']}",
+                'prefixes': row['prefixes'].split(',') if row['prefixes'] else []
+            })
+    
+    return jsonify({
+        'groups': groups,
+        'total': total,
+        'page': page,
+        'per_page': per_page,
+        'pages': (total + per_page - 1) // per_page
+    })
+
+@app.route('/api/proxy/group/<c_segment>')
+@login_required
+def api_proxy_group_detail(c_segment):
+    """获取代理组详情"""
+    page = request.args.get('page', 1, type=int)
+    per_page = request.args.get('per_page', 100, type=int)
+    
+    with db_pool.get_connection() as conn:
+        # 获取总数
+        total = conn.execute(
+            "SELECT COUNT(*) FROM proxy WHERE ip LIKE ?",
+            (f"{c_segment}%",)
+        ).fetchone()[0]
+        
+        # 获取代理列表
+        cursor = conn.execute(
+            """
+            SELECT id, ip, port, username, password, enabled
+            FROM proxy
+            WHERE ip LIKE ?
+            ORDER BY ip, port
+            LIMIT ? OFFSET ?
+            """,
+            (f"{c_segment}%", per_page, (page - 1) * per_page)
+        )
+        
+        proxies = []
+        for row in cursor:
+            proxies.append({
+                'id': row['id'],
+                'ip': row['ip'],
+                'port': row['port'],
+                'username': row['username'],
+                'password': row['password'],
+                'enabled': bool(row['enabled'])
+            })
+    
+    return jsonify({
+        'proxies': proxies,
+        'total': total,
+        'page': page,
+        'per_page': per_page,
+        'pages': (total + per_page - 1) // per_page
+    })
+
+@app.route('/api/proxy/batch/add', methods=['POST'])
+@login_required
+def api_proxy_batch_add():
+    """批量添加代理"""
+    data = request.get_json()
+    
+    ip_range = data.get('ip_range')
+    port_start = data.get('port_start', 10000)
+    port_end = data.get('port_end', 60000)
+    user_prefix = data.get('user_prefix', 'user')
+    password_length = data.get('password_length', 12)
+    
+    # 验证IP范围
+    if not validate_ip_range(ip_range):
+        return jsonify({'error': 'IP范围格式错误'}), 400
+    
+    # 展开IP范围
+    ips = expand_ip_range(ip_range)
+    if not ips:
+        return jsonify({'error': '无效的IP范围'}), 400
+    
+    if len(ips) > 10000:
+        return jsonify({'error': 'IP数量超过限制(10000)'}), 400
+    
+    # 创建批量操作
+    op_id = batch_manager.create_operation('batch_add_proxy', len(ips))
+    
+    # 异步执行批量添加
+    def batch_add_worker():
+        with db_pool.get_connection() as conn:
+            # 获取已使用的端口
+            used_ports = set()
+            cursor = conn.execute("SELECT port FROM proxy")
+            for row in cursor:
+                used_ports.add(row[0])
+            
+            # 生成可用端口池
+            available_ports = [p for p in range(port_start, port_end + 1) if p not in used_ports]
+            if len(available_ports) < len(ips):
+                batch_manager.update_progress(op_id, False, "可用端口不足")
+                return
+            
+            # 随机选择端口
+            random.shuffle(available_ports)
+            selected_ports = available_ports[:len(ips)]
+            
+            # 批量插入
+            batch_data = []
+            for i, ip in enumerate(ips):
+                username = f"{user_prefix}{random.randint(1000, 9999)}"
+                password = ''.join(random.choices(string.ascii_letters + string.digits, k=password_length))
+                port = selected_ports[i]
+                
+                batch_data.append((ip, port, username, password, 1, ip_range, f"{port_start}-{port_end}", user_prefix))
+                
+                if len(batch_data) >= BATCH_SIZE:
+                    conn.executemany(
+                        "INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        batch_data
+                    )
+                    conn.commit()
+                    
+                    for _ in batch_data:
+                        batch_manager.update_progress(op_id, True)
+                    
+                    batch_data = []
+            
+            # 插入剩余数据
+            if batch_data:
+                conn.executemany(
+                    "INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    batch_data
+                )
+                conn.commit()
+                
+                for _ in batch_data:
+                    batch_manager.update_progress(op_id, True)
+        
+        # 重新生成配置
+        config_generator.generate_configs()
+    
+    # 提交到线程池执行
+    executor.submit(batch_add_worker)
+    
+    return jsonify({'operation_id': op_id, 'message': '批量添加任务已创建'})
+
+@app.route('/api/proxy/batch/operation/<op_id>')
+@login_required
+def api_batch_operation_status(op_id):
+    """获取批量操作状态"""
+    status = batch_manager.get_status(op_id)
+    if not status:
+        return jsonify({'error': '操作不存在'}), 404
+    
+    return jsonify(status)
+
+@app.route('/api/proxy/batch/delete', methods=['POST'])
+@login_required
+def api_proxy_batch_delete():
+    """批量删除代理"""
+    data = request.get_json()
+    proxy_ids = data.get('ids', [])
+    
+    if not proxy_ids:
+        return jsonify({'error': '未选择代理'}), 400
+    
+    # 创建批量操作
+    op_id = batch_manager.create_operation('batch_delete_proxy', len(proxy_ids))
+    
+    # 异步执行批量删除
+    def batch_delete_worker():
+        with db_pool.get_connection() as conn:
+            # 分批删除
+            for i in range(0, len(proxy_ids), BATCH_SIZE):
+                batch = proxy_ids[i:i+BATCH_SIZE]
+                placeholders = ','.join('?' * len(batch))
+                
+                conn.execute(f"DELETE FROM proxy WHERE id IN ({placeholders})", batch)
+                conn.commit()
+                
+                for _ in batch:
+                    batch_manager.update_progress(op_id, True)
+        
+        # 重新生成配置
+        config_generator.generate_configs()
+    
+    # 提交到线程池执行
+    executor.submit(batch_delete_worker)
+    
+    return jsonify({'operation_id': op_id, 'message': '批量删除任务已创建'})
+
+@app.route('/api/proxy/batch/toggle', methods=['POST'])
+@login_required
+def api_proxy_batch_toggle():
+    """批量启用/禁用代理"""
+    data = request.get_json()
+    proxy_ids = data.get('ids', [])
+    enabled = data.get('enabled', True)
+    
+    if not proxy_ids:
+        return jsonify({'error': '未选择代理'}), 400
+    
+    # 创建批量操作
+    op_id = batch_manager.create_operation('batch_toggle_proxy', len(proxy_ids))
+    
+    # 异步执行批量更新
+    def batch_toggle_worker():
+        with db_pool.get_connection() as conn:
+            # 分批更新
+            for i in range(0, len(proxy_ids), BATCH_SIZE):
+                batch = proxy_ids[i:i+BATCH_SIZE]
+                placeholders = ','.join('?' * len(batch))
+                
+                conn.execute(
+                    f"UPDATE proxy SET enabled = ? WHERE id IN ({placeholders})",
+                    [1 if enabled else 0] + batch
+                )
+                conn.commit()
+                
+                for _ in batch:
+                    batch_manager.update_progress(op_id, True)
+        
+        # 重新生成配置
+        config_generator.generate_configs()
+    
+    # 提交到线程池执行
+    executor.submit(batch_toggle_worker)
+    
+    return jsonify({'operation_id': op_id, 'message': f'批量{"启用" if enabled else "禁用"}任务已创建'})
+
+@app.route('/api/proxy/export', methods=['POST'])
+@login_required
+def api_proxy_export():
+    """导出代理"""
+    data = request.get_json()
+    format_type = data.get('format', 'txt')
+    c_segments = data.get('c_segments', [])
+    
+    with db_pool.get_connection() as conn:
+        if c_segments:
+            # 导出指定C段
+            placeholders = ','.join('?' * len(c_segments))
+            # 简化SQL查询，避免过长的单行
+            sql = "SELECT ip, port, username, password FROM proxy WHERE "
+            sql += "substr(ip, 1, instr(ip||'.', '.')+(length(ip)-length(replace(ip,'.','')))-1) "
+            sql += f"IN ({placeholders}) ORDER BY ip, port"
+            cursor = conn.execute(sql, c_segments)
+        else:
             # 导出所有
             cursor = conn.execute("SELECT ip, port, username, password FROM proxy ORDER BY ip, port")
         
@@ -302,7 +1664,7 @@ def init_database():
             CREATE INDEX IF NOT EXISTS idx_proxy_port ON proxy(port);
             CREATE INDEX IF NOT EXISTS idx_proxy_enabled ON proxy(enabled);
             CREATE INDEX IF NOT EXISTS idx_proxy_c_segment ON proxy(
-                substr(ip, 1, instr(ip, '.') + instr(substr(ip, instr(ip, '.') + 1), '.') + instr(substr(ip, instr(ip, '.') + instr(substr(ip, instr(ip, '.') + 1), '.') + 1), '.'))
+                substr(ip, 1, instr(ip||'.', '.')+(length(ip)-length(replace(ip,'.','')))-1)
             );
             
             CREATE TABLE IF NOT EXISTS users (
@@ -384,20 +1746,12 @@ if __name__ == '__main__':
         }
         
         GunicornApp(app, options).run()
-EOAPP3
-}
+EOAPP
 
-function create_app_part4() {
-    # 创建静态目录
-    mkdir -p $WORKDIR/static
+    # 创建模板文件
+    print_info "创建Web界面模板..."
     
-    # 创建一个简单的favicon
-    cat > $WORKDIR/static/favicon.ico << 'EOF'
-EOF
-}
-
-function create_templates() {
-    # 创建login.html
+    # login.html
     cat > $WORKDIR/templates/login.html << 'EOHTML'
 <!DOCTYPE html>
 <html lang="zh">
@@ -567,14 +1921,8 @@ function create_templates() {
 </html>
 EOHTML
 
-    # 创建index.html (将内容分成多个部分以避免过长)
-    create_index_part1
-    create_index_part2
-    create_index_part3
-}
-
-function create_index_part1() {
-    cat > $WORKDIR/templates/index.html << 'EOHTML1'
+    # index.html
+    cat > $WORKDIR/templates/index.html << 'EOHTML'
 <!DOCTYPE html>
 <html lang="zh">
 <head>
@@ -1040,11 +2388,6 @@ function create_index_part1() {
     <script src="https://cdn.jsdelivr.net/npm/datatables.net@1.13.8/js/jquery.dataTables.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/datatables.net-bs5@1.13.8/js/dataTables.bootstrap5.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-EOHTML1
-}
-
-function create_index_part2() {
-    cat >> $WORKDIR/templates/index.html << 'EOHTML2'
     
     <script>
         // 全局变量
@@ -1498,11 +2841,6 @@ function create_index_part2() {
                 `);
             }
         }
-EOHTML2
-}
-
-function create_index_part3() {
-    cat >> $WORKDIR/templates/index.html << 'EOHTML3'
         
         async function loadBatchOperations() {
             const html = `
@@ -1515,6 +2853,53 @@ function create_index_part3() {
                         <div class="content-card">
                             <div class="content-card-header">
                                 <h5 class="mb-0">批量添加代理</h5>
+                            </div>
+                            <div class="content-card-body">
+                                <form id="batchAddForm">
+                                    <div class="mb-3">
+                                        <label class="form-label">IP范围</label>
+                                        <input type="text" class="form-control" name="ip_range" 
+                                               placeholder="例: 192.168.1.1-254" required>
+                                        <small class="text-muted">支持格式: x.x.x.1-254 或 x.x.x.1-x.x.x.254</small>
+                                    </div>
+                                    <div class="row">
+                                        <div class="col-md-6">
+                                            <div class="mb-3">
+                                                <label class="form-label">起始端口</label>
+                                                <input type="number" class="form-control" name="port_start" 
+                                                       value="10000" min="1024" max="65535" required>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div class="mb-3">
+                                                <label class="form-label">结束端口</label>
+                                                <input type="number" class="form-control" name="port_end" 
+                                                       value="60000" min="1024" max="65535" required>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">用户名前缀</label>
+                                        <input type="text" class="form-control" name="user_prefix" 
+                                               value="user" required>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">密码长度</label>
+                                        <input type="number" class="form-control" name="password_length" 
+                                               value="12" min="8" max="32" required>
+                                    </div>
+                                    <button type="submit" class="btn btn-primary">
+                                        <i class="bi bi-plus-circle"></i> 批量添加
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="col-md-6">
+                        <div class="content-card">
+                            <div class="content-card-header">
+                                <h5 class="mb-0">导入代理</h5>
                             </div>
                             <div class="content-card-body">
                                 <form id="importForm">
@@ -2284,7 +3669,9 @@ function create_index_part3() {
     </script>
 </body>
 </html>
-EOHTML3
+EOHTML
+    
+    print_success "Web应用创建完成"
 }
 
 function create_systemd_services() {
@@ -2510,1437 +3897,7 @@ EOF
 
     # 运行初始化
     export ADMINUSER="admin$RANDOM"
-    export ADMINPASS=$(tr -dc 'A-Za-z0-9!@#batchAddForm">
-                                    <div class="mb-3">
-                                        <label class="form-label">IP范围</label>
-                                        <input type="text" class="form-control" name="ip_range" 
-                                               placeholder="例: 192.168.1.1-254" required>
-                                        <small class="text-muted">支持格式: x.x.x.1-254 或 x.x.x.1-x.x.x.254</small>
-                                    </div>
-                                    <div class="row">
-                                        <div class="col-md-6">
-                                            <div class="mb-3">
-                                                <label class="form-label">起始端口</label>
-                                                <input type="number" class="form-control" name="port_start" 
-                                                       value="10000" min="1024" max="65535" required>
-                                            </div>
-                                        </div>
-                                        <div class="col-md-6">
-                                            <div class="mb-3">
-                                                <label class="form-label">结束端口</label>
-                                                <input type="number" class="form-control" name="port_end" 
-                                                       value="60000" min="1024" max="65535" required>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div class="mb-3">
-                                        <label class="form-label">用户名前缀</label>
-                                        <input type="text" class="form-control" name="user_prefix" 
-                                               value="user" required>
-                                    </div>
-                                    <div class="mb-3">
-                                        <label class="form-label">密码长度</label>
-                                        <input type="number" class="form-control" name="password_length" 
-                                               value="12" min="8" max="32" required>
-                                    </div>
-                                    <button type="submit" class="btn btn-primary">
-                                        <i class="bi bi-plus-circle"></i> 批量添加
-                                    </button>
-                                </form>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="col-md-6">
-                        <div class="content-card">
-                            <div class="content-card-header">
-                                <h5 class="mb-0">导入代理</h5>
-                            </div>
-                            <div class="content-card-body">
-                                <form id="#!/bin/bash
-set -e
-
-# 3proxy企业级管理系统安装脚本 v2.0 (修复版)
-# 支持Debian 11/12，优化为128G内存32核服务器
-# 修复引号匹配问题
-
-WORKDIR=/opt/3proxy-enterprise
-THREEPROXY_PATH=/usr/local/bin/3proxy
-PROXYCFG_DIR=/usr/local/etc/3proxy
-PROXYCFG_PATH=$PROXYCFG_DIR/3proxy.cfg
-LOGDIR=/var/log/3proxy
-LOGFILE=$LOGDIR/3proxy.log
-CREDS_FILE=/opt/3proxy-enterprise/.credentials
-CACHE_DIR=/var/cache/3proxy
-RUNTIME_DIR=/run/3proxy
-
-# 颜色定义
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;36m'
-NC='\033[0m'
-
-function print_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
-}
-
-function print_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
-
-function print_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
-
-function print_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
-function get_local_ip() {
-    local pubip lanip
-    pubip=$(curl -s --connect-timeout 5 ifconfig.me || curl -s --connect-timeout 5 ip.sb || curl -s --connect-timeout 5 icanhazip.com || echo "")
-    lanip=$(hostname -I 2>/dev/null | awk '{print $1}' || ip route get 1 2>/dev/null | awk '{print $NF;exit}' || echo "127.0.0.1")
-    if [[ -n "$pubip" && "$pubip" != "$lanip" ]]; then
-        echo "$pubip"
-    else
-        echo "$lanip"
-    fi
-}
-
-function show_credentials() {
-    if [ -f "$CREDS_FILE" ]; then
-        echo -e "\n========= 3proxy Enterprise 登录信息 ========="
-        cat "$CREDS_FILE"
-        echo -e "============================================\n"
-    else
-        print_error "未找到登录凭据文件。请运行安装脚本。"
-    fi
-}
-
-function check_system() {
-    print_info "检查系统环境..."
-    
-    # 检查操作系统
-    if ! grep -qE "Debian GNU/Linux (11|12)" /etc/os-release 2>/dev/null; then
-        print_warning "当前系统可能不是 Debian 11/12，继续安装可能遇到兼容性问题"
-    fi
-    
-    # 检查内存
-    total_mem=$(free -g | awk '/^Mem:/{print $2}')
-    if [ "$total_mem" -lt 16 ]; then
-        print_warning "系统内存小于16GB，建议升级硬件以获得最佳性能"
-    fi
-    
-    # 检查CPU核心数
-    cpu_cores=$(nproc)
-    if [ "$cpu_cores" -lt 8 ]; then
-        print_warning "CPU核心数小于8，可能影响并发性能"
-    fi
-    
-    print_success "系统检查完成 (内存: ${total_mem}GB, CPU: ${cpu_cores}核)"
-}
-
-function optimize_system() {
-    print_info "执行系统性能优化..."
-    
-    # 检查是否已经优化过
-    if grep -q "# 3proxy Enterprise Performance Tuning" /etc/sysctl.conf 2>/dev/null; then
-        print_warning "系统已经优化过，跳过..."
-        return
-    fi
-    
-    # 备份原始配置
-    cp /etc/sysctl.conf /etc/sysctl.conf.bak.$(date +%Y%m%d%H%M%S)
-    
-    # 企业级内核参数优化
-    cat >> /etc/sysctl.conf << 'EOF'
-
-# 3proxy Enterprise Performance Tuning
-# 针对128G内存32核服务器优化，支持百万级并发连接
-
-# 基础网络设置
-net.ipv4.ip_forward = 1
-net.ipv4.conf.all.forwarding = 1
-net.ipv4.conf.default.forwarding = 1
-net.ipv6.conf.all.forwarding = 1
-
-# TCP优化 - 支持大规模并发
-net.ipv4.tcp_syncookies = 1
-net.ipv4.tcp_tw_reuse = 1
-net.ipv4.tcp_fin_timeout = 10
-net.ipv4.tcp_keepalive_time = 120
-net.ipv4.tcp_keepalive_probes = 3
-net.ipv4.tcp_keepalive_intvl = 10
-net.ipv4.tcp_max_syn_backlog = 262144
-net.ipv4.tcp_max_tw_buckets = 2000000
-net.ipv4.tcp_timestamps = 1
-net.ipv4.tcp_slow_start_after_idle = 0
-net.ipv4.tcp_no_metrics_save = 1
-net.ipv4.tcp_syn_retries = 2
-net.ipv4.tcp_synack_retries = 2
-net.ipv4.tcp_orphan_retries = 1
-net.ipv4.tcp_retries2 = 5
-
-# 端口范围 - 最大化可用端口
-net.ipv4.ip_local_port_range = 1024 65535
-net.ipv4.ip_local_reserved_ports = 3128,8080,8888,9999
-
-# 连接跟踪 - 支持千万级并发
-net.netfilter.nf_conntrack_max = 10000000
-net.netfilter.nf_conntrack_buckets = 2500000
-net.netfilter.nf_conntrack_tcp_timeout_established = 600
-net.netfilter.nf_conntrack_tcp_timeout_time_wait = 30
-net.netfilter.nf_conntrack_tcp_timeout_close_wait = 30
-net.netfilter.nf_conntrack_tcp_timeout_fin_wait = 30
-net.netfilter.nf_conntrack_generic_timeout = 120
-
-# 套接字缓冲区 - 针对128G内存优化
-net.core.somaxconn = 262144
-net.core.netdev_max_backlog = 262144
-net.core.optmem_max = 134217728
-net.ipv4.tcp_mem = 786432 1048576 134217728
-net.ipv4.udp_mem = 786432 1048576 134217728
-net.ipv4.tcp_rmem = 4096 87380 134217728
-net.ipv4.tcp_wmem = 4096 65536 134217728
-net.core.rmem_max = 134217728
-net.core.wmem_max = 134217728
-net.core.rmem_default = 524288
-net.core.wmem_default = 524288
-net.ipv4.tcp_congestion_control = bbr
-net.core.default_qdisc = fq
-net.ipv4.tcp_fastopen = 3
-net.ipv4.tcp_mtu_probing = 1
-
-# ARP表优化
-net.ipv4.neigh.default.gc_thresh1 = 8192
-net.ipv4.neigh.default.gc_thresh2 = 32768
-net.ipv4.neigh.default.gc_thresh3 = 65536
-net.ipv6.neigh.default.gc_thresh1 = 8192
-net.ipv6.neigh.default.gc_thresh2 = 32768
-net.ipv6.neigh.default.gc_thresh3 = 65536
-
-# 路由缓存
-net.ipv4.route.max_size = 8388608
-net.ipv4.route.gc_timeout = 300
-
-# 文件系统优化
-fs.file-max = 10000000
-fs.nr_open = 10000000
-fs.inotify.max_user_instances = 65536
-fs.inotify.max_user_watches = 1048576
-fs.aio-max-nr = 1048576
-
-# 内存管理优化
-vm.swappiness = 10
-vm.dirty_ratio = 15
-vm.dirty_background_ratio = 5
-vm.max_map_count = 655360
-vm.overcommit_memory = 1
-
-# 安全相关
-net.ipv4.conf.all.rp_filter = 0
-net.ipv4.conf.default.rp_filter = 0
-net.ipv4.conf.all.accept_source_route = 0
-net.ipv4.conf.all.accept_redirects = 0
-net.ipv4.conf.all.send_redirects = 0
-net.ipv4.conf.all.secure_redirects = 0
-net.ipv4.icmp_echo_ignore_broadcasts = 1
-net.ipv4.icmp_ignore_bogus_error_responses = 1
-
-# CPU调度优化
-kernel.sched_migration_cost_ns = 5000000
-kernel.sched_autogroup_enabled = 0
-EOF
-    
-    # 立即应用
-    sysctl -p >/dev/null 2>&1
-    
-    # 加载必要的内核模块
-    modprobe nf_conntrack >/dev/null 2>&1
-    modprobe nf_conntrack_ipv4 >/dev/null 2>&1 || true  # Debian 12可能不需要
-    
-    # 设置conntrack hashsize
-    echo 2500000 > /sys/module/nf_conntrack/parameters/hashsize 2>/dev/null || true
-    
-    # 优化limits
-    if ! grep -q "# 3proxy Enterprise limits" /etc/security/limits.conf 2>/dev/null; then
-        cat >> /etc/security/limits.conf << 'EOF'
-
-# 3proxy Enterprise limits
-* soft nofile 10000000
-* hard nofile 10000000
-* soft nproc 10000000
-* hard nproc 10000000
-* soft stack 65536
-* hard stack 65536
-root soft nofile 10000000
-root hard nofile 10000000
-root soft nproc 10000000
-root hard nproc 10000000
-EOF
-    fi
-    
-    # 优化systemd限制
-    mkdir -p /etc/systemd/system.conf.d
-    cat > /etc/systemd/system.conf.d/3proxy-limits.conf << 'EOF'
-[Manager]
-DefaultLimitNOFILE=10000000
-DefaultLimitNPROC=10000000
-DefaultLimitSTACK=67108864
-DefaultTasksMax=infinity
-EOF
-    
-    # 创建优化的启动脚本
-    cat > /usr/local/bin/3proxy-enterprise.sh << 'EOF'
-#!/bin/bash
-# 3proxy Enterprise启动脚本
-
-# 设置运行时限制
-ulimit -n 10000000
-ulimit -u 10000000
-ulimit -s 65536
-
-# CPU亲和性设置 - 将3proxy绑定到特定CPU核心
-CORES=$(nproc)
-if [ $CORES -ge 32 ]; then
-    # 为3proxy预留后16个核心
-    taskset -c 16-31 /usr/local/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
-else
-    # 使用所有可用核心
-    /usr/local/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
-fi
-EOF
-    
-    chmod +x /usr/local/bin/3proxy-enterprise.sh
-    
-    # 禁用透明大页
-    echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
-    echo never > /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null || true
-    
-    print_success "系统优化完成！已配置为支持千万级并发连接"
-}
-
-function setup_directories() {
-    print_info "创建必要的目录结构..."
-    
-    # 创建目录
-    mkdir -p $WORKDIR/{templates,static,backups,configs,scripts}
-    mkdir -p $PROXYCFG_DIR
-    mkdir -p $LOGDIR
-    mkdir -p $CACHE_DIR
-    mkdir -p $RUNTIME_DIR
-    
-    # 设置权限
-    chmod 755 $WORKDIR
-    chmod 755 $PROXYCFG_DIR
-    chmod 755 $LOGDIR
-    chmod 755 $CACHE_DIR
-    chmod 755 $RUNTIME_DIR
-    
-    print_success "目录创建完成"
-}
-
-function install_dependencies() {
-    print_info "安装依赖包..."
-    
-    # 更新包列表
-    apt update
-    
-    # 安装编译工具和基础包
-    apt install -y gcc make git wget curl \
-        python3 python3-pip python3-venv python3-dev \
-        sqlite3 libsqlite3-dev \
-        redis-server \
-        nginx \
-        supervisor \
-        htop iotop iftop \
-        net-tools dnsutils \
-        cron logrotate \
-        build-essential \
-        libssl-dev libffi-dev \
-        libevent-dev \
-        libmaxminddb0 libmaxminddb-dev mmdb-bin
-    
-    # 启动Redis（用于缓存）
-    systemctl enable redis-server
-    systemctl start redis-server
-    
-    print_success "依赖安装完成"
-}
-
-function compile_3proxy() {
-    print_info "编译安装3proxy..."
-    
-    if [ ! -f "$THREEPROXY_PATH" ]; then
-        cd /tmp
-        rm -rf 3proxy
-        git clone --depth=1 https://github.com/3proxy/3proxy.git
-        cd 3proxy
-        
-        # 修改编译配置以支持更多连接
-        sed -i 's/MAXUSERS 128/MAXUSERS 100000/g' src/structures.h 2>/dev/null || true
-        
-        # 编译
-        make -f Makefile.Linux
-        make -f Makefile.Linux install
-        
-        # 确保二进制文件存在
-        if [ ! -f /usr/local/bin/3proxy ]; then
-            cp src/3proxy /usr/local/bin/3proxy
-        fi
-        
-        chmod +x /usr/local/bin/3proxy
-        
-        print_success "3proxy编译安装完成"
-    else
-        print_warning "3proxy已安装，跳过编译"
-    fi
-}
-
-function setup_initial_config() {
-    print_info "创建初始配置..."
-    
-    # 创建基础配置文件
-    cat > $PROXYCFG_PATH << 'EOF'
-# 3proxy Enterprise Configuration
-# 支持百万级并发连接
-
-daemon
-pidfile /run/3proxy/3proxy.pid
-config /usr/local/etc/3proxy/3proxy.cfg
-monitor /usr/local/etc/3proxy/3proxy.cfg
-
-# 性能参数
-maxconn 1000000
-stacksize 262144
-
-# DNS配置
-nserver 8.8.8.8
-nserver 8.8.4.4
-nserver 1.1.1.1
-nserver 1.0.0.1
-nscache 262144
-nscache6 65536
-
-# 超时设置（优化为快速释放资源）
-timeouts 1 3 10 30 60 180 1800 15 60
-
-# 日志配置
-log /var/log/3proxy/3proxy.log D
-logformat "L%t %N.%p %E %U %C:%c %R:%r %O %I %h %T"
-rotate 100M
-archiver gz /usr/bin/gzip %F
-
-# 访问控制
-auth none
-
-# 认证方式将由Python动态生成
-# 代理配置将由Python动态生成
-EOF
-    
-    print_success "初始配置创建完成"
-}
-
-function setup_log_rotation() {
-    print_info "配置日志轮转..."
-    
-    cat > /etc/logrotate.d/3proxy << 'EOF'
-/var/log/3proxy/*.log {
-    daily
-    rotate 7
-    maxsize 1G
-    compress
-    delaycompress
-    missingok
-    notifempty
-    create 0644 root root
-    sharedscripts
-    postrotate
-        /usr/bin/killall -USR1 3proxy 2>/dev/null || true
-    endscript
-}
-EOF
-    
-    print_success "日志轮转配置完成"
-}
-
-function setup_backup() {
-    print_info "设置自动备份..."
-    
-    # 创建备份脚本
-    cat > $WORKDIR/scripts/backup.sh << 'EOF'
-#!/bin/bash
-BACKUP_DIR="/opt/3proxy-enterprise/backups"
-DB_FILE="/opt/3proxy-enterprise/3proxy.db"
-CONFIG_DIR="/usr/local/etc/3proxy"
-DATE=$(date +%Y%m%d_%H%M%S)
-RETENTION_DAYS=7
-
-# 确保备份目录存在
-mkdir -p "$BACKUP_DIR"
-
-# 清理旧备份
-find "$BACKUP_DIR" -name "backup_*.tar.gz" -mtime +$RETENTION_DAYS -delete 2>/dev/null || true
-
-# 创建新备份
-cd /
-tar -czf "$BACKUP_DIR/backup_$DATE.tar.gz" \
-    "$DB_FILE" \
-    "$CONFIG_DIR" \
-    --exclude="$CONFIG_DIR/*.log*" \
-    2>/dev/null || true
-
-echo "[$(date)] Backup completed: backup_$DATE.tar.gz"
-
-# 如果备份目录超过10GB，删除最旧的备份
-BACKUP_SIZE=$(du -sb "$BACKUP_DIR" | awk '{print $1}')
-if [ $BACKUP_SIZE -gt 10737418240 ]; then
-    ls -t "$BACKUP_DIR"/backup_*.tar.gz | tail -n +10 | xargs rm -f 2>/dev/null || true
-fi
-EOF
-    
-    chmod +x $WORKDIR/scripts/backup.sh
-    
-    # 设置定时备份
-    echo "0 2 * * * root $WORKDIR/scripts/backup.sh >> $LOGDIR/backup.log 2>&1" > /etc/cron.d/3proxy-backup
-    
-    print_success "自动备份已设置（每天凌晨2点）"
-}
-
-function setup_monitoring() {
-    print_info "设置监控脚本..."
-    
-    # 创建监控脚本
-    cat > $WORKDIR/scripts/monitor.sh << 'EOF'
-#!/bin/bash
-# 3proxy监控脚本
-
-PIDFILE="/run/3proxy/3proxy.pid"
-LOGFILE="/var/log/3proxy/monitor.log"
-MAX_MEMORY_MB=65536  # 最大内存使用量(MB)
-MAX_CPU_PERCENT=800  # 最大CPU使用率(800% = 8核心满载)
-
-log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> $LOGFILE
-}
-
-# 检查3proxy是否运行
-if [ -f "$PIDFILE" ]; then
-    PID=$(cat $PIDFILE)
-    if ! kill -0 $PID 2>/dev/null; then
-        log "ERROR: 3proxy进程不存在，正在重启..."
-        systemctl restart 3proxy-enterprise
-        exit 1
-    fi
-    
-    # 获取进程信息
-    STATS=$(ps -p $PID -o pid,vsz,rss,pcpu,comm --no-headers)
-    if [ -n "$STATS" ]; then
-        VSZ=$(echo $STATS | awk '{print $2}')
-        RSS=$(echo $STATS | awk '{print $3}')
-        CPU=$(echo $STATS | awk '{print $4}')
-        
-        RSS_MB=$((RSS/1024))
-        
-        # 检查内存使用
-        if [ $RSS_MB -gt $MAX_MEMORY_MB ]; then
-            log "WARNING: 内存使用过高 (${RSS_MB}MB > ${MAX_MEMORY_MB}MB)"
-            # 可以在这里添加告警通知
-        fi
-        
-        # 检查CPU使用
-        CPU_INT=$(echo $CPU | cut -d. -f1)
-        if [ $CPU_INT -gt $MAX_CPU_PERCENT ]; then
-            log "WARNING: CPU使用过高 (${CPU}% > ${MAX_CPU_PERCENT}%)"
-        fi
-        
-        # 记录统计信息
-        echo "$(date '+%s')|$RSS_MB|$CPU" >> /var/log/3proxy/stats.log
-    fi
-else
-    log "ERROR: PID文件不存在，正在重启3proxy..."
-    systemctl restart 3proxy-enterprise
-fi
-
-# 清理旧的统计数据（保留24小时）
-tail -n 1440 /var/log/3proxy/stats.log > /var/log/3proxy/stats.log.tmp 2>/dev/null
-mv -f /var/log/3proxy/stats.log.tmp /var/log/3proxy/stats.log 2>/dev/null || true
-EOF
-    
-    chmod +x $WORKDIR/scripts/monitor.sh
-    
-    # 设置定时监控（每分钟）
-    echo "* * * * * root $WORKDIR/scripts/monitor.sh" > /etc/cron.d/3proxy-monitor
-    
-    print_success "监控脚本设置完成"
-}
-
-function create_web_application() {
-    print_info "创建Web管理应用..."
-    
-    cd $WORKDIR
-    
-    # 创建Python虚拟环境
-    python3 -m venv venv
-    source venv/bin/activate
-    
-    # 安装Python包
-    pip install --upgrade pip
-    pip install flask flask_login flask_wtf wtforms \
-                werkzeug psutil redis \
-                gunicorn gevent \
-                sqlalchemy alembic \
-                click python-dotenv \
-                --no-cache-dir
-    
-    # 创建主应用文件 (分成多个部分以避免引号问题)
-    create_app_part1
-    create_app_part2
-    create_app_part3
-    create_app_part4
-    
-    # 创建模板文件
-    create_templates
-    
-    print_success "Web应用创建完成"
-}
-
-function create_app_part1() {
-    cat > $WORKDIR/app.py << 'EOAPP1'
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-3proxy Enterprise Management System
-支持百万级代理管理的高性能Web管理系统
-"""
-
-import os
-import sys
-import sqlite3
-import random
-import string
-import re
-import json
-import time
-import threading
-import queue
-import psutil
-import redis
-import hashlib
-import datetime
-import subprocess
-import signal
-from collections import defaultdict, OrderedDict
-from functools import wraps, lru_cache
-from contextlib import contextmanager
-
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, Response, g
-from flask_login import LoginManager, login_user, login_required, logout_user, UserMixin, current_user
-from werkzeug.security import generate_password_hash, check_password_hash
-from werkzeug.utils import secure_filename
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import logging
-from logging.handlers import RotatingFileHandler
-
-# 配置常量
-DB_PATH = '/opt/3proxy-enterprise/3proxy.db'
-REDIS_HOST = 'localhost'
-REDIS_PORT = 6379
-REDIS_DB = 0
-CACHE_TTL = 300  # 缓存5分钟
-BATCH_SIZE = 1000  # 批量操作大小
-MAX_WORKERS = 16  # 最大工作线程数
-CONFIG_CHUNK_SIZE = 10000  # 配置文件分片大小
-
-# 初始化Flask应用
-app = Flask(__name__, 
-    template_folder='templates',
-    static_folder='static',
-    static_url_path='/static'
-)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'enterprise-secret-key-change-in-production')
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
-
-# 初始化日志
-def setup_logging():
-    if not app.debug:
-        file_handler = RotatingFileHandler(
-            '/var/log/3proxy/webapp.log',
-            maxBytes=10485760,
-            backupCount=10
-        )
-        file_handler.setFormatter(logging.Formatter(
-            '%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'
-        ))
-        file_handler.setLevel(logging.INFO)
-        app.logger.addHandler(file_handler)
-        app.logger.setLevel(logging.INFO)
-        app.logger.info('3proxy Enterprise startup')
-
-setup_logging()
-
-# 初始化登录管理器
-login_manager = LoginManager(app)
-login_manager.login_view = 'login'
-login_manager.login_message = '请先登录'
-
-# 初始化Redis连接池
-redis_pool = redis.ConnectionPool(
-    host=REDIS_HOST,
-    port=REDIS_PORT,
-    db=REDIS_DB,
-    max_connections=100,
-    decode_responses=True
-)
-
-# 线程池
-executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
-
-# 数据库连接池
-class DatabasePool:
-    def __init__(self, database, max_connections=50):
-        self.database = database
-        self.max_connections = max_connections
-        self.pool = queue.Queue(maxsize=max_connections)
-        self.lock = threading.Lock()
-        self._initialize_pool()
-    
-    def _initialize_pool(self):
-        for _ in range(self.max_connections):
-            conn = sqlite3.connect(self.database, timeout=30.0)
-            conn.row_factory = sqlite3.Row
-            conn.execute('PRAGMA journal_mode=WAL')
-            conn.execute('PRAGMA synchronous=NORMAL')
-            conn.execute('PRAGMA cache_size=10000')
-            conn.execute('PRAGMA temp_store=MEMORY')
-            self.pool.put(conn)
-    
-    @contextmanager
-    def get_connection(self):
-        conn = self.pool.get()
-        try:
-            yield conn
-        finally:
-            self.pool.put(conn)
-
-# 初始化数据库连接池
-db_pool = DatabasePool(DB_PATH)
-
-# Redis缓存装饰器
-def redis_cache(key_prefix, ttl=CACHE_TTL):
-    def decorator(f):
-        @wraps(f)
-        def wrapped(*args, **kwargs):
-            r = redis.Redis(connection_pool=redis_pool)
-            
-            # 生成缓存键
-            cache_key = f"{key_prefix}:{hashlib.md5(str(args).encode() + str(kwargs).encode()).hexdigest()}"
-            
-            # 尝试从缓存获取
-            cached = r.get(cache_key)
-            if cached:
-                return json.loads(cached)
-            
-            # 执行函数
-            result = f(*args, **kwargs)
-            
-            # 存入缓存
-            r.setex(cache_key, ttl, json.dumps(result))
-            
-            return result
-        return wrapped
-    return decorator
-
-# 用户模型
-class User(UserMixin):
-    def __init__(self, id, username, password_hash):
-        self.id = id
-        self.username = username
-        self.password_hash = password_hash
-    
-    def check_password(self, password):
-        return check_password_hash(self.password_hash, password)
-    
-    @staticmethod
-    def get(user_id):
-        with db_pool.get_connection() as conn:
-            cur = conn.execute("SELECT id, username, password FROM users WHERE id = ?", (user_id,))
-            row = cur.fetchone()
-            if row:
-                return User(row['id'], row['username'], row['password'])
-        return None
-    
-    @staticmethod
-    def get_by_username(username):
-        with db_pool.get_connection() as conn:
-            cur = conn.execute("SELECT id, username, password FROM users WHERE username = ?", (username,))
-            row = cur.fetchone()
-            if row:
-                return User(row['id'], row['username'], row['password'])
-        return None
-
-@login_manager.user_loader
-def load_user(user_id):
-    return User.get(user_id)
-EOAPP1
-}
-
-function create_app_part2() {
-    cat >> $WORKDIR/app.py << 'EOAPP2'
-
-# 代理配置生成器（支持分片）
-class ProxyConfigGenerator:
-    def __init__(self):
-        self.config_dir = '/usr/local/etc/3proxy'
-        self.chunk_size = CONFIG_CHUNK_SIZE
-    
-    def generate_configs(self):
-        """生成3proxy配置文件（支持分片）"""
-        app.logger.info("开始生成代理配置...")
-        
-        with db_pool.get_connection() as conn:
-            # 获取所有启用的代理
-            cursor = conn.execute(
-                "SELECT ip, port, username, password FROM proxy WHERE enabled = 1 ORDER BY id"
-            )
-            
-            # 生成主配置文件
-            self._generate_main_config()
-            
-            # 生成用户认证文件
-            users_dict = {}
-            proxy_configs = []
-            
-            for row in cursor:
-                ip, port, username, password = row
-                users_dict[username] = password
-                proxy_configs.append((ip, port, username))
-            
-            # 写入用户文件（分片）
-            self._write_users_file(users_dict)
-            
-            # 写入代理配置（分片）
-            self._write_proxy_configs(proxy_configs)
-        
-        app.logger.info(f"配置生成完成，共{len(proxy_configs)}个代理")
-        
-        # 重载3proxy
-        self._reload_3proxy()
-    
-    def _generate_main_config(self):
-        """生成主配置文件"""
-        config = """# 3proxy Enterprise Configuration
-# Auto-generated - DO NOT EDIT MANUALLY
-
-daemon
-pidfile /run/3proxy/3proxy.pid
-monitor /usr/local/etc/3proxy/
-
-# 性能参数
-maxconn 1000000
-stacksize 262144
-
-# DNS配置
-nserver 8.8.8.8
-nserver 8.8.4.4
-nserver 1.1.1.1
-nscache 262144
-nscache6 65536
-
-# 超时设置
-timeouts 1 3 10 30 60 180 1800 15 60
-
-# 日志配置
-log /var/log/3proxy/3proxy.log D
-logformat "L%t %N.%p %E %U %C:%c %R:%r %O %I %h %T"
-rotate 100M
-
-# 包含其他配置文件
-include /usr/local/etc/3proxy/users.cfg
-include /usr/local/etc/3proxy/proxies/*.cfg
-"""
-        
-        with open(f"{self.config_dir}/3proxy.cfg", 'w') as f:
-            f.write(config)
-    
-    def _write_users_file(self, users_dict):
-        """写入用户认证文件（支持大量用户）"""
-        os.makedirs(f"{self.config_dir}/proxies", exist_ok=True)
-        
-        with open(f"{self.config_dir}/users.cfg", 'w') as f:
-            f.write("# Users configuration\n")
-            f.write("auth strong\n")
-            
-            # 分批写入用户
-            users_list = [f"{user}:CL:{passwd}" for user, passwd in users_dict.items()]
-            for i in range(0, len(users_list), 1000):
-                batch = users_list[i:i+1000]
-                f.write(f"users {' '.join(batch)}\n")
-    
-    def _write_proxy_configs(self, proxy_configs):
-        """写入代理配置（分片）"""
-        # 清理旧配置
-        import glob
-        for old_file in glob.glob(f"{self.config_dir}/proxies/*.cfg"):
-            os.remove(old_file)
-        
-        # 分片写入
-        for i in range(0, len(proxy_configs), self.chunk_size):
-            chunk = proxy_configs[i:i+self.chunk_size]
-            chunk_id = i // self.chunk_size
-            
-            with open(f"{self.config_dir}/proxies/proxy_{chunk_id:04d}.cfg", 'w') as f:
-                f.write(f"# Proxy chunk {chunk_id}\n")
-                
-                for ip, port, username in chunk:
-                    f.write(f"auth strong\n")
-                    f.write(f"allow {username}\n")
-                    f.write(f"proxy -n -a -p{port} -i{ip} -e{ip}\n")
-                    f.write("\n")
-    
-    def _reload_3proxy(self):
-        """重载3proxy配置"""
-        try:
-            # 发送SIGHUP信号重载配置
-            subprocess.run(['pkill', '-HUP', '3proxy'], check=False)
-            app.logger.info("3proxy配置重载成功")
-        except Exception as e:
-            app.logger.error(f"3proxy重载失败: {e}")
-            # 如果重载失败，尝试重启
-            try:
-                subprocess.run(['systemctl', 'restart', '3proxy-enterprise'], check=True)
-                app.logger.info("3proxy重启成功")
-            except Exception as e2:
-                app.logger.error(f"3proxy重启失败: {e2}")
-
-# 实例化配置生成器
-config_generator = ProxyConfigGenerator()
-
-# 批量操作管理器
-class BatchOperationManager:
-    def __init__(self):
-        self.operations = {}
-        self.lock = threading.Lock()
-    
-    def create_operation(self, operation_type, total_items):
-        """创建批量操作"""
-        op_id = hashlib.md5(f"{operation_type}:{time.time()}".encode()).hexdigest()
-        
-        with self.lock:
-            self.operations[op_id] = {
-                'type': operation_type,
-                'total': total_items,
-                'processed': 0,
-                'success': 0,
-                'failed': 0,
-                'status': 'running',
-                'start_time': time.time(),
-                'errors': []
-            }
-        
-        return op_id
-    
-    def update_progress(self, op_id, success=True, error=None):
-        """更新操作进度"""
-        with self.lock:
-            if op_id in self.operations:
-                op = self.operations[op_id]
-                op['processed'] += 1
-                
-                if success:
-                    op['success'] += 1
-                else:
-                    op['failed'] += 1
-                    if error:
-                        op['errors'].append(error)
-                
-                if op['processed'] >= op['total']:
-                    op['status'] = 'completed'
-                    op['end_time'] = time.time()
-    
-    def get_status(self, op_id):
-        """获取操作状态"""
-        with self.lock:
-            return self.operations.get(op_id, {})
-
-# 实例化批量操作管理器
-batch_manager = BatchOperationManager()
-
-# 工具函数
-def get_network_interfaces():
-    """获取网络接口列表"""
-    interfaces = []
-    for name, addrs in psutil.net_if_addrs().items():
-        if name != 'lo':  # 排除回环接口
-            for addr in addrs:
-                if addr.family == 2:  # IPv4
-                    interfaces.append({
-                        'name': name,
-                        'ip': addr.address,
-                        'netmask': addr.netmask
-                    })
-    return interfaces
-
-def validate_ip_range(ip_range):
-    """验证IP范围格式"""
-    # 支持格式: 192.168.1.1-254 或 192.168.1.1-192.168.1.254
-    pattern = r'^(\d{1,3}\.){3}\d{1,3}-(\d{1,3}|(\d{1,3}\.){3}\d{1,3})$'
-    return re.match(pattern, ip_range) is not None
-
-def expand_ip_range(ip_range):
-    """展开IP范围"""
-    ips = []
-    
-    if '-' in ip_range:
-        parts = ip_range.split('-')
-        if '.' in parts[1]:
-            # 完整IP范围: 192.168.1.1-192.168.1.254
-            start_ip = parts[0]
-            end_ip = parts[1]
-            
-            start_parts = [int(x) for x in start_ip.split('.')]
-            end_parts = [int(x) for x in end_ip.split('.')]
-            
-            current = start_parts[:]
-            while current <= end_parts:
-                ips.append('.'.join(map(str, current)))
-                
-                current[3] += 1
-                for i in range(3, 0, -1):
-                    if current[i] > 255:
-                        current[i] = 0
-                        current[i-1] += 1
-                
-                if current[0] > 255:
-                    break
-        else:
-            # 简短格式: 192.168.1.1-254
-            base = '.'.join(parts[0].split('.')[:-1])
-            start = int(parts[0].split('.')[-1])
-            end = int(parts[1])
-            
-            for i in range(start, end + 1):
-                if i <= 255:
-                    ips.append(f"{base}.{i}")
-    
-    return ips
-EOAPP2
-}
-
-function create_app_part3() {
-    cat >> $WORKDIR/app.py << 'EOAPP3'
-
-# 路由处理函数
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        
-        user = User.get_by_username(username)
-        if user and user.check_password(password):
-            login_user(user, remember=True)
-            next_page = request.args.get('next')
-            return redirect(next_page) if next_page else redirect(url_for('index'))
-        
-        flash('用户名或密码错误', 'danger')
-    
-    return render_template('login.html')
-
-@app.route('/logout')
-@login_required
-def logout():
-    logout_user()
-    return redirect(url_for('login'))
-
-@app.route('/')
-@login_required
-def index():
-    return render_template('index.html')
-
-# API路由
-@app.route('/api/dashboard/stats')
-@login_required
-@redis_cache('dashboard_stats', ttl=60)
-def api_dashboard_stats():
-    """获取仪表板统计信息"""
-    with db_pool.get_connection() as conn:
-        # 总代理数
-        total = conn.execute("SELECT COUNT(*) FROM proxy").fetchone()[0]
-        
-        # 启用的代理数
-        enabled = conn.execute("SELECT COUNT(*) FROM proxy WHERE enabled = 1").fetchone()[0]
-        
-        # C段统计
-        c_segments = conn.execute(
-            "SELECT COUNT(DISTINCT substr(ip, 1, instr(ip, '.') + instr(substr(ip, instr(ip, '.') + 1), '.') + instr(substr(ip, instr(ip, '.') + instr(substr(ip, instr(ip, '.') + 1), '.') + 1), '.'))) FROM proxy"
-        ).fetchone()[0]
-        
-        # 端口范围
-        port_range = conn.execute(
-            "SELECT MIN(port), MAX(port) FROM proxy"
-        ).fetchone()
-    
-    return jsonify({
-        'total_proxies': total,
-        'enabled_proxies': enabled,
-        'disabled_proxies': total - enabled,
-        'c_segments': c_segments,
-        'port_range': f"{port_range[0]}-{port_range[1]}" if port_range[0] else "N/A",
-        'utilization': round(enabled / total * 100, 2) if total > 0 else 0
-    })
-
-@app.route('/api/system/status')
-@login_required
-def api_system_status():
-    """获取系统状态"""
-    # CPU使用率
-    cpu_percent = psutil.cpu_percent(interval=1, percpu=True)
-    cpu_avg = sum(cpu_percent) / len(cpu_percent)
-    
-    # 内存信息
-    memory = psutil.virtual_memory()
-    
-    # 磁盘信息
-    disk = psutil.disk_usage('/')
-    
-    # 网络IO
-    net_io = psutil.net_io_counters()
-    
-    # 3proxy进程信息
-    proxy_info = {'running': False, 'pid': None, 'cpu': 0, 'memory': 0, 'connections': 0}
-    for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_info', 'connections']):
-        try:
-            if proc.info['name'] == '3proxy':
-                proxy_info['running'] = True
-                proxy_info['pid'] = proc.info['pid']
-                proxy_info['cpu'] = proc.cpu_percent(interval=0.1)
-                proxy_info['memory'] = proc.memory_info().rss / 1024 / 1024  # MB
-                proxy_info['connections'] = len(proc.connections())
-                break
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
-    
-    return jsonify({
-        'cpu': {
-            'percent': round(cpu_avg, 2),
-            'cores': len(cpu_percent),
-            'per_core': [round(p, 2) for p in cpu_percent]
-        },
-        'memory': {
-            'total': round(memory.total / 1024 / 1024 / 1024, 2),  # GB
-            'used': round(memory.used / 1024 / 1024 / 1024, 2),
-            'available': round(memory.available / 1024 / 1024 / 1024, 2),
-            'percent': round(memory.percent, 2)
-        },
-        'disk': {
-            'total': round(disk.total / 1024 / 1024 / 1024, 2),  # GB
-            'used': round(disk.used / 1024 / 1024 / 1024, 2),
-            'free': round(disk.free / 1024 / 1024 / 1024, 2),
-            'percent': round(disk.percent, 2)
-        },
-        'network': {
-            'bytes_sent': round(net_io.bytes_sent / 1024 / 1024, 2),  # MB
-            'bytes_recv': round(net_io.bytes_recv / 1024 / 1024, 2),
-            'packets_sent': net_io.packets_sent,
-            'packets_recv': net_io.packets_recv
-        },
-        'proxy': proxy_info,
-        'timestamp': datetime.datetime.now().isoformat()
-    })
-
-@app.route('/api/proxy/groups')
-@login_required
-def api_proxy_groups():
-    """获取代理组列表（C段分组）"""
-    page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 20, type=int)
-    search = request.args.get('search', '')
-    
-    with db_pool.get_connection() as conn:
-        # 构建查询
-        query = """
-            SELECT 
-                substr(ip, 1, instr(ip, '.') + instr(substr(ip, instr(ip, '.') + 1), '.') + instr(substr(ip, instr(ip, '.') + instr(substr(ip, instr(ip, '.') + 1), '.') + 1), '.')) as c_segment,
-                COUNT(*) as total,
-                SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) as enabled,
-                MIN(port) as min_port,
-                MAX(port) as max_port,
-                GROUP_CONCAT(DISTINCT user_prefix) as prefixes
-            FROM proxy
-        """
-        
-        if search:
-            query += " WHERE ip LIKE ?"
-            params = (f"%{search}%",)
-        else:
-            params = ()
-        
-        query += " GROUP BY c_segment ORDER BY c_segment"
-        
-        # 获取总数
-        count_query = f"SELECT COUNT(DISTINCT substr(ip, 1, instr(ip, '.') + instr(substr(ip, instr(ip, '.') + 1), '.') + instr(substr(ip, instr(ip, '.') + instr(substr(ip, instr(ip, '.') + 1), '.') + 1), '.'))) FROM proxy"
-        if search:
-            count_query += " WHERE ip LIKE ?"
-        
-        total = conn.execute(count_query, params).fetchone()[0]
-        
-        # 分页查询
-        query += f" LIMIT {per_page} OFFSET {(page - 1) * per_page}"
-        
-        cursor = conn.execute(query, params)
-        groups = []
-        
-        for row in cursor:
-            groups.append({
-                'c_segment': row['c_segment'],
-                'total': row['total'],
-                'enabled': row['enabled'],
-                'disabled': row['total'] - row['enabled'],
-                'port_range': f"{row['min_port']}-{row['max_port']}",
-                'prefixes': row['prefixes'].split(',') if row['prefixes'] else []
-            })
-    
-    return jsonify({
-        'groups': groups,
-        'total': total,
-        'page': page,
-        'per_page': per_page,
-        'pages': (total + per_page - 1) // per_page
-    })
-
-@app.route('/api/proxy/group/<c_segment>')
-@login_required
-def api_proxy_group_detail(c_segment):
-    """获取代理组详情"""
-    page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 100, type=int)
-    
-    with db_pool.get_connection() as conn:
-        # 获取总数
-        total = conn.execute(
-            "SELECT COUNT(*) FROM proxy WHERE ip LIKE ?",
-            (f"{c_segment}%",)
-        ).fetchone()[0]
-        
-        # 获取代理列表
-        cursor = conn.execute(
-            """
-            SELECT id, ip, port, username, password, enabled
-            FROM proxy
-            WHERE ip LIKE ?
-            ORDER BY ip, port
-            LIMIT ? OFFSET ?
-            """,
-            (f"{c_segment}%", per_page, (page - 1) * per_page)
-        )
-        
-        proxies = []
-        for row in cursor:
-            proxies.append({
-                'id': row['id'],
-                'ip': row['ip'],
-                'port': row['port'],
-                'username': row['username'],
-                'password': row['password'],
-                'enabled': bool(row['enabled'])
-            })
-    
-    return jsonify({
-        'proxies': proxies,
-        'total': total,
-        'page': page,
-        'per_page': per_page,
-        'pages': (total + per_page - 1) // per_page
-    })
-
-@app.route('/api/proxy/batch/add', methods=['POST'])
-@login_required
-def api_proxy_batch_add():
-    """批量添加代理"""
-    data = request.get_json()
-    
-    ip_range = data.get('ip_range')
-    port_start = data.get('port_start', 10000)
-    port_end = data.get('port_end', 60000)
-    user_prefix = data.get('user_prefix', 'user')
-    password_length = data.get('password_length', 12)
-    
-    # 验证IP范围
-    if not validate_ip_range(ip_range):
-        return jsonify({'error': 'IP范围格式错误'}), 400
-    
-    # 展开IP范围
-    ips = expand_ip_range(ip_range)
-    if not ips:
-        return jsonify({'error': '无效的IP范围'}), 400
-    
-    if len(ips) > 10000:
-        return jsonify({'error': 'IP数量超过限制(10000)'}), 400
-    
-    # 创建批量操作
-    op_id = batch_manager.create_operation('batch_add_proxy', len(ips))
-    
-    # 异步执行批量添加
-    def batch_add_worker():
-        with db_pool.get_connection() as conn:
-            # 获取已使用的端口
-            used_ports = set()
-            cursor = conn.execute("SELECT port FROM proxy")
-            for row in cursor:
-                used_ports.add(row[0])
-            
-            # 生成可用端口池
-            available_ports = [p for p in range(port_start, port_end + 1) if p not in used_ports]
-            if len(available_ports) < len(ips):
-                batch_manager.update_progress(op_id, False, "可用端口不足")
-                return
-            
-            # 随机选择端口
-            random.shuffle(available_ports)
-            selected_ports = available_ports[:len(ips)]
-            
-            # 批量插入
-            batch_data = []
-            for i, ip in enumerate(ips):
-                username = f"{user_prefix}{random.randint(1000, 9999)}"
-                password = ''.join(random.choices(string.ascii_letters + string.digits, k=password_length))
-                port = selected_ports[i]
-                
-                batch_data.append((ip, port, username, password, 1, ip_range, f"{port_start}-{port_end}", user_prefix))
-                
-                if len(batch_data) >= BATCH_SIZE:
-                    conn.executemany(
-                        "INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        batch_data
-                    )
-                    conn.commit()
-                    
-                    for _ in batch_data:
-                        batch_manager.update_progress(op_id, True)
-                    
-                    batch_data = []
-            
-            # 插入剩余数据
-            if batch_data:
-                conn.executemany(
-                    "INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    batch_data
-                )
-                conn.commit()
-                
-                for _ in batch_data:
-                    batch_manager.update_progress(op_id, True)
-        
-        # 重新生成配置
-        config_generator.generate_configs()
-    
-    # 提交到线程池执行
-    executor.submit(batch_add_worker)
-    
-    return jsonify({'operation_id': op_id, 'message': '批量添加任务已创建'})
-
-@app.route('/api/proxy/batch/operation/<op_id>')
-@login_required
-def api_batch_operation_status(op_id):
-    """获取批量操作状态"""
-    status = batch_manager.get_status(op_id)
-    if not status:
-        return jsonify({'error': '操作不存在'}), 404
-    
-    return jsonify(status)
-
-@app.route('/api/proxy/batch/delete', methods=['POST'])
-@login_required
-def api_proxy_batch_delete():
-    """批量删除代理"""
-    data = request.get_json()
-    proxy_ids = data.get('ids', [])
-    
-    if not proxy_ids:
-        return jsonify({'error': '未选择代理'}), 400
-    
-    # 创建批量操作
-    op_id = batch_manager.create_operation('batch_delete_proxy', len(proxy_ids))
-    
-    # 异步执行批量删除
-    def batch_delete_worker():
-        with db_pool.get_connection() as conn:
-            # 分批删除
-            for i in range(0, len(proxy_ids), BATCH_SIZE):
-                batch = proxy_ids[i:i+BATCH_SIZE]
-                placeholders = ','.join('?' * len(batch))
-                
-                conn.execute(f"DELETE FROM proxy WHERE id IN ({placeholders})", batch)
-                conn.commit()
-                
-                for _ in batch:
-                    batch_manager.update_progress(op_id, True)
-        
-        # 重新生成配置
-        config_generator.generate_configs()
-    
-    # 提交到线程池执行
-    executor.submit(batch_delete_worker)
-    
-    return jsonify({'operation_id': op_id, 'message': '批量删除任务已创建'})
-
-@app.route('/api/proxy/batch/toggle', methods=['POST'])
-@login_required
-def api_proxy_batch_toggle():
-    """批量启用/禁用代理"""
-    data = request.get_json()
-    proxy_ids = data.get('ids', [])
-    enabled = data.get('enabled', True)
-    
-    if not proxy_ids:
-        return jsonify({'error': '未选择代理'}), 400
-    
-    # 创建批量操作
-    op_id = batch_manager.create_operation('batch_toggle_proxy', len(proxy_ids))
-    
-    # 异步执行批量更新
-    def batch_toggle_worker():
-        with db_pool.get_connection() as conn:
-            # 分批更新
-            for i in range(0, len(proxy_ids), BATCH_SIZE):
-                batch = proxy_ids[i:i+BATCH_SIZE]
-                placeholders = ','.join('?' * len(batch))
-                
-                conn.execute(
-                    f"UPDATE proxy SET enabled = ? WHERE id IN ({placeholders})",
-                    [1 if enabled else 0] + batch
-                )
-                conn.commit()
-                
-                for _ in batch:
-                    batch_manager.update_progress(op_id, True)
-        
-        # 重新生成配置
-        config_generator.generate_configs()
-    
-    # 提交到线程池执行
-    executor.submit(batch_toggle_worker)
-    
-    return jsonify({'operation_id': op_id, 'message': f'批量{"启用" if enabled else "禁用"}任务已创建'})
-
-@app.route('/api/proxy/export', methods=['POST'])
-@login_required
-def api_proxy_export():
-    """导出代理"""
-    data = request.get_json()
-    format_type = data.get('format', 'txt')
-    c_segments = data.get('c_segments', [])
-    
-    with db_pool.get_connection() as conn:
-        if c_segments:
-            # 导出指定C段
-            placeholders = ','.join('?' * len(c_segments))
-            cursor = conn.execute(
-                f"SELECT ip, port, username, password FROM proxy WHERE substr(ip, 1, instr(ip, '.') + instr(substr(ip, instr(ip, '.') + 1), '.') + instr(substr(ip, instr(ip, '.') + instr(substr(ip, instr(ip, '.') + 1), '.') + 1), '.')) IN ({placeholders}) ORDER BY ip, port",
-                c_segments
-            ) </dev/urandom | head -c 16)
+    export ADMINPASS=$(tr -dc 'A-Za-z0-9!@# </dev/urandom | head -c 16)
     
     python init_db.py
     
@@ -4104,1434 +4061,4 @@ print_warning "\n重要提示:"
 print_warning "1. 请妥善保管管理员账号密码"
 print_warning "2. 建议配置防火墙规则保护管理端口"
 print_warning "3. 定期备份 $WORKDIR/3proxy.db 数据库文件"
-print_warning "4. 系统已优化支持千万级并发连接"batchAddForm">
-                                    <div class="mb-3">
-                                        <label class="form-label">IP范围</label>
-                                        <input type="text" class="form-control" name="ip_range" 
-                                               placeholder="例: 192.168.1.1-254" required>
-                                        <small class="text-muted">支持格式: x.x.x.1-254 或 x.x.x.1-x.x.x.254</small>
-                                    </div>
-                                    <div class="row">
-                                        <div class="col-md-6">
-                                            <div class="mb-3">
-                                                <label class="form-label">起始端口</label>
-                                                <input type="number" class="form-control" name="port_start" 
-                                                       value="10000" min="1024" max="65535" required>
-                                            </div>
-                                        </div>
-                                        <div class="col-md-6">
-                                            <div class="mb-3">
-                                                <label class="form-label">结束端口</label>
-                                                <input type="number" class="form-control" name="port_end" 
-                                                       value="60000" min="1024" max="65535" required>
-                                            </div>
-                                        </div>
-                                    </div>
-                                    <div class="mb-3">
-                                        <label class="form-label">用户名前缀</label>
-                                        <input type="text" class="form-control" name="user_prefix" 
-                                               value="user" required>
-                                    </div>
-                                    <div class="mb-3">
-                                        <label class="form-label">密码长度</label>
-                                        <input type="number" class="form-control" name="password_length" 
-                                               value="12" min="8" max="32" required>
-                                    </div>
-                                    <button type="submit" class="btn btn-primary">
-                                        <i class="bi bi-plus-circle"></i> 批量添加
-                                    </button>
-                                </form>
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <div class="col-md-6">
-                        <div class="content-card">
-                            <div class="content-card-header">
-                                <h5 class="mb-0">导入代理</h5>
-                            </div>
-                            <div class="content-card-body">
-                                <form id="#!/bin/bash
-set -e
-
-# 3proxy企业级管理系统安装脚本 v2.0 (修复版)
-# 支持Debian 11/12，优化为128G内存32核服务器
-# 修复引号匹配问题
-
-WORKDIR=/opt/3proxy-enterprise
-THREEPROXY_PATH=/usr/local/bin/3proxy
-PROXYCFG_DIR=/usr/local/etc/3proxy
-PROXYCFG_PATH=$PROXYCFG_DIR/3proxy.cfg
-LOGDIR=/var/log/3proxy
-LOGFILE=$LOGDIR/3proxy.log
-CREDS_FILE=/opt/3proxy-enterprise/.credentials
-CACHE_DIR=/var/cache/3proxy
-RUNTIME_DIR=/run/3proxy
-
-# 颜色定义
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[0;33m'
-BLUE='\033[0;36m'
-NC='\033[0m'
-
-function print_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
-}
-
-function print_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
-
-function print_warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
-}
-
-function print_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
-}
-
-function get_local_ip() {
-    local pubip lanip
-    pubip=$(curl -s --connect-timeout 5 ifconfig.me || curl -s --connect-timeout 5 ip.sb || curl -s --connect-timeout 5 icanhazip.com || echo "")
-    lanip=$(hostname -I 2>/dev/null | awk '{print $1}' || ip route get 1 2>/dev/null | awk '{print $NF;exit}' || echo "127.0.0.1")
-    if [[ -n "$pubip" && "$pubip" != "$lanip" ]]; then
-        echo "$pubip"
-    else
-        echo "$lanip"
-    fi
-}
-
-function show_credentials() {
-    if [ -f "$CREDS_FILE" ]; then
-        echo -e "\n========= 3proxy Enterprise 登录信息 ========="
-        cat "$CREDS_FILE"
-        echo -e "============================================\n"
-    else
-        print_error "未找到登录凭据文件。请运行安装脚本。"
-    fi
-}
-
-function check_system() {
-    print_info "检查系统环境..."
-    
-    # 检查操作系统
-    if ! grep -qE "Debian GNU/Linux (11|12)" /etc/os-release 2>/dev/null; then
-        print_warning "当前系统可能不是 Debian 11/12，继续安装可能遇到兼容性问题"
-    fi
-    
-    # 检查内存
-    total_mem=$(free -g | awk '/^Mem:/{print $2}')
-    if [ "$total_mem" -lt 16 ]; then
-        print_warning "系统内存小于16GB，建议升级硬件以获得最佳性能"
-    fi
-    
-    # 检查CPU核心数
-    cpu_cores=$(nproc)
-    if [ "$cpu_cores" -lt 8 ]; then
-        print_warning "CPU核心数小于8，可能影响并发性能"
-    fi
-    
-    print_success "系统检查完成 (内存: ${total_mem}GB, CPU: ${cpu_cores}核)"
-}
-
-function optimize_system() {
-    print_info "执行系统性能优化..."
-    
-    # 检查是否已经优化过
-    if grep -q "# 3proxy Enterprise Performance Tuning" /etc/sysctl.conf 2>/dev/null; then
-        print_warning "系统已经优化过，跳过..."
-        return
-    fi
-    
-    # 备份原始配置
-    cp /etc/sysctl.conf /etc/sysctl.conf.bak.$(date +%Y%m%d%H%M%S)
-    
-    # 企业级内核参数优化
-    cat >> /etc/sysctl.conf << 'EOF'
-
-# 3proxy Enterprise Performance Tuning
-# 针对128G内存32核服务器优化，支持百万级并发连接
-
-# 基础网络设置
-net.ipv4.ip_forward = 1
-net.ipv4.conf.all.forwarding = 1
-net.ipv4.conf.default.forwarding = 1
-net.ipv6.conf.all.forwarding = 1
-
-# TCP优化 - 支持大规模并发
-net.ipv4.tcp_syncookies = 1
-net.ipv4.tcp_tw_reuse = 1
-net.ipv4.tcp_fin_timeout = 10
-net.ipv4.tcp_keepalive_time = 120
-net.ipv4.tcp_keepalive_probes = 3
-net.ipv4.tcp_keepalive_intvl = 10
-net.ipv4.tcp_max_syn_backlog = 262144
-net.ipv4.tcp_max_tw_buckets = 2000000
-net.ipv4.tcp_timestamps = 1
-net.ipv4.tcp_slow_start_after_idle = 0
-net.ipv4.tcp_no_metrics_save = 1
-net.ipv4.tcp_syn_retries = 2
-net.ipv4.tcp_synack_retries = 2
-net.ipv4.tcp_orphan_retries = 1
-net.ipv4.tcp_retries2 = 5
-
-# 端口范围 - 最大化可用端口
-net.ipv4.ip_local_port_range = 1024 65535
-net.ipv4.ip_local_reserved_ports = 3128,8080,8888,9999
-
-# 连接跟踪 - 支持千万级并发
-net.netfilter.nf_conntrack_max = 10000000
-net.netfilter.nf_conntrack_buckets = 2500000
-net.netfilter.nf_conntrack_tcp_timeout_established = 600
-net.netfilter.nf_conntrack_tcp_timeout_time_wait = 30
-net.netfilter.nf_conntrack_tcp_timeout_close_wait = 30
-net.netfilter.nf_conntrack_tcp_timeout_fin_wait = 30
-net.netfilter.nf_conntrack_generic_timeout = 120
-
-# 套接字缓冲区 - 针对128G内存优化
-net.core.somaxconn = 262144
-net.core.netdev_max_backlog = 262144
-net.core.optmem_max = 134217728
-net.ipv4.tcp_mem = 786432 1048576 134217728
-net.ipv4.udp_mem = 786432 1048576 134217728
-net.ipv4.tcp_rmem = 4096 87380 134217728
-net.ipv4.tcp_wmem = 4096 65536 134217728
-net.core.rmem_max = 134217728
-net.core.wmem_max = 134217728
-net.core.rmem_default = 524288
-net.core.wmem_default = 524288
-net.ipv4.tcp_congestion_control = bbr
-net.core.default_qdisc = fq
-net.ipv4.tcp_fastopen = 3
-net.ipv4.tcp_mtu_probing = 1
-
-# ARP表优化
-net.ipv4.neigh.default.gc_thresh1 = 8192
-net.ipv4.neigh.default.gc_thresh2 = 32768
-net.ipv4.neigh.default.gc_thresh3 = 65536
-net.ipv6.neigh.default.gc_thresh1 = 8192
-net.ipv6.neigh.default.gc_thresh2 = 32768
-net.ipv6.neigh.default.gc_thresh3 = 65536
-
-# 路由缓存
-net.ipv4.route.max_size = 8388608
-net.ipv4.route.gc_timeout = 300
-
-# 文件系统优化
-fs.file-max = 10000000
-fs.nr_open = 10000000
-fs.inotify.max_user_instances = 65536
-fs.inotify.max_user_watches = 1048576
-fs.aio-max-nr = 1048576
-
-# 内存管理优化
-vm.swappiness = 10
-vm.dirty_ratio = 15
-vm.dirty_background_ratio = 5
-vm.max_map_count = 655360
-vm.overcommit_memory = 1
-
-# 安全相关
-net.ipv4.conf.all.rp_filter = 0
-net.ipv4.conf.default.rp_filter = 0
-net.ipv4.conf.all.accept_source_route = 0
-net.ipv4.conf.all.accept_redirects = 0
-net.ipv4.conf.all.send_redirects = 0
-net.ipv4.conf.all.secure_redirects = 0
-net.ipv4.icmp_echo_ignore_broadcasts = 1
-net.ipv4.icmp_ignore_bogus_error_responses = 1
-
-# CPU调度优化
-kernel.sched_migration_cost_ns = 5000000
-kernel.sched_autogroup_enabled = 0
-EOF
-    
-    # 立即应用
-    sysctl -p >/dev/null 2>&1
-    
-    # 加载必要的内核模块
-    modprobe nf_conntrack >/dev/null 2>&1
-    modprobe nf_conntrack_ipv4 >/dev/null 2>&1 || true  # Debian 12可能不需要
-    
-    # 设置conntrack hashsize
-    echo 2500000 > /sys/module/nf_conntrack/parameters/hashsize 2>/dev/null || true
-    
-    # 优化limits
-    if ! grep -q "# 3proxy Enterprise limits" /etc/security/limits.conf 2>/dev/null; then
-        cat >> /etc/security/limits.conf << 'EOF'
-
-# 3proxy Enterprise limits
-* soft nofile 10000000
-* hard nofile 10000000
-* soft nproc 10000000
-* hard nproc 10000000
-* soft stack 65536
-* hard stack 65536
-root soft nofile 10000000
-root hard nofile 10000000
-root soft nproc 10000000
-root hard nproc 10000000
-EOF
-    fi
-    
-    # 优化systemd限制
-    mkdir -p /etc/systemd/system.conf.d
-    cat > /etc/systemd/system.conf.d/3proxy-limits.conf << 'EOF'
-[Manager]
-DefaultLimitNOFILE=10000000
-DefaultLimitNPROC=10000000
-DefaultLimitSTACK=67108864
-DefaultTasksMax=infinity
-EOF
-    
-    # 创建优化的启动脚本
-    cat > /usr/local/bin/3proxy-enterprise.sh << 'EOF'
-#!/bin/bash
-# 3proxy Enterprise启动脚本
-
-# 设置运行时限制
-ulimit -n 10000000
-ulimit -u 10000000
-ulimit -s 65536
-
-# CPU亲和性设置 - 将3proxy绑定到特定CPU核心
-CORES=$(nproc)
-if [ $CORES -ge 32 ]; then
-    # 为3proxy预留后16个核心
-    taskset -c 16-31 /usr/local/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
-else
-    # 使用所有可用核心
-    /usr/local/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
-fi
-EOF
-    
-    chmod +x /usr/local/bin/3proxy-enterprise.sh
-    
-    # 禁用透明大页
-    echo never > /sys/kernel/mm/transparent_hugepage/enabled 2>/dev/null || true
-    echo never > /sys/kernel/mm/transparent_hugepage/defrag 2>/dev/null || true
-    
-    print_success "系统优化完成！已配置为支持千万级并发连接"
-}
-
-function setup_directories() {
-    print_info "创建必要的目录结构..."
-    
-    # 创建目录
-    mkdir -p $WORKDIR/{templates,static,backups,configs,scripts}
-    mkdir -p $PROXYCFG_DIR
-    mkdir -p $LOGDIR
-    mkdir -p $CACHE_DIR
-    mkdir -p $RUNTIME_DIR
-    
-    # 设置权限
-    chmod 755 $WORKDIR
-    chmod 755 $PROXYCFG_DIR
-    chmod 755 $LOGDIR
-    chmod 755 $CACHE_DIR
-    chmod 755 $RUNTIME_DIR
-    
-    print_success "目录创建完成"
-}
-
-function install_dependencies() {
-    print_info "安装依赖包..."
-    
-    # 更新包列表
-    apt update
-    
-    # 安装编译工具和基础包
-    apt install -y gcc make git wget curl \
-        python3 python3-pip python3-venv python3-dev \
-        sqlite3 libsqlite3-dev \
-        redis-server \
-        nginx \
-        supervisor \
-        htop iotop iftop \
-        net-tools dnsutils \
-        cron logrotate \
-        build-essential \
-        libssl-dev libffi-dev \
-        libevent-dev \
-        libmaxminddb0 libmaxminddb-dev mmdb-bin
-    
-    # 启动Redis（用于缓存）
-    systemctl enable redis-server
-    systemctl start redis-server
-    
-    print_success "依赖安装完成"
-}
-
-function compile_3proxy() {
-    print_info "编译安装3proxy..."
-    
-    if [ ! -f "$THREEPROXY_PATH" ]; then
-        cd /tmp
-        rm -rf 3proxy
-        git clone --depth=1 https://github.com/3proxy/3proxy.git
-        cd 3proxy
-        
-        # 修改编译配置以支持更多连接
-        sed -i 's/MAXUSERS 128/MAXUSERS 100000/g' src/structures.h 2>/dev/null || true
-        
-        # 编译
-        make -f Makefile.Linux
-        make -f Makefile.Linux install
-        
-        # 确保二进制文件存在
-        if [ ! -f /usr/local/bin/3proxy ]; then
-            cp src/3proxy /usr/local/bin/3proxy
-        fi
-        
-        chmod +x /usr/local/bin/3proxy
-        
-        print_success "3proxy编译安装完成"
-    else
-        print_warning "3proxy已安装，跳过编译"
-    fi
-}
-
-function setup_initial_config() {
-    print_info "创建初始配置..."
-    
-    # 创建基础配置文件
-    cat > $PROXYCFG_PATH << 'EOF'
-# 3proxy Enterprise Configuration
-# 支持百万级并发连接
-
-daemon
-pidfile /run/3proxy/3proxy.pid
-config /usr/local/etc/3proxy/3proxy.cfg
-monitor /usr/local/etc/3proxy/3proxy.cfg
-
-# 性能参数
-maxconn 1000000
-stacksize 262144
-
-# DNS配置
-nserver 8.8.8.8
-nserver 8.8.4.4
-nserver 1.1.1.1
-nserver 1.0.0.1
-nscache 262144
-nscache6 65536
-
-# 超时设置（优化为快速释放资源）
-timeouts 1 3 10 30 60 180 1800 15 60
-
-# 日志配置
-log /var/log/3proxy/3proxy.log D
-logformat "L%t %N.%p %E %U %C:%c %R:%r %O %I %h %T"
-rotate 100M
-archiver gz /usr/bin/gzip %F
-
-# 访问控制
-auth none
-
-# 认证方式将由Python动态生成
-# 代理配置将由Python动态生成
-EOF
-    
-    print_success "初始配置创建完成"
-}
-
-function setup_log_rotation() {
-    print_info "配置日志轮转..."
-    
-    cat > /etc/logrotate.d/3proxy << 'EOF'
-/var/log/3proxy/*.log {
-    daily
-    rotate 7
-    maxsize 1G
-    compress
-    delaycompress
-    missingok
-    notifempty
-    create 0644 root root
-    sharedscripts
-    postrotate
-        /usr/bin/killall -USR1 3proxy 2>/dev/null || true
-    endscript
-}
-EOF
-    
-    print_success "日志轮转配置完成"
-}
-
-function setup_backup() {
-    print_info "设置自动备份..."
-    
-    # 创建备份脚本
-    cat > $WORKDIR/scripts/backup.sh << 'EOF'
-#!/bin/bash
-BACKUP_DIR="/opt/3proxy-enterprise/backups"
-DB_FILE="/opt/3proxy-enterprise/3proxy.db"
-CONFIG_DIR="/usr/local/etc/3proxy"
-DATE=$(date +%Y%m%d_%H%M%S)
-RETENTION_DAYS=7
-
-# 确保备份目录存在
-mkdir -p "$BACKUP_DIR"
-
-# 清理旧备份
-find "$BACKUP_DIR" -name "backup_*.tar.gz" -mtime +$RETENTION_DAYS -delete 2>/dev/null || true
-
-# 创建新备份
-cd /
-tar -czf "$BACKUP_DIR/backup_$DATE.tar.gz" \
-    "$DB_FILE" \
-    "$CONFIG_DIR" \
-    --exclude="$CONFIG_DIR/*.log*" \
-    2>/dev/null || true
-
-echo "[$(date)] Backup completed: backup_$DATE.tar.gz"
-
-# 如果备份目录超过10GB，删除最旧的备份
-BACKUP_SIZE=$(du -sb "$BACKUP_DIR" | awk '{print $1}')
-if [ $BACKUP_SIZE -gt 10737418240 ]; then
-    ls -t "$BACKUP_DIR"/backup_*.tar.gz | tail -n +10 | xargs rm -f 2>/dev/null || true
-fi
-EOF
-    
-    chmod +x $WORKDIR/scripts/backup.sh
-    
-    # 设置定时备份
-    echo "0 2 * * * root $WORKDIR/scripts/backup.sh >> $LOGDIR/backup.log 2>&1" > /etc/cron.d/3proxy-backup
-    
-    print_success "自动备份已设置（每天凌晨2点）"
-}
-
-function setup_monitoring() {
-    print_info "设置监控脚本..."
-    
-    # 创建监控脚本
-    cat > $WORKDIR/scripts/monitor.sh << 'EOF'
-#!/bin/bash
-# 3proxy监控脚本
-
-PIDFILE="/run/3proxy/3proxy.pid"
-LOGFILE="/var/log/3proxy/monitor.log"
-MAX_MEMORY_MB=65536  # 最大内存使用量(MB)
-MAX_CPU_PERCENT=800  # 最大CPU使用率(800% = 8核心满载)
-
-log() {
-    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> $LOGFILE
-}
-
-# 检查3proxy是否运行
-if [ -f "$PIDFILE" ]; then
-    PID=$(cat $PIDFILE)
-    if ! kill -0 $PID 2>/dev/null; then
-        log "ERROR: 3proxy进程不存在，正在重启..."
-        systemctl restart 3proxy-enterprise
-        exit 1
-    fi
-    
-    # 获取进程信息
-    STATS=$(ps -p $PID -o pid,vsz,rss,pcpu,comm --no-headers)
-    if [ -n "$STATS" ]; then
-        VSZ=$(echo $STATS | awk '{print $2}')
-        RSS=$(echo $STATS | awk '{print $3}')
-        CPU=$(echo $STATS | awk '{print $4}')
-        
-        RSS_MB=$((RSS/1024))
-        
-        # 检查内存使用
-        if [ $RSS_MB -gt $MAX_MEMORY_MB ]; then
-            log "WARNING: 内存使用过高 (${RSS_MB}MB > ${MAX_MEMORY_MB}MB)"
-            # 可以在这里添加告警通知
-        fi
-        
-        # 检查CPU使用
-        CPU_INT=$(echo $CPU | cut -d. -f1)
-        if [ $CPU_INT -gt $MAX_CPU_PERCENT ]; then
-            log "WARNING: CPU使用过高 (${CPU}% > ${MAX_CPU_PERCENT}%)"
-        fi
-        
-        # 记录统计信息
-        echo "$(date '+%s')|$RSS_MB|$CPU" >> /var/log/3proxy/stats.log
-    fi
-else
-    log "ERROR: PID文件不存在，正在重启3proxy..."
-    systemctl restart 3proxy-enterprise
-fi
-
-# 清理旧的统计数据（保留24小时）
-tail -n 1440 /var/log/3proxy/stats.log > /var/log/3proxy/stats.log.tmp 2>/dev/null
-mv -f /var/log/3proxy/stats.log.tmp /var/log/3proxy/stats.log 2>/dev/null || true
-EOF
-    
-    chmod +x $WORKDIR/scripts/monitor.sh
-    
-    # 设置定时监控（每分钟）
-    echo "* * * * * root $WORKDIR/scripts/monitor.sh" > /etc/cron.d/3proxy-monitor
-    
-    print_success "监控脚本设置完成"
-}
-
-function create_web_application() {
-    print_info "创建Web管理应用..."
-    
-    cd $WORKDIR
-    
-    # 创建Python虚拟环境
-    python3 -m venv venv
-    source venv/bin/activate
-    
-    # 安装Python包
-    pip install --upgrade pip
-    pip install flask flask_login flask_wtf wtforms \
-                werkzeug psutil redis \
-                gunicorn gevent \
-                sqlalchemy alembic \
-                click python-dotenv \
-                --no-cache-dir
-    
-    # 创建主应用文件 (分成多个部分以避免引号问题)
-    create_app_part1
-    create_app_part2
-    create_app_part3
-    create_app_part4
-    
-    # 创建模板文件
-    create_templates
-    
-    print_success "Web应用创建完成"
-}
-
-function create_app_part1() {
-    cat > $WORKDIR/app.py << 'EOAPP1'
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-3proxy Enterprise Management System
-支持百万级代理管理的高性能Web管理系统
-"""
-
-import os
-import sys
-import sqlite3
-import random
-import string
-import re
-import json
-import time
-import threading
-import queue
-import psutil
-import redis
-import hashlib
-import datetime
-import subprocess
-import signal
-from collections import defaultdict, OrderedDict
-from functools import wraps, lru_cache
-from contextlib import contextmanager
-
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, Response, g
-from flask_login import LoginManager, login_user, login_required, logout_user, UserMixin, current_user
-from werkzeug.security import generate_password_hash, check_password_hash
-from werkzeug.utils import secure_filename
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import logging
-from logging.handlers import RotatingFileHandler
-
-# 配置常量
-DB_PATH = '/opt/3proxy-enterprise/3proxy.db'
-REDIS_HOST = 'localhost'
-REDIS_PORT = 6379
-REDIS_DB = 0
-CACHE_TTL = 300  # 缓存5分钟
-BATCH_SIZE = 1000  # 批量操作大小
-MAX_WORKERS = 16  # 最大工作线程数
-CONFIG_CHUNK_SIZE = 10000  # 配置文件分片大小
-
-# 初始化Flask应用
-app = Flask(__name__, 
-    template_folder='templates',
-    static_folder='static',
-    static_url_path='/static'
-)
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'enterprise-secret-key-change-in-production')
-app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB
-
-# 初始化日志
-def setup_logging():
-    if not app.debug:
-        file_handler = RotatingFileHandler(
-            '/var/log/3proxy/webapp.log',
-            maxBytes=10485760,
-            backupCount=10
-        )
-        file_handler.setFormatter(logging.Formatter(
-            '%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'
-        ))
-        file_handler.setLevel(logging.INFO)
-        app.logger.addHandler(file_handler)
-        app.logger.setLevel(logging.INFO)
-        app.logger.info('3proxy Enterprise startup')
-
-setup_logging()
-
-# 初始化登录管理器
-login_manager = LoginManager(app)
-login_manager.login_view = 'login'
-login_manager.login_message = '请先登录'
-
-# 初始化Redis连接池
-redis_pool = redis.ConnectionPool(
-    host=REDIS_HOST,
-    port=REDIS_PORT,
-    db=REDIS_DB,
-    max_connections=100,
-    decode_responses=True
-)
-
-# 线程池
-executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
-
-# 数据库连接池
-class DatabasePool:
-    def __init__(self, database, max_connections=50):
-        self.database = database
-        self.max_connections = max_connections
-        self.pool = queue.Queue(maxsize=max_connections)
-        self.lock = threading.Lock()
-        self._initialize_pool()
-    
-    def _initialize_pool(self):
-        for _ in range(self.max_connections):
-            conn = sqlite3.connect(self.database, timeout=30.0)
-            conn.row_factory = sqlite3.Row
-            conn.execute('PRAGMA journal_mode=WAL')
-            conn.execute('PRAGMA synchronous=NORMAL')
-            conn.execute('PRAGMA cache_size=10000')
-            conn.execute('PRAGMA temp_store=MEMORY')
-            self.pool.put(conn)
-    
-    @contextmanager
-    def get_connection(self):
-        conn = self.pool.get()
-        try:
-            yield conn
-        finally:
-            self.pool.put(conn)
-
-# 初始化数据库连接池
-db_pool = DatabasePool(DB_PATH)
-
-# Redis缓存装饰器
-def redis_cache(key_prefix, ttl=CACHE_TTL):
-    def decorator(f):
-        @wraps(f)
-        def wrapped(*args, **kwargs):
-            r = redis.Redis(connection_pool=redis_pool)
-            
-            # 生成缓存键
-            cache_key = f"{key_prefix}:{hashlib.md5(str(args).encode() + str(kwargs).encode()).hexdigest()}"
-            
-            # 尝试从缓存获取
-            cached = r.get(cache_key)
-            if cached:
-                return json.loads(cached)
-            
-            # 执行函数
-            result = f(*args, **kwargs)
-            
-            # 存入缓存
-            r.setex(cache_key, ttl, json.dumps(result))
-            
-            return result
-        return wrapped
-    return decorator
-
-# 用户模型
-class User(UserMixin):
-    def __init__(self, id, username, password_hash):
-        self.id = id
-        self.username = username
-        self.password_hash = password_hash
-    
-    def check_password(self, password):
-        return check_password_hash(self.password_hash, password)
-    
-    @staticmethod
-    def get(user_id):
-        with db_pool.get_connection() as conn:
-            cur = conn.execute("SELECT id, username, password FROM users WHERE id = ?", (user_id,))
-            row = cur.fetchone()
-            if row:
-                return User(row['id'], row['username'], row['password'])
-        return None
-    
-    @staticmethod
-    def get_by_username(username):
-        with db_pool.get_connection() as conn:
-            cur = conn.execute("SELECT id, username, password FROM users WHERE username = ?", (username,))
-            row = cur.fetchone()
-            if row:
-                return User(row['id'], row['username'], row['password'])
-        return None
-
-@login_manager.user_loader
-def load_user(user_id):
-    return User.get(user_id)
-EOAPP1
-}
-
-function create_app_part2() {
-    cat >> $WORKDIR/app.py << 'EOAPP2'
-
-# 代理配置生成器（支持分片）
-class ProxyConfigGenerator:
-    def __init__(self):
-        self.config_dir = '/usr/local/etc/3proxy'
-        self.chunk_size = CONFIG_CHUNK_SIZE
-    
-    def generate_configs(self):
-        """生成3proxy配置文件（支持分片）"""
-        app.logger.info("开始生成代理配置...")
-        
-        with db_pool.get_connection() as conn:
-            # 获取所有启用的代理
-            cursor = conn.execute(
-                "SELECT ip, port, username, password FROM proxy WHERE enabled = 1 ORDER BY id"
-            )
-            
-            # 生成主配置文件
-            self._generate_main_config()
-            
-            # 生成用户认证文件
-            users_dict = {}
-            proxy_configs = []
-            
-            for row in cursor:
-                ip, port, username, password = row
-                users_dict[username] = password
-                proxy_configs.append((ip, port, username))
-            
-            # 写入用户文件（分片）
-            self._write_users_file(users_dict)
-            
-            # 写入代理配置（分片）
-            self._write_proxy_configs(proxy_configs)
-        
-        app.logger.info(f"配置生成完成，共{len(proxy_configs)}个代理")
-        
-        # 重载3proxy
-        self._reload_3proxy()
-    
-    def _generate_main_config(self):
-        """生成主配置文件"""
-        config = """# 3proxy Enterprise Configuration
-# Auto-generated - DO NOT EDIT MANUALLY
-
-daemon
-pidfile /run/3proxy/3proxy.pid
-monitor /usr/local/etc/3proxy/
-
-# 性能参数
-maxconn 1000000
-stacksize 262144
-
-# DNS配置
-nserver 8.8.8.8
-nserver 8.8.4.4
-nserver 1.1.1.1
-nscache 262144
-nscache6 65536
-
-# 超时设置
-timeouts 1 3 10 30 60 180 1800 15 60
-
-# 日志配置
-log /var/log/3proxy/3proxy.log D
-logformat "L%t %N.%p %E %U %C:%c %R:%r %O %I %h %T"
-rotate 100M
-
-# 包含其他配置文件
-include /usr/local/etc/3proxy/users.cfg
-include /usr/local/etc/3proxy/proxies/*.cfg
-"""
-        
-        with open(f"{self.config_dir}/3proxy.cfg", 'w') as f:
-            f.write(config)
-    
-    def _write_users_file(self, users_dict):
-        """写入用户认证文件（支持大量用户）"""
-        os.makedirs(f"{self.config_dir}/proxies", exist_ok=True)
-        
-        with open(f"{self.config_dir}/users.cfg", 'w') as f:
-            f.write("# Users configuration\n")
-            f.write("auth strong\n")
-            
-            # 分批写入用户
-            users_list = [f"{user}:CL:{passwd}" for user, passwd in users_dict.items()]
-            for i in range(0, len(users_list), 1000):
-                batch = users_list[i:i+1000]
-                f.write(f"users {' '.join(batch)}\n")
-    
-    def _write_proxy_configs(self, proxy_configs):
-        """写入代理配置（分片）"""
-        # 清理旧配置
-        import glob
-        for old_file in glob.glob(f"{self.config_dir}/proxies/*.cfg"):
-            os.remove(old_file)
-        
-        # 分片写入
-        for i in range(0, len(proxy_configs), self.chunk_size):
-            chunk = proxy_configs[i:i+self.chunk_size]
-            chunk_id = i // self.chunk_size
-            
-            with open(f"{self.config_dir}/proxies/proxy_{chunk_id:04d}.cfg", 'w') as f:
-                f.write(f"# Proxy chunk {chunk_id}\n")
-                
-                for ip, port, username in chunk:
-                    f.write(f"auth strong\n")
-                    f.write(f"allow {username}\n")
-                    f.write(f"proxy -n -a -p{port} -i{ip} -e{ip}\n")
-                    f.write("\n")
-    
-    def _reload_3proxy(self):
-        """重载3proxy配置"""
-        try:
-            # 发送SIGHUP信号重载配置
-            subprocess.run(['pkill', '-HUP', '3proxy'], check=False)
-            app.logger.info("3proxy配置重载成功")
-        except Exception as e:
-            app.logger.error(f"3proxy重载失败: {e}")
-            # 如果重载失败，尝试重启
-            try:
-                subprocess.run(['systemctl', 'restart', '3proxy-enterprise'], check=True)
-                app.logger.info("3proxy重启成功")
-            except Exception as e2:
-                app.logger.error(f"3proxy重启失败: {e2}")
-
-# 实例化配置生成器
-config_generator = ProxyConfigGenerator()
-
-# 批量操作管理器
-class BatchOperationManager:
-    def __init__(self):
-        self.operations = {}
-        self.lock = threading.Lock()
-    
-    def create_operation(self, operation_type, total_items):
-        """创建批量操作"""
-        op_id = hashlib.md5(f"{operation_type}:{time.time()}".encode()).hexdigest()
-        
-        with self.lock:
-            self.operations[op_id] = {
-                'type': operation_type,
-                'total': total_items,
-                'processed': 0,
-                'success': 0,
-                'failed': 0,
-                'status': 'running',
-                'start_time': time.time(),
-                'errors': []
-            }
-        
-        return op_id
-    
-    def update_progress(self, op_id, success=True, error=None):
-        """更新操作进度"""
-        with self.lock:
-            if op_id in self.operations:
-                op = self.operations[op_id]
-                op['processed'] += 1
-                
-                if success:
-                    op['success'] += 1
-                else:
-                    op['failed'] += 1
-                    if error:
-                        op['errors'].append(error)
-                
-                if op['processed'] >= op['total']:
-                    op['status'] = 'completed'
-                    op['end_time'] = time.time()
-    
-    def get_status(self, op_id):
-        """获取操作状态"""
-        with self.lock:
-            return self.operations.get(op_id, {})
-
-# 实例化批量操作管理器
-batch_manager = BatchOperationManager()
-
-# 工具函数
-def get_network_interfaces():
-    """获取网络接口列表"""
-    interfaces = []
-    for name, addrs in psutil.net_if_addrs().items():
-        if name != 'lo':  # 排除回环接口
-            for addr in addrs:
-                if addr.family == 2:  # IPv4
-                    interfaces.append({
-                        'name': name,
-                        'ip': addr.address,
-                        'netmask': addr.netmask
-                    })
-    return interfaces
-
-def validate_ip_range(ip_range):
-    """验证IP范围格式"""
-    # 支持格式: 192.168.1.1-254 或 192.168.1.1-192.168.1.254
-    pattern = r'^(\d{1,3}\.){3}\d{1,3}-(\d{1,3}|(\d{1,3}\.){3}\d{1,3})$'
-    return re.match(pattern, ip_range) is not None
-
-def expand_ip_range(ip_range):
-    """展开IP范围"""
-    ips = []
-    
-    if '-' in ip_range:
-        parts = ip_range.split('-')
-        if '.' in parts[1]:
-            # 完整IP范围: 192.168.1.1-192.168.1.254
-            start_ip = parts[0]
-            end_ip = parts[1]
-            
-            start_parts = [int(x) for x in start_ip.split('.')]
-            end_parts = [int(x) for x in end_ip.split('.')]
-            
-            current = start_parts[:]
-            while current <= end_parts:
-                ips.append('.'.join(map(str, current)))
-                
-                current[3] += 1
-                for i in range(3, 0, -1):
-                    if current[i] > 255:
-                        current[i] = 0
-                        current[i-1] += 1
-                
-                if current[0] > 255:
-                    break
-        else:
-            # 简短格式: 192.168.1.1-254
-            base = '.'.join(parts[0].split('.')[:-1])
-            start = int(parts[0].split('.')[-1])
-            end = int(parts[1])
-            
-            for i in range(start, end + 1):
-                if i <= 255:
-                    ips.append(f"{base}.{i}")
-    
-    return ips
-EOAPP2
-}
-
-function create_app_part3() {
-    cat >> $WORKDIR/app.py << 'EOAPP3'
-
-# 路由处理函数
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        
-        user = User.get_by_username(username)
-        if user and user.check_password(password):
-            login_user(user, remember=True)
-            next_page = request.args.get('next')
-            return redirect(next_page) if next_page else redirect(url_for('index'))
-        
-        flash('用户名或密码错误', 'danger')
-    
-    return render_template('login.html')
-
-@app.route('/logout')
-@login_required
-def logout():
-    logout_user()
-    return redirect(url_for('login'))
-
-@app.route('/')
-@login_required
-def index():
-    return render_template('index.html')
-
-# API路由
-@app.route('/api/dashboard/stats')
-@login_required
-@redis_cache('dashboard_stats', ttl=60)
-def api_dashboard_stats():
-    """获取仪表板统计信息"""
-    with db_pool.get_connection() as conn:
-        # 总代理数
-        total = conn.execute("SELECT COUNT(*) FROM proxy").fetchone()[0]
-        
-        # 启用的代理数
-        enabled = conn.execute("SELECT COUNT(*) FROM proxy WHERE enabled = 1").fetchone()[0]
-        
-        # C段统计
-        c_segments = conn.execute(
-            "SELECT COUNT(DISTINCT substr(ip, 1, instr(ip, '.') + instr(substr(ip, instr(ip, '.') + 1), '.') + instr(substr(ip, instr(ip, '.') + instr(substr(ip, instr(ip, '.') + 1), '.') + 1), '.'))) FROM proxy"
-        ).fetchone()[0]
-        
-        # 端口范围
-        port_range = conn.execute(
-            "SELECT MIN(port), MAX(port) FROM proxy"
-        ).fetchone()
-    
-    return jsonify({
-        'total_proxies': total,
-        'enabled_proxies': enabled,
-        'disabled_proxies': total - enabled,
-        'c_segments': c_segments,
-        'port_range': f"{port_range[0]}-{port_range[1]}" if port_range[0] else "N/A",
-        'utilization': round(enabled / total * 100, 2) if total > 0 else 0
-    })
-
-@app.route('/api/system/status')
-@login_required
-def api_system_status():
-    """获取系统状态"""
-    # CPU使用率
-    cpu_percent = psutil.cpu_percent(interval=1, percpu=True)
-    cpu_avg = sum(cpu_percent) / len(cpu_percent)
-    
-    # 内存信息
-    memory = psutil.virtual_memory()
-    
-    # 磁盘信息
-    disk = psutil.disk_usage('/')
-    
-    # 网络IO
-    net_io = psutil.net_io_counters()
-    
-    # 3proxy进程信息
-    proxy_info = {'running': False, 'pid': None, 'cpu': 0, 'memory': 0, 'connections': 0}
-    for proc in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_info', 'connections']):
-        try:
-            if proc.info['name'] == '3proxy':
-                proxy_info['running'] = True
-                proxy_info['pid'] = proc.info['pid']
-                proxy_info['cpu'] = proc.cpu_percent(interval=0.1)
-                proxy_info['memory'] = proc.memory_info().rss / 1024 / 1024  # MB
-                proxy_info['connections'] = len(proc.connections())
-                break
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            pass
-    
-    return jsonify({
-        'cpu': {
-            'percent': round(cpu_avg, 2),
-            'cores': len(cpu_percent),
-            'per_core': [round(p, 2) for p in cpu_percent]
-        },
-        'memory': {
-            'total': round(memory.total / 1024 / 1024 / 1024, 2),  # GB
-            'used': round(memory.used / 1024 / 1024 / 1024, 2),
-            'available': round(memory.available / 1024 / 1024 / 1024, 2),
-            'percent': round(memory.percent, 2)
-        },
-        'disk': {
-            'total': round(disk.total / 1024 / 1024 / 1024, 2),  # GB
-            'used': round(disk.used / 1024 / 1024 / 1024, 2),
-            'free': round(disk.free / 1024 / 1024 / 1024, 2),
-            'percent': round(disk.percent, 2)
-        },
-        'network': {
-            'bytes_sent': round(net_io.bytes_sent / 1024 / 1024, 2),  # MB
-            'bytes_recv': round(net_io.bytes_recv / 1024 / 1024, 2),
-            'packets_sent': net_io.packets_sent,
-            'packets_recv': net_io.packets_recv
-        },
-        'proxy': proxy_info,
-        'timestamp': datetime.datetime.now().isoformat()
-    })
-
-@app.route('/api/proxy/groups')
-@login_required
-def api_proxy_groups():
-    """获取代理组列表（C段分组）"""
-    page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 20, type=int)
-    search = request.args.get('search', '')
-    
-    with db_pool.get_connection() as conn:
-        # 构建查询
-        query = """
-            SELECT 
-                substr(ip, 1, instr(ip, '.') + instr(substr(ip, instr(ip, '.') + 1), '.') + instr(substr(ip, instr(ip, '.') + instr(substr(ip, instr(ip, '.') + 1), '.') + 1), '.')) as c_segment,
-                COUNT(*) as total,
-                SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) as enabled,
-                MIN(port) as min_port,
-                MAX(port) as max_port,
-                GROUP_CONCAT(DISTINCT user_prefix) as prefixes
-            FROM proxy
-        """
-        
-        if search:
-            query += " WHERE ip LIKE ?"
-            params = (f"%{search}%",)
-        else:
-            params = ()
-        
-        query += " GROUP BY c_segment ORDER BY c_segment"
-        
-        # 获取总数
-        count_query = f"SELECT COUNT(DISTINCT substr(ip, 1, instr(ip, '.') + instr(substr(ip, instr(ip, '.') + 1), '.') + instr(substr(ip, instr(ip, '.') + instr(substr(ip, instr(ip, '.') + 1), '.') + 1), '.'))) FROM proxy"
-        if search:
-            count_query += " WHERE ip LIKE ?"
-        
-        total = conn.execute(count_query, params).fetchone()[0]
-        
-        # 分页查询
-        query += f" LIMIT {per_page} OFFSET {(page - 1) * per_page}"
-        
-        cursor = conn.execute(query, params)
-        groups = []
-        
-        for row in cursor:
-            groups.append({
-                'c_segment': row['c_segment'],
-                'total': row['total'],
-                'enabled': row['enabled'],
-                'disabled': row['total'] - row['enabled'],
-                'port_range': f"{row['min_port']}-{row['max_port']}",
-                'prefixes': row['prefixes'].split(',') if row['prefixes'] else []
-            })
-    
-    return jsonify({
-        'groups': groups,
-        'total': total,
-        'page': page,
-        'per_page': per_page,
-        'pages': (total + per_page - 1) // per_page
-    })
-
-@app.route('/api/proxy/group/<c_segment>')
-@login_required
-def api_proxy_group_detail(c_segment):
-    """获取代理组详情"""
-    page = request.args.get('page', 1, type=int)
-    per_page = request.args.get('per_page', 100, type=int)
-    
-    with db_pool.get_connection() as conn:
-        # 获取总数
-        total = conn.execute(
-            "SELECT COUNT(*) FROM proxy WHERE ip LIKE ?",
-            (f"{c_segment}%",)
-        ).fetchone()[0]
-        
-        # 获取代理列表
-        cursor = conn.execute(
-            """
-            SELECT id, ip, port, username, password, enabled
-            FROM proxy
-            WHERE ip LIKE ?
-            ORDER BY ip, port
-            LIMIT ? OFFSET ?
-            """,
-            (f"{c_segment}%", per_page, (page - 1) * per_page)
-        )
-        
-        proxies = []
-        for row in cursor:
-            proxies.append({
-                'id': row['id'],
-                'ip': row['ip'],
-                'port': row['port'],
-                'username': row['username'],
-                'password': row['password'],
-                'enabled': bool(row['enabled'])
-            })
-    
-    return jsonify({
-        'proxies': proxies,
-        'total': total,
-        'page': page,
-        'per_page': per_page,
-        'pages': (total + per_page - 1) // per_page
-    })
-
-@app.route('/api/proxy/batch/add', methods=['POST'])
-@login_required
-def api_proxy_batch_add():
-    """批量添加代理"""
-    data = request.get_json()
-    
-    ip_range = data.get('ip_range')
-    port_start = data.get('port_start', 10000)
-    port_end = data.get('port_end', 60000)
-    user_prefix = data.get('user_prefix', 'user')
-    password_length = data.get('password_length', 12)
-    
-    # 验证IP范围
-    if not validate_ip_range(ip_range):
-        return jsonify({'error': 'IP范围格式错误'}), 400
-    
-    # 展开IP范围
-    ips = expand_ip_range(ip_range)
-    if not ips:
-        return jsonify({'error': '无效的IP范围'}), 400
-    
-    if len(ips) > 10000:
-        return jsonify({'error': 'IP数量超过限制(10000)'}), 400
-    
-    # 创建批量操作
-    op_id = batch_manager.create_operation('batch_add_proxy', len(ips))
-    
-    # 异步执行批量添加
-    def batch_add_worker():
-        with db_pool.get_connection() as conn:
-            # 获取已使用的端口
-            used_ports = set()
-            cursor = conn.execute("SELECT port FROM proxy")
-            for row in cursor:
-                used_ports.add(row[0])
-            
-            # 生成可用端口池
-            available_ports = [p for p in range(port_start, port_end + 1) if p not in used_ports]
-            if len(available_ports) < len(ips):
-                batch_manager.update_progress(op_id, False, "可用端口不足")
-                return
-            
-            # 随机选择端口
-            random.shuffle(available_ports)
-            selected_ports = available_ports[:len(ips)]
-            
-            # 批量插入
-            batch_data = []
-            for i, ip in enumerate(ips):
-                username = f"{user_prefix}{random.randint(1000, 9999)}"
-                password = ''.join(random.choices(string.ascii_letters + string.digits, k=password_length))
-                port = selected_ports[i]
-                
-                batch_data.append((ip, port, username, password, 1, ip_range, f"{port_start}-{port_end}", user_prefix))
-                
-                if len(batch_data) >= BATCH_SIZE:
-                    conn.executemany(
-                        "INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        batch_data
-                    )
-                    conn.commit()
-                    
-                    for _ in batch_data:
-                        batch_manager.update_progress(op_id, True)
-                    
-                    batch_data = []
-            
-            # 插入剩余数据
-            if batch_data:
-                conn.executemany(
-                    "INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    batch_data
-                )
-                conn.commit()
-                
-                for _ in batch_data:
-                    batch_manager.update_progress(op_id, True)
-        
-        # 重新生成配置
-        config_generator.generate_configs()
-    
-    # 提交到线程池执行
-    executor.submit(batch_add_worker)
-    
-    return jsonify({'operation_id': op_id, 'message': '批量添加任务已创建'})
-
-@app.route('/api/proxy/batch/operation/<op_id>')
-@login_required
-def api_batch_operation_status(op_id):
-    """获取批量操作状态"""
-    status = batch_manager.get_status(op_id)
-    if not status:
-        return jsonify({'error': '操作不存在'}), 404
-    
-    return jsonify(status)
-
-@app.route('/api/proxy/batch/delete', methods=['POST'])
-@login_required
-def api_proxy_batch_delete():
-    """批量删除代理"""
-    data = request.get_json()
-    proxy_ids = data.get('ids', [])
-    
-    if not proxy_ids:
-        return jsonify({'error': '未选择代理'}), 400
-    
-    # 创建批量操作
-    op_id = batch_manager.create_operation('batch_delete_proxy', len(proxy_ids))
-    
-    # 异步执行批量删除
-    def batch_delete_worker():
-        with db_pool.get_connection() as conn:
-            # 分批删除
-            for i in range(0, len(proxy_ids), BATCH_SIZE):
-                batch = proxy_ids[i:i+BATCH_SIZE]
-                placeholders = ','.join('?' * len(batch))
-                
-                conn.execute(f"DELETE FROM proxy WHERE id IN ({placeholders})", batch)
-                conn.commit()
-                
-                for _ in batch:
-                    batch_manager.update_progress(op_id, True)
-        
-        # 重新生成配置
-        config_generator.generate_configs()
-    
-    # 提交到线程池执行
-    executor.submit(batch_delete_worker)
-    
-    return jsonify({'operation_id': op_id, 'message': '批量删除任务已创建'})
-
-@app.route('/api/proxy/batch/toggle', methods=['POST'])
-@login_required
-def api_proxy_batch_toggle():
-    """批量启用/禁用代理"""
-    data = request.get_json()
-    proxy_ids = data.get('ids', [])
-    enabled = data.get('enabled', True)
-    
-    if not proxy_ids:
-        return jsonify({'error': '未选择代理'}), 400
-    
-    # 创建批量操作
-    op_id = batch_manager.create_operation('batch_toggle_proxy', len(proxy_ids))
-    
-    # 异步执行批量更新
-    def batch_toggle_worker():
-        with db_pool.get_connection() as conn:
-            # 分批更新
-            for i in range(0, len(proxy_ids), BATCH_SIZE):
-                batch = proxy_ids[i:i+BATCH_SIZE]
-                placeholders = ','.join('?' * len(batch))
-                
-                conn.execute(
-                    f"UPDATE proxy SET enabled = ? WHERE id IN ({placeholders})",
-                    [1 if enabled else 0] + batch
-                )
-                conn.commit()
-                
-                for _ in batch:
-                    batch_manager.update_progress(op_id, True)
-        
-        # 重新生成配置
-        config_generator.generate_configs()
-    
-    # 提交到线程池执行
-    executor.submit(batch_toggle_worker)
-    
-    return jsonify({'operation_id': op_id, 'message': f'批量{"启用" if enabled else "禁用"}任务已创建'})
-
-@app.route('/api/proxy/export', methods=['POST'])
-@login_required
-def api_proxy_export():
-    """导出代理"""
-    data = request.get_json()
-    format_type = data.get('format', 'txt')
-    c_segments = data.get('c_segments', [])
-    
-    with db_pool.get_connection() as conn:
-        if c_segments:
-            # 导出指定C段
-            placeholders = ','.join('?' * len(c_segments))
-            cursor = conn.execute(
-                f"SELECT ip, port, username, password FROM proxy WHERE substr(ip, 1, instr(ip, '.') + instr(substr(ip, instr(ip, '.') + 1), '.') + instr(substr(ip, instr(ip, '.') + instr(substr(ip, instr(ip, '.') + 1), '.') + 1), '.')) IN ({placeholders}) ORDER BY ip, port",
-                c_segments
-            )
+print_warning "4. 系统已优化支持千万级并发连接"
