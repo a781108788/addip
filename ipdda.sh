@@ -261,8 +261,8 @@ ADMINUSER="admin$RANDOM"
 ADMINPASS=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
 
 echo -e "\n========= 1. 自动安装 3proxy =========\n"
-# 安装依赖时添加超时
-apt update && apt install -y gcc make git wget python3 python3-pip python3-venv sqlite3 cron || {
+# 先安装 lsof 用于端口检查
+apt update && apt install -y gcc make git wget python3 python3-pip python3-venv sqlite3 cron lsof || {
     echo -e "\033[31m依赖安装失败，请检查网络连接\033[0m"
     exit 1
 }
@@ -317,8 +317,14 @@ python3 -m venv venv || {
     exit 1
 }
 source venv/bin/activate
-pip install flask flask_login flask_wtf wtforms Werkzeug psutil --break-system-packages || {
-    pip install flask flask_login flask_wtf wtforms Werkzeug psutil
+
+# 升级pip
+pip install --upgrade pip
+
+# 安装依赖
+pip install flask flask_login flask_wtf wtforms Werkzeug psutil || {
+    echo -e "\033[31mPython包安装失败\033[0m"
+    exit 1
 }
 
 # ------------------- manage.py (主后端) -------------------
@@ -330,7 +336,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from io import BytesIO
 
 DB = '3proxy.db'
-SECRET = 'changeme_this_is_secret'
+SECRET = 'changeme_this_is_secret_' + ''.join(random.choices(string.ascii_letters, k=16))
 import sys
 PORT = int(sys.argv[1]) if len(sys.argv)>1 else 9999
 THREEPROXY_PATH = '/usr/local/bin/3proxy'
@@ -942,8 +948,19 @@ def add_ip_config():
 
 if __name__ == '__main__':
     import sys
+    # 确保数据库文件存在
+    if not os.path.exists(DB):
+        print(f"数据库文件 {DB} 不存在，正在创建...")
+        import init_db
+    
     port = int(sys.argv[1]) if len(sys.argv)>1 else 9999
-    app.run('0.0.0.0', port, debug=False)
+    print(f"Starting 3proxy web management on port {port}...")
+    
+    try:
+        app.run('0.0.0.0', port, debug=False)
+    except Exception as e:
+        print(f"启动失败: {e}")
+        sys.exit(1)
 EOF
 
 # --------- config_gen.py（3proxy配置生成） ---------
@@ -2623,10 +2640,16 @@ Description=3proxy Web管理后台
 After=network.target
 
 [Service]
+Type=simple
 WorkingDirectory=$WORKDIR
+Environment="PATH=$WORKDIR/venv/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStartPre=/bin/bash -c 'cd $WORKDIR && if [ ! -f 3proxy.db ]; then $WORKDIR/venv/bin/python3 init_db.py; fi'
 ExecStart=$WORKDIR/venv/bin/python3 $WORKDIR/manage.py $PORT
 Restart=always
+RestartSec=10
 User=root
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
@@ -2683,7 +2706,46 @@ echo "4. 系统已自动优化内核参数"
 echo -e "\n常用命令："
 echo "查看登录信息: bash $0 show"
 echo "卸载系统: bash $0 uninstall"
-echo "重新安装: bash $0 reinstall", c_segment):
+echo "重新安装: bash $0 reinstall"
+# 添加调试函数
+function debug_services() {
+    echo -e "\n========= 服务状态检查 ========="
+    
+    # 检查端口是否被占用
+    if lsof -i:$PORT >/dev/null 2>&1; then
+        echo -e "\033[32m✓ 端口 $PORT 已启动\033[0m"
+        lsof -i:$PORT
+    else
+        echo -e "\033[31m✗ 端口 $PORT 未启动\033[0m"
+    fi
+    
+    # 检查Python环境
+    if [ -f "$WORKDIR/venv/bin/python3" ]; then
+        echo -e "\033[32m✓ Python虚拟环境存在\033[0m"
+    else
+        echo -e "\033[31m✗ Python虚拟环境不存在\033[0m"
+    fi
+    
+    # 检查数据库
+    if [ -f "$WORKDIR/3proxy.db" ]; then
+        echo -e "\033[32m✓ 数据库文件存在\033[0m"
+    else
+        echo -e "\033[31m✗ 数据库文件不存在\033[0m"
+    fi
+    
+    # 检查3proxy
+    if pgrep 3proxy >/dev/null; then
+        echo -e "\033[32m✓ 3proxy 正在运行\033[0m"
+    else
+        echo -e "\033[31m✗ 3proxy 未运行\033[0m"
+    fi
+    
+    echo -e "\n最近的错误日志："
+    journalctl -u 3proxy-web -n 10 --no-pager | grep -E "(error|Error|ERROR|failed|Failed)"
+}
+
+# 主安装流程结束后调用调试
+debug_services, c_segment):
         return jsonify({'error': 'Invalid C segment'}), 400
     
     db = get_db()
