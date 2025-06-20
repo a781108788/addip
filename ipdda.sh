@@ -200,7 +200,7 @@ setup_backup
 
 python3 -m venv venv
 source venv/bin/activate
-pip install flask flask_login flask_wtf wtforms Werkzeug psutil --break-system-packages -i https://mirrors.aliyun.com/pypi/simple/
+pip install flask flask_login flask_wtf wtforms Werkzeug psutil --break-system-packages
 
 # ------------------- manage.py (主后端) -------------------
 cat > $WORKDIR/manage.py << 'EOF'
@@ -308,31 +308,13 @@ def api_proxy_groups():
     result = []
     for c_seg, proxies in groups.items():
         enabled_count = sum(1 for p in proxies if p['enabled'])
-        
-        # 计算实际的IP范围和端口范围
-        ips = [p['ip'] for p in proxies]
-        ports = [p['port'] for p in proxies]
-        
-        # IP范围
-        if ips:
-            ip_nums = sorted([int(ip.split('.')[-1]) for ip in ips])
-            actual_ip_range = f"{c_seg}.{ip_nums[0]}-{ip_nums[-1]}"
-        else:
-            actual_ip_range = proxies[0]['ip_range'] if proxies else ''
-        
-        # 端口范围
-        if ports:
-            actual_port_range = f"{min(ports)}-{max(ports)}"
-        else:
-            actual_port_range = proxies[0]['port_range'] if proxies else ''
-        
         result.append({
             'c_segment': c_seg,
             'total': len(proxies),
             'enabled': enabled_count,
             'traffic': traffic_stats.get(c_seg, 0),
-            'ip_range': actual_ip_range,
-            'port_range': actual_port_range,
+            'ip_range': proxies[0]['ip_range'] if proxies else '',
+            'port_range': proxies[0]['port_range'] if proxies else '',
             'user_prefix': proxies[0]['user_prefix'] if proxies else ''
         })
     
@@ -492,9 +474,7 @@ def batchaddproxy():
     iprange = request.form.get('iprange')
     portrange = request.form.get('portrange')
     userprefix = request.form.get('userprefix')
-    
-    if iprange and userprefix:
-        # 解析IP范围
+    if iprange and portrange and userprefix:
         m = re.match(r"(\d+\.\d+\.\d+\.)(\d+)-(\d+)", iprange.strip())
         if not m:
             return jsonify({'status': 'error', 'message': 'IP范围格式错误'})
@@ -502,62 +482,29 @@ def batchaddproxy():
         start = int(m.group(2))
         end = int(m.group(3))
         ips = [f"{ip_base}{i}" for i in range(start, end+1)]
-        
-        # 获取已使用的端口
-        db = get_db()
-        used_ports = set()
-        cursor = db.execute('SELECT port FROM proxy')
-        for row in cursor:
-            used_ports.add(row[0])
-        
-        # 解析或生成端口范围
-        if portrange and portrange.strip():
-            # 用户指定了端口范围
-            m2 = re.match(r"(\d+)-(\d+)", portrange.strip())
-            if not m2:
-                db.close()
-                return jsonify({'status': 'error', 'message': '端口范围格式错误'})
-            port_start = int(m2.group(1))
-            port_end = int(m2.group(2))
-            if port_start < 1024 or port_end > 65535:
-                db.close()
-                return jsonify({'status': 'error', 'message': '端口范围应在1024-65535之间'})
-        else:
-            # 自动分配端口范围 (5000-65534)
-            port_start = 5000
-            port_end = 65534
-        
-        # 生成可用端口列表（排除已使用的）
-        all_ports = [p for p in range(port_start, port_end+1) if p not in used_ports]
+        m2 = re.match(r"(\d+)-(\d+)", portrange.strip())
+        if not m2:
+            return jsonify({'status': 'error', 'message': '端口范围格式错误'})
+        port_start = int(m2.group(1))
+        port_end = int(m2.group(2))
+        all_ports = list(range(port_start, port_end+1))
         if len(all_ports) < len(ips):
-            db.close()
-            return jsonify({'status': 'error', 'message': f'可用端口不足，需要{len(ips)}个端口，但只有{len(all_ports)}个可用'})
-        
-        # 随机选择端口
-        import random
+            return jsonify({'status': 'error', 'message': '端口区间不足以分配全部IP'})
         random.shuffle(all_ports)
-        selected_ports = all_ports[:len(ips)]
-        selected_ports.sort()  # 排序以便记录实际范围
-        
-        # 计算实际使用的端口范围
-        actual_port_range = f"{selected_ports[0]}-{selected_ports[-1]}"
-        
-        # 添加代理
+        db = get_db()
         count = 0
         for i, ip in enumerate(ips):
-            port = selected_ports[i]
+            port = all_ports[i]
             uname = userprefix + ''.join(random.choices(string.ascii_lowercase+string.digits, k=4))
             pw = ''.join(random.choices(string.ascii_letters+string.digits, k=12))
             db.execute('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix) VALUES (?,?,?,?,1,?,?,?)', 
-                (ip, port, uname, pw, iprange, actual_port_range, userprefix))
+                (ip, port, uname, pw, iprange, portrange, userprefix))
             count += 1
-        
         db.commit()
         db.close()
         reload_3proxy()
-        return jsonify({'status': 'success', 'message': f'批量范围添加完成，共添加{count}条代理，端口范围：{actual_port_range}'})
+        return jsonify({'status': 'success', 'message': f'批量范围添加完成，共添加{count}条代理'})
     
-    # 处理手动批量添加
     batch_data = request.form.get('batchproxy','').strip().splitlines()
     db = get_db()
     count = 0
