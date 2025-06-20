@@ -256,41 +256,106 @@ ADMINPASS=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
 
 echo -e "\n========= 1. 自动安装 3proxy =========\n"
 apt update
-apt install -y gcc make git wget python3 python3-pip python3-venv sqlite3 cron
+apt install -y gcc make git wget python3 python3-pip python3-venv sqlite3 cron \
+    conntrack htop iotop sysstat net-tools ipset iptables-persistent
 
+# 编译安装3proxy - 使用最新版本以支持大规模并发
 if [ ! -f "$THREEPROXY_PATH" ]; then
     cd /tmp
     rm -rf 3proxy
-    git clone --depth=1 https://github.com/z3APA3A/3proxy.git
+    git clone --depth=1 https://github.com/3proxy/3proxy.git
     cd 3proxy
-    make -f Makefile.Linux
+    # 优化编译选项
+    make -f Makefile.Linux CFLAGS="-O3 -march=native -mtune=native -fomit-frame-pointer" LDFLAGS="-Wl,-O1"
     mkdir -p /usr/local/bin /usr/local/etc/3proxy
     cp bin/3proxy /usr/local/bin/3proxy
     chmod +x /usr/local/bin/3proxy
+    # 创建PID文件目录
+    mkdir -p /var/run
 fi
 
 if [ ! -f "$PROXYCFG_PATH" ]; then
 cat > $PROXYCFG_PATH <<EOF
+# 3proxy 初始配置 - 企业级
 daemon
-maxconn 100000
+pidfile /var/run/3proxy.pid
+monitor /usr/local/etc/3proxy/3proxy.cfg
+maxconn 500000
+nservers 5
 nserver 8.8.8.8
-nserver 1.1.1.1
 nserver 8.8.4.4
-nscache 65536
-nscache6 65536
+nserver 1.1.1.1
+nserver 1.0.0.1
+nserver 208.67.222.222
+nscache 262144
+nscache6 262144
+nsrecord
 stacksize 6291456
 timeouts 1 5 30 60 180 1800 15 60
-auth none
-proxy -p3128
 log $LOGFILE D
+logformat "L%t %N.%p %E %U %C:%c %R:%r %O %I %h %T"
 rotate 30
 archiver gz /usr/bin/gzip %F
+auth none
+proxy -p3128
+internal 0.0.0.0
+flush
 EOF
 fi
+
+# 创建性能监控脚本
+cat > /usr/local/bin/3proxy-monitor.sh <<'EOF'
+#!/bin/bash
+# 3proxy 性能监控脚本
+
+while true; do
+    # 获取当前连接数
+    CONNECTIONS=$(ss -tun | grep -E ":($(cat /usr/local/etc/3proxy/3proxy.cfg | grep -E "^proxy.*-p[0-9]+" | sed 's/.*-p\([0-9]\+\).*/\1/' | tr '\n' '|' | sed 's/|$//'))" | wc -l)
+    
+    # 获取3proxy进程信息
+    if pgrep 3proxy > /dev/null; then
+        PID=$(cat /var/run/3proxy.pid 2>/dev/null || pgrep -o 3proxy)
+        CPU=$(ps -p $PID -o %cpu= 2>/dev/null || echo "0")
+        MEM=$(ps -p $PID -o %mem= 2>/dev/null || echo "0")
+        
+        # 记录到日志
+        echo "$(date '+%Y-%m-%d %H:%M:%S') - Connections: $CONNECTIONS, CPU: $CPU%, MEM: $MEM%" >> /var/log/3proxy-monitor.log
+        
+        # 如果连接数过高，优化系统
+        if [ $CONNECTIONS -gt 100000 ]; then
+            # 清理TIME_WAIT连接
+            echo 1 > /proc/sys/net/ipv4/tcp_tw_reuse
+            # 刷新路由缓存
+            echo 1 > /proc/sys/net/ipv4/route.flush
+        fi
+    fi
+    
+    sleep 60
+done
+EOF
+
+chmod +x /usr/local/bin/3proxy-monitor.sh
+
+# 创建监控服务
+cat > /etc/systemd/system/3proxy-monitor.service <<EOF
+[Unit]
+Description=3proxy性能监控
+After=3proxy-autostart.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/3proxy-monitor.sh
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
 
 # 日志轮转
 cat > /etc/cron.d/3proxy-logrotate <<EOF
 0 3 */3 * * root [ -f "$LOGFILE" ] && > "$LOGFILE"
+0 4 * * * root [ -f "/var/log/3proxy-monitor.log" ] && tail -n 10000 /var/log/3proxy-monitor.log > /var/log/3proxy-monitor.log.tmp && mv /var/log/3proxy-monitor.log.tmp /var/log/3proxy-monitor.log
 EOF
 
 # 执行系统优化
@@ -305,18 +370,20 @@ setup_backup
 
 python3 -m venv venv
 source venv/bin/activate
-pip install flask flask_login flask_wtf wtforms Werkzeug psutil --break-system-packages
+pip install flask flask_login flask_wtf wtforms Werkzeug psutil gunicorn gevent --break-system-packages
 
 # ------------------- manage.py (主后端) -------------------
 cat > $WORKDIR/manage.py << 'EOF'
-import os, sqlite3, random, string, re, collections, json, psutil, datetime
+import os, sqlite3, random, string, re, collections, json, psutil, datetime, signal
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, Response
 from flask_login import LoginManager, login_user, login_required, logout_user, UserMixin
 from werkzeug.security import generate_password_hash, check_password_hash
 from io import BytesIO
+import threading
+import time
 
 DB = '3proxy.db'
-SECRET = 'changeme_this_is_secret'
+SECRET = 'changeme_this_is_secret_' + os.urandom(16).hex()
 import sys
 PORT = int(sys.argv[1]) if len(sys.argv)>1 else 9999
 THREEPROXY_PATH = '/usr/local/bin/3proxy'
@@ -324,13 +391,55 @@ PROXYCFG_PATH = '/usr/local/etc/3proxy/3proxy.cfg'
 LOGFILE = '/usr/local/etc/3proxy/3proxy.log'
 INTERFACES_FILE = '/etc/network/interfaces'
 
+# 数据库连接池
+class DatabasePool:
+    def __init__(self, database, max_connections=10):
+        self.database = database
+        self.pool = []
+        self.lock = threading.Lock()
+        self.max_connections = max_connections
+        
+    def get_connection(self):
+        with self.lock:
+            if self.pool:
+                return self.pool.pop()
+            return sqlite3.connect(self.database, check_same_thread=False)
+    
+    def return_connection(self, conn):
+        with self.lock:
+            if len(self.pool) < self.max_connections:
+                self.pool.append(conn)
+            else:
+                conn.close()
+    
+    def execute(self, query, params=None):
+        conn = self.get_connection()
+        try:
+            cursor = conn.cursor()
+            if params:
+                cursor.execute(query, params)
+            else:
+                cursor.execute(query)
+            if query.strip().upper().startswith('SELECT'):
+                result = cursor.fetchall()
+            else:
+                conn.commit()
+                result = cursor.lastrowid
+            return result
+        finally:
+            self.return_connection(conn)
+
+# 初始化数据库池
+db_pool = DatabasePool(DB, max_connections=20)
+
 app = Flask(__name__, template_folder='templates', static_folder='static')
 app.secret_key = SECRET
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 
 def get_db():
-    return sqlite3.connect(DB)
+    """获取数据库连接"""
+    return db_pool
 
 def detect_nic():
     for nic in os.listdir('/sys/class/net'):
@@ -357,8 +466,18 @@ def load_user(user_id):
     return None
 
 def reload_3proxy():
+    """优化的重载函数 - 使用信号而不是重启"""
+    # 先生成新配置
     os.system(f'python3 {os.path.join(os.path.dirname(__file__), "config_gen.py")}')
-    os.system(f'pkill 3proxy; {THREEPROXY_PATH} {PROXYCFG_PATH} &')
+    
+    # 发送USR1信号重载配置，而不是完全重启
+    try:
+        with open('/var/run/3proxy.pid', 'r') as f:
+            pid = int(f.read().strip())
+        os.kill(pid, signal.SIGUSR1)
+    except:
+        # 如果信号失败，才使用重启方式
+        os.system('systemctl reload 3proxy-autostart || systemctl restart 3proxy-autostart')
 
 @app.route('/login', methods=['GET','POST'])
 def login():
@@ -386,25 +505,25 @@ def index():
     return render_template('index.html')
 
 @app.route('/api/proxy_groups')
-@login_required
+@login_required 
 def api_proxy_groups():
-    db = get_db()
-    proxies = db.execute('SELECT id,ip,port,username,password,enabled,ip_range,port_range,user_prefix FROM proxy ORDER BY ip').fetchall()
-    db.close()
+    rows = db_pool.execute('''
+        SELECT ip, port, username, enabled, ip_range, port_range, user_prefix 
+        FROM proxy 
+        ORDER BY ip
+    ''')
     
     groups = collections.defaultdict(list)
-    for p in proxies:
-        c_seg = '.'.join(p[1].split('.')[:3])
+    for row in rows:
+        c_seg = '.'.join(row[0].split('.')[:3])
         groups[c_seg].append({
-            'id': p[0],
-            'ip': p[1],
-            'port': p[2],
-            'username': p[3],
-            'password': p[4],
-            'enabled': p[5],
-            'ip_range': p[6],
-            'port_range': p[7],
-            'user_prefix': p[8]
+            'ip': row[0],
+            'port': row[1],
+            'username': row[2],
+            'enabled': row[3],
+            'ip_range': row[4],
+            'port_range': row[5],
+            'user_prefix': row[6]
         })
     
     # 获取流量统计
@@ -416,21 +535,19 @@ def api_proxy_groups():
         
         # 计算实际的IP范围和端口范围
         ips = [p['ip'] for p in proxies]
-        ports = sorted([p['port'] for p in proxies])  # 排序端口
+        ports = sorted([p['port'] for p in proxies])
         
         # IP范围
         if ips:
             ip_nums = sorted([int(ip.split('.')[-1]) for ip in ips])
-            # 检查是否连续
             if len(ip_nums) > 1 and ip_nums[-1] - ip_nums[0] == len(ip_nums) - 1:
                 actual_ip_range = f"{c_seg}.{ip_nums[0]}-{ip_nums[-1]}"
             else:
-                # 不连续时显示实际数量
                 actual_ip_range = f"{c_seg}.x ({len(ip_nums)} IPs)"
         else:
             actual_ip_range = proxies[0]['ip_range'] if proxies else ''
         
-        # 端口范围
+        # 端口范围  
         if ports:
             if len(ports) == 1:
                 actual_port_range = str(ports[0])
@@ -934,44 +1051,94 @@ if __name__ == '__main__':
     app.run('0.0.0.0', port, debug=False)
 EOF
 
-# --------- config_gen.py（3proxy配置生成） ---------
+# --------- config_gen.py（3proxy配置生成 - 优化版） ---------
 cat > $WORKDIR/config_gen.py << 'EOF'
 import sqlite3
+import os
+
+# 获取系统信息
+cpu_cores = os.cpu_count()
+workers = min(cpu_cores, 32)  # 最多32个工作进程
+
 db = sqlite3.connect('3proxy.db')
-cursor = db.execute('SELECT ip, port, username, password, enabled FROM proxy')
+cursor = db.execute('SELECT ip, port, username, password, enabled FROM proxy WHERE enabled=1')
+
+# 基础配置 - 企业级
 cfg = [
-"daemon",
-"maxconn 100000",
-"nserver 8.8.8.8",
-"nserver 1.1.1.1",
-"nserver 8.8.4.4",
-"nscache 65536",
-"nscache6 65536",
-"stacksize 6291456",
-"timeouts 1 5 30 60 180 1800 15 60",
-"log /usr/local/etc/3proxy/3proxy.log D",
-"rotate 30",
-"archiver gz /usr/bin/gzip %F",
-"auth strong"
+f"daemon",
+f"pidfile /var/run/3proxy.pid",
+f"monitor /usr/local/etc/3proxy/3proxy.cfg",
+f"nservers 5",
+f"nserver 8.8.8.8",
+f"nserver 8.8.4.4", 
+f"nserver 1.1.1.1",
+f"nserver 1.0.0.1",
+f"nserver 208.67.222.222",
+f"nscache 262144",
+f"nscache6 262144",
+f"nsrecord",
+f"timeouts 1 5 30 60 180 1800 15 60",
+f"daemon",
+f"maxconn 500000",
+f"stacksize 6291456",
+f"flush",
+f"auth strong cache",
+f"allow * * * * *",
+f"parent 1000 http 0.0.0.0 0",
+f"archiver gz /usr/bin/gzip %F",
+f"rotate 30",
+f"log /usr/local/etc/3proxy/3proxy.log D",
+f"logformat \"L%t %N.%p %E %U %C:%c %R:%r %O %I %h %T\"",
+f"internal 0.0.0.0",
 ]
+
+# 如果CPU核心多，启用多进程模式
+if workers > 1:
+    cfg.append(f"child {workers}")
+
 users = []
 user_set = set()
+proxy_configs = []
+
 for ip, port, user, pw, en in cursor:
-    if en and (user, pw) not in user_set:
+    if (user, pw) not in user_set:
         users.append(f"{user}:CL:{pw}")
         user_set.add((user, pw))
+    proxy_configs.append((ip, port, user))
 
-# 分批添加用户，避免单行过长
-batch_size = 100
+# 用户配置 - 分批处理避免单行过长
+batch_size = 200
 for i in range(0, len(users), batch_size):
     batch = users[i:i+batch_size]
     cfg.append(f"users {' '.join(batch)}")
 
-db2 = sqlite3.connect('3proxy.db')
-for ip, port, user, pw, en in db2.execute('SELECT ip, port, username, password, enabled FROM proxy'):
-    if en:
-        cfg.append(f"auth strong\nallow {user}\nproxy -n -a -p{port} -i{ip} -e{ip}")
-open("/usr/local/etc/3proxy/3proxy.cfg", "w").write('\n'.join(cfg))
+# 代理配置 - 优化顺序
+cfg.append("")
+cfg.append("# Proxy configurations")
+cfg.append("flush")
+
+# 按端口排序，提高缓存命中率
+proxy_configs.sort(key=lambda x: x[1])
+
+for ip, port, user in proxy_configs:
+    cfg.extend([
+        f"auth strong cache",
+        f"allow {user}",
+        f"parent 1000 http 0.0.0.0 0",
+        f"proxy -n -a -p{port} -i{ip} -e{ip}",
+        f"flush"
+    ])
+
+# 写入配置文件
+config_content = '\n'.join(cfg)
+with open("/usr/local/etc/3proxy/3proxy.cfg", "w") as f:
+    f.write(config_content)
+
+db.close()
+
+# 验证配置文件
+os.system("/usr/local/bin/3proxy -t /usr/local/etc/3proxy/3proxy.cfg")
+print(f"配置生成完成: {len(proxy_configs)} 个代理, {workers} 个工作进程")
 EOF
 
 # --------- init_db.py（DB初始化） ---------
@@ -2555,13 +2722,23 @@ EOF
 cat > /etc/systemd/system/3proxy-web.service <<EOF
 [Unit]
 Description=3proxy Web管理后台
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 WorkingDirectory=$WORKDIR
-ExecStart=$WORKDIR/venv/bin/python3 $WORKDIR/manage.py $PORT
+ExecStart=$WORKDIR/venv/bin/gunicorn -w 4 -b 0.0.0.0:$PORT --timeout 120 --max-requests 1000 --max-requests-jitter 100 manage:app
 Restart=always
+RestartSec=3
 User=root
+
+# 资源限制
+LimitNOFILE=65536
+LimitNPROC=65536
+
+# 环境变量
+Environment="PYTHONUNBUFFERED=1"
+Environment="PORT=$PORT"
 
 [Install]
 WantedBy=multi-user.target
@@ -2569,17 +2746,38 @@ EOF
 
 cat > /etc/systemd/system/3proxy-autostart.service <<EOF
 [Unit]
-Description=3proxy代理自动启动
-After=network.target
+Description=3proxy高性能代理服务
+After=network-online.target
+Wants=network-online.target
 
 [Service]
-Type=simple
+Type=forking
+PIDFile=/var/run/3proxy.pid
 WorkingDirectory=$WORKDIR
-ExecStart=/usr/local/bin/3proxy-optimize.sh
+ExecStartPre=/usr/local/bin/3proxy-optimize.sh
+ExecStart=/usr/local/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
+ExecReload=/bin/kill -USR1 \$MAINPID
+ExecStop=/bin/kill -TERM \$MAINPID
 Restart=always
+RestartSec=3
 User=root
-LimitNOFILE=1000000
-LimitNPROC=1000000
+
+# 资源限制
+LimitNOFILE=${FILE_MAX:-16000000}
+LimitNPROC=${FILE_MAX:-16000000}
+LimitCORE=infinity
+LimitMEMLOCK=infinity
+
+# 性能优化
+Nice=-10
+IOSchedulingClass=realtime
+IOSchedulingPriority=0
+CPUSchedulingPolicy=rr
+CPUSchedulingPriority=99
+
+# 内存和CPU
+MemoryMax=100G
+CPUQuota=3200%
 
 [Install]
 WantedBy=multi-user.target
@@ -2602,20 +2800,31 @@ chmod 600 $CREDS_FILE
 systemctl daemon-reload
 systemctl enable 3proxy-web
 systemctl enable 3proxy-autostart
+systemctl enable 3proxy-monitor
 systemctl restart 3proxy-web
 systemctl restart 3proxy-autostart
+systemctl start 3proxy-monitor
 
 echo -e "\n========= 部署完成！========="
 MYIP=$(get_local_ip)
 echo -e "浏览器访问：\n  \033[36mhttp://$MYIP:${PORT}\033[0m"
 echo "Web管理用户名: $ADMINUSER"
 echo "Web管理密码:  $ADMINPASS"
+echo -e "\n系统信息："
+echo "- CPU核心: ${CPU_CORES}"
+echo "- 内存: ${TOTAL_MEM}G"
+echo "- 最大支持代理数: ~$((CPU_CORES * 2000))"
+echo "- 最大并发连接: ~$((CPU_CORES * 250000))"
 echo -e "\n功能说明："
 echo "1. 代理组采用卡片式设计，点击查看详情"
 echo "2. 系统监控实时显示CPU、内存、磁盘使用情况"
 echo "3. 自动备份每天凌晨2点执行"
 echo "4. 系统已自动优化内核参数"
+echo "5. 性能监控每分钟记录一次"
 echo -e "\n常用命令："
 echo "查看登录信息: bash $0 show"
+echo "查看性能日志: tail -f /var/log/3proxy-monitor.log"
+echo "查看代理日志: tail -f $LOGFILE"
+echo "查看连接数: ss -tun | wc -l"
 echo "卸载系统: bash $0 uninstall"
 echo "重新安装: bash $0 reinstall"
