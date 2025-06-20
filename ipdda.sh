@@ -37,42 +37,142 @@ function optimize_system() {
         return
     fi
     
-    # 优化内核参数
+    # 优化内核参数 - 支持大规模代理
     cat >> /etc/sysctl.conf <<EOF
 
-# 3proxy 性能优化
+# 3proxy 性能优化 - 支持万级并发
+# 基础网络优化
 net.ipv4.ip_forward = 1
+net.ipv4.conf.all.forwarding = 1
+net.ipv4.conf.default.forwarding = 1
+
+# TCP 连接优化
 net.ipv4.tcp_syncookies = 1
 net.ipv4.tcp_tw_reuse = 1
-net.ipv4.tcp_fin_timeout = 30
-net.ipv4.tcp_keepalive_time = 1200
-net.ipv4.ip_local_port_range = 10000 65535
-net.ipv4.tcp_max_syn_backlog = 8192
-net.ipv4.tcp_max_tw_buckets = 5000
-net.ipv4.tcp_fastopen = 3
-net.ipv4.tcp_mtu_probing = 1
+net.ipv4.tcp_tw_recycle = 0
+net.ipv4.tcp_fin_timeout = 15
+net.ipv4.tcp_keepalive_time = 300
+net.ipv4.tcp_keepalive_probes = 3
+net.ipv4.tcp_keepalive_intvl = 30
+net.ipv4.tcp_max_syn_backlog = 65536
+net.ipv4.tcp_max_tw_buckets = 65536
+net.ipv4.tcp_timestamps = 1
+net.ipv4.tcp_slow_start_after_idle = 0
+
+# 端口范围
+net.ipv4.ip_local_port_range = 1024 65535
+
+# 连接跟踪优化
+net.netfilter.nf_conntrack_max = 1000000
+net.netfilter.nf_conntrack_tcp_timeout_established = 1200
+net.netfilter.nf_conntrack_tcp_timeout_time_wait = 120
+net.netfilter.nf_conntrack_tcp_timeout_close_wait = 60
+net.netfilter.nf_conntrack_tcp_timeout_fin_wait = 120
+
+# 套接字优化
 net.core.somaxconn = 65535
-net.core.netdev_max_backlog = 65535
+net.core.netdev_max_backlog = 65536
+net.core.optmem_max = 25165824
+net.ipv4.tcp_mem = 786432 1048576 26777216
+net.ipv4.udp_mem = 65536 131072 262144
+net.ipv4.tcp_rmem = 4096 87380 33554432
+net.ipv4.tcp_wmem = 4096 65536 33554432
+net.core.rmem_max = 33554432
+net.core.wmem_max = 33554432
+net.core.rmem_default = 262144
+net.core.wmem_default = 262144
+
+# TCP 拥塞控制
 net.ipv4.tcp_congestion_control = bbr
 net.core.default_qdisc = fq
-fs.file-max = 65535
+net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_mtu_probing = 1
+
+# 防止 ICMP 攻击
+net.ipv4.icmp_echo_ignore_all = 0
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+net.ipv4.icmp_ignore_bogus_error_responses = 1
+net.ipv4.icmp_ratelimit = 100
+net.ipv4.icmp_ratemask = 88089
+
+# 文件句柄
+fs.file-max = 2000000
+fs.nr_open = 2000000
+
+# 其他优化
+net.ipv4.tcp_no_metrics_save = 1
+net.ipv4.route.flush = 1
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv4.conf.all.rp_filter = 1
 EOF
     
+    # 立即应用
     sysctl -p >/dev/null 2>&1
+    
+    # 加载 nf_conntrack 模块
+    modprobe nf_conntrack >/dev/null 2>&1
     
     # 优化文件描述符限制
     if ! grep -q "# 3proxy limits" /etc/security/limits.conf 2>/dev/null; then
         cat >> /etc/security/limits.conf <<EOF
 
 # 3proxy limits
-* soft nofile 65535
-* hard nofile 65535
-* soft nproc 65535
-* hard nproc 65535
+* soft nofile 1000000
+* hard nofile 1000000
+* soft nproc 1000000
+* hard nproc 1000000
+root soft nofile 1000000
+root hard nofile 1000000
+root soft nproc 1000000
+root hard nproc 1000000
 EOF
     fi
     
-    echo -e "\033[32m系统优化完成！\033[0m"
+    # 优化 systemd 限制
+    if [ -f /etc/systemd/system.conf ]; then
+        sed -i 's/^#DefaultLimitNOFILE=.*/DefaultLimitNOFILE=1000000/' /etc/systemd/system.conf
+        sed -i 's/^#DefaultLimitNPROC=.*/DefaultLimitNPROC=1000000/' /etc/systemd/system.conf
+    fi
+    
+    # 创建优化脚本供 3proxy 服务使用
+    cat > /usr/local/bin/3proxy-optimize.sh <<'EOF'
+#!/bin/bash
+# 运行时优化
+ulimit -n 1000000
+ulimit -u 1000000
+
+# 清理 TIME_WAIT 连接
+echo 1 > /proc/sys/net/ipv4/tcp_tw_reuse
+
+# 优化网络缓冲区
+echo 33554432 > /proc/sys/net/core/rmem_max
+echo 33554432 > /proc/sys/net/core/wmem_max
+
+# 增加连接跟踪表大小
+echo 1000000 > /proc/sys/net/netfilter/nf_conntrack_max
+
+# 禁用反向路径过滤（如果需要）
+for i in /proc/sys/net/ipv4/conf/*/rp_filter; do
+    echo 0 > $i
+done
+
+# 启动 3proxy
+exec /usr/local/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
+EOF
+    
+    chmod +x /usr/local/bin/3proxy-optimize.sh
+    
+    # 更新 3proxy 配置以支持更多连接
+    sed -i 's/maxconn 2000/maxconn 100000/g' $PROXYCFG_PATH 2>/dev/null || true
+    sed -i 's/maxconn 10000/maxconn 100000/g' $PROXYCFG_PATH 2>/dev/null || true
+    
+    echo -e "\033[32m系统优化完成！支持万级代理并发\033[0m"
+    echo -e "\033[33m注意：如果代理数量超过5000，建议：\033[0m"
+    echo -e "1. 使用更高配置的服务器（至少8核16G内存）"
+    echo -e "2. 考虑使用多台服务器分布式部署"
+    echo -e "3. 定期监控系统资源使用情况"
 }
 
 function setup_backup() {
@@ -172,14 +272,19 @@ fi
 if [ ! -f "$PROXYCFG_PATH" ]; then
 cat > $PROXYCFG_PATH <<EOF
 daemon
-maxconn 10000
+maxconn 100000
 nserver 8.8.8.8
 nserver 1.1.1.1
+nserver 8.8.4.4
 nscache 65536
+nscache6 65536
+stacksize 6291456
 timeouts 1 5 30 60 180 1800 15 60
 auth none
 proxy -p3128
 log $LOGFILE D
+rotate 30
+archiver gz /usr/bin/gzip %F
 EOF
 fi
 
@@ -200,7 +305,7 @@ setup_backup
 
 python3 -m venv venv
 source venv/bin/activate
-pip install flask flask_login flask_wtf wtforms Werkzeug psutil --break-system-packages  -i https://mirrors.aliyun.com/pypi/simple/
+pip install flask flask_login flask_wtf wtforms Werkzeug psutil --break-system-packages
 
 # ------------------- manage.py (主后端) -------------------
 cat > $WORKDIR/manage.py << 'EOF'
@@ -308,13 +413,39 @@ def api_proxy_groups():
     result = []
     for c_seg, proxies in groups.items():
         enabled_count = sum(1 for p in proxies if p['enabled'])
+        
+        # 计算实际的IP范围和端口范围
+        ips = [p['ip'] for p in proxies]
+        ports = sorted([p['port'] for p in proxies])  # 排序端口
+        
+        # IP范围
+        if ips:
+            ip_nums = sorted([int(ip.split('.')[-1]) for ip in ips])
+            # 检查是否连续
+            if len(ip_nums) > 1 and ip_nums[-1] - ip_nums[0] == len(ip_nums) - 1:
+                actual_ip_range = f"{c_seg}.{ip_nums[0]}-{ip_nums[-1]}"
+            else:
+                # 不连续时显示实际数量
+                actual_ip_range = f"{c_seg}.x ({len(ip_nums)} IPs)"
+        else:
+            actual_ip_range = proxies[0]['ip_range'] if proxies else ''
+        
+        # 端口范围
+        if ports:
+            if len(ports) == 1:
+                actual_port_range = str(ports[0])
+            else:
+                actual_port_range = f"{ports[0]}-{ports[-1]}"
+        else:
+            actual_port_range = proxies[0]['port_range'] if proxies else ''
+        
         result.append({
             'c_segment': c_seg,
             'total': len(proxies),
             'enabled': enabled_count,
             'traffic': traffic_stats.get(c_seg, 0),
-            'ip_range': proxies[0]['ip_range'] if proxies else '',
-            'port_range': proxies[0]['port_range'] if proxies else '',
+            'ip_range': actual_ip_range,
+            'port_range': actual_port_range,
             'user_prefix': proxies[0]['user_prefix'] if proxies else ''
         })
     
@@ -474,7 +605,9 @@ def batchaddproxy():
     iprange = request.form.get('iprange')
     portrange = request.form.get('portrange')
     userprefix = request.form.get('userprefix')
-    if iprange and portrange and userprefix:
+    
+    if iprange and userprefix:
+        # 解析IP范围
         m = re.match(r"(\d+\.\d+\.\d+\.)(\d+)-(\d+)", iprange.strip())
         if not m:
             return jsonify({'status': 'error', 'message': 'IP范围格式错误'})
@@ -482,29 +615,62 @@ def batchaddproxy():
         start = int(m.group(2))
         end = int(m.group(3))
         ips = [f"{ip_base}{i}" for i in range(start, end+1)]
-        m2 = re.match(r"(\d+)-(\d+)", portrange.strip())
-        if not m2:
-            return jsonify({'status': 'error', 'message': '端口范围格式错误'})
-        port_start = int(m2.group(1))
-        port_end = int(m2.group(2))
-        all_ports = list(range(port_start, port_end+1))
-        if len(all_ports) < len(ips):
-            return jsonify({'status': 'error', 'message': '端口区间不足以分配全部IP'})
-        random.shuffle(all_ports)
+        
+        # 获取已使用的端口
         db = get_db()
+        used_ports = set()
+        cursor = db.execute('SELECT port FROM proxy')
+        for row in cursor:
+            used_ports.add(row[0])
+        
+        # 解析或生成端口范围
+        if portrange and portrange.strip():
+            # 用户指定了端口范围
+            m2 = re.match(r"(\d+)-(\d+)", portrange.strip())
+            if not m2:
+                db.close()
+                return jsonify({'status': 'error', 'message': '端口范围格式错误'})
+            port_start = int(m2.group(1))
+            port_end = int(m2.group(2))
+            if port_start < 1024 or port_end > 65535:
+                db.close()
+                return jsonify({'status': 'error', 'message': '端口范围应在1024-65535之间'})
+        else:
+            # 自动分配端口范围 (5000-65534)
+            port_start = 5000
+            port_end = 65534
+        
+        # 生成可用端口列表（排除已使用的）
+        all_ports = [p for p in range(port_start, port_end+1) if p not in used_ports]
+        if len(all_ports) < len(ips):
+            db.close()
+            return jsonify({'status': 'error', 'message': f'可用端口不足，需要{len(ips)}个端口，但只有{len(all_ports)}个可用'})
+        
+        # 随机选择端口
+        import random
+        random.shuffle(all_ports)
+        selected_ports = all_ports[:len(ips)]
+        selected_ports.sort()  # 排序以便记录实际范围
+        
+        # 计算实际使用的端口范围
+        actual_port_range = f"{selected_ports[0]}-{selected_ports[-1]}"
+        
+        # 添加代理
         count = 0
         for i, ip in enumerate(ips):
-            port = all_ports[i]
+            port = selected_ports[i]
             uname = userprefix + ''.join(random.choices(string.ascii_lowercase+string.digits, k=4))
             pw = ''.join(random.choices(string.ascii_letters+string.digits, k=12))
             db.execute('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix) VALUES (?,?,?,?,1,?,?,?)', 
-                (ip, port, uname, pw, iprange, portrange, userprefix))
+                (ip, port, uname, pw, iprange, actual_port_range, userprefix))
             count += 1
+        
         db.commit()
         db.close()
         reload_3proxy()
-        return jsonify({'status': 'success', 'message': f'批量范围添加完成，共添加{count}条代理'})
+        return jsonify({'status': 'success', 'message': f'批量范围添加完成，共添加{count}条代理，端口范围：{actual_port_range}'})
     
+    # 处理手动批量添加
     batch_data = request.form.get('batchproxy','').strip().splitlines()
     db = get_db()
     count = 0
@@ -741,12 +907,25 @@ def add_ip_config():
     db.execute('INSERT INTO ip_config (ip_str, type, iface, created) VALUES (?,?,?,datetime("now"))', (ip_range, 'range', iface))
     db.commit()
     db.close()
-    for ip in ip_list:
-        os.system(f"ip addr add {ip}/24 dev {iface}")
+    
+    # 临时添加IP，使用不同的子网掩码策略
+    for i, ip in enumerate(ip_list):
+        # 为每个IP使用/32掩码，避免路由冲突
+        os.system(f"ip addr add {ip}/32 dev {iface} 2>/dev/null")
+        # 添加路由规则
+        os.system(f"ip route add {ip}/32 dev {iface} 2>/dev/null")
+    
+    # 永久添加
     if mode == 'perm':
         with open(INTERFACES_FILE, 'a+') as f:
-            f.write(f"\nup bash -c 'for ip in {ip_range};do ip addr add $ip/24 dev {iface}; done'\n")
-            f.write(f"down bash -c 'for ip in {ip_range};do ip addr del $ip/24 dev {iface}; done'\n")
+            f.write(f"\n# 3proxy IP配置 - {ip_range}\n")
+            for ip in ip_list:
+                f.write(f"up ip addr add {ip}/32 dev {iface} 2>/dev/null || true\n")
+                f.write(f"down ip addr del {ip}/32 dev {iface} 2>/dev/null || true\n")
+    
+    # 刷新ARP缓存
+    os.system("ip neigh flush all")
+    
     return jsonify({'status': 'success', 'message': '已添加IP配置'})
 
 if __name__ == '__main__':
@@ -762,12 +941,17 @@ db = sqlite3.connect('3proxy.db')
 cursor = db.execute('SELECT ip, port, username, password, enabled FROM proxy')
 cfg = [
 "daemon",
-"maxconn 10000",
+"maxconn 100000",
 "nserver 8.8.8.8",
 "nserver 1.1.1.1",
+"nserver 8.8.4.4",
 "nscache 65536",
+"nscache6 65536",
+"stacksize 6291456",
 "timeouts 1 5 30 60 180 1800 15 60",
 "log /usr/local/etc/3proxy/3proxy.log D",
+"rotate 30",
+"archiver gz /usr/bin/gzip %F",
 "auth strong"
 ]
 users = []
@@ -776,7 +960,13 @@ for ip, port, user, pw, en in cursor:
     if en and (user, pw) not in user_set:
         users.append(f"{user}:CL:{pw}")
         user_set.add((user, pw))
-cfg.append(f"users {' '.join(users)}")
+
+# 分批添加用户，避免单行过长
+batch_size = 100
+for i in range(0, len(users), batch_size):
+    batch = users[i:i+batch_size]
+    cfg.append(f"users {' '.join(batch)}")
+
 db2 = sqlite3.connect('3proxy.db')
 for ip, port, user, pw, en in db2.execute('SELECT ip, port, username, password, enabled FROM proxy'):
     if en:
@@ -1849,7 +2039,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                                style="font-family: monospace; font-size: 0.85rem; background: #f8f9fa; border-radius: 6px;">
                                         <button class="btn btn-sm btn-outline-secondary" 
                                                 style="padding: 4px 10px; border-radius: 6px;"
-                                                onclick="copyPassword('${proxy.password}', ${proxy.id})"
+                                                onclick="copyPassword('${proxy.password.replace(/'/g, "\\'")}', ${proxy.id})"
                                                 title="复制密码">
                                             <i class="bi bi-clipboard" style="font-size: 0.9rem;"></i>
                                         </button>
@@ -1899,6 +2089,9 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                         });
                         updateSelectedCount();
                     });
+                    
+                    // 初始化选中数量
+                    updateSelectedCount();
                     
                     hideLoading();
                     const modal = new bootstrap.Modal(document.getElementById('proxyDetailModal'));
@@ -1978,9 +2171,15 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     // 刷新当前模态框内容
                     const modal = bootstrap.Modal.getInstance(document.getElementById('proxyDetailModal'));
                     if (modal) {
-                        const cSegment = document.querySelector('#proxyDetailContent h6').textContent.split('.')[0];
-                        viewProxyGroup(cSegment);
+                        const detailHeader = document.querySelector('.detail-header h5');
+                        if (detailHeader) {
+                            const cSegment = detailHeader.textContent.split('.')[0].trim();
+                            viewProxyGroup(cSegment);
+                        }
                     }
+                })
+                .catch(err => {
+                    showToast('操作失败: ' + err.message, 'danger');
                 });
         }
 
@@ -1993,10 +2192,16 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     showToast('代理已删除');
                     const modal = bootstrap.Modal.getInstance(document.getElementById('proxyDetailModal'));
                     if (modal) {
-                        const cSegment = document.querySelector('#proxyDetailContent h6').textContent.split('.')[0];
-                        viewProxyGroup(cSegment);
+                        const detailHeader = document.querySelector('.detail-header h5');
+                        if (detailHeader) {
+                            const cSegment = detailHeader.textContent.split('.')[0].trim();
+                            viewProxyGroup(cSegment);
+                        }
                     }
                     loadProxyGroups();
+                })
+                .catch(err => {
+                    showToast('删除失败: ' + err.message, 'danger');
                 });
         }
 
@@ -2334,6 +2539,10 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                 document.querySelector('#darkModeToggle i').className = 'bi bi-sun-fill';
             }
             
+            // 清空全局选择集合
+            selectedGroups.clear();
+            selectedProxies.clear();
+            
             // 加载初始数据
             loadProxyGroups();
         });
@@ -2366,9 +2575,11 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=$WORKDIR
-ExecStart=/bin/bash -c "cd $WORKDIR && $WORKDIR/venv/bin/python3 $WORKDIR/config_gen.py && $THREEPROXY_PATH $PROXYCFG_PATH"
+ExecStart=/usr/local/bin/3proxy-optimize.sh
 Restart=always
 User=root
+LimitNOFILE=1000000
+LimitNPROC=1000000
 
 [Install]
 WantedBy=multi-user.target
