@@ -639,7 +639,7 @@ def batchaddproxy():
     
     if iprange and userprefix:
         # 解析IP范围
-        m = re.match(r"(\d+\.\d+\.\d+\.)(\d+)-(\d+)", iprange.strip())
+        m = re.match(r"(\\d+\\.\\d+\\.\\d+\\.)(\\d+)-(\\d+)", iprange.strip())
         if not m:
             return jsonify({'status': 'error', 'message': 'IP范围格式错误'})
         ip_base = m.group(1)
@@ -657,7 +657,7 @@ def batchaddproxy():
         # 解析或生成端口范围
         if portrange and portrange.strip():
             # 用户指定了端口范围
-            m2 = re.match(r"(\d+)-(\d+)", portrange.strip())
+            m2 = re.match(r"(\\d+)-(\\d+)", portrange.strip())
             if not m2:
                 db.close()
                 return jsonify({'status': 'error', 'message': '端口范围格式错误'})
@@ -718,7 +718,7 @@ def batchaddproxy():
         elif ':' in line:
             parts = [x.strip() for x in line.split(':')]
         else:
-            parts = re.split(r'\s+', line)
+            parts = re.split(r'\\s+', line)
         if len(parts) == 2:
             ip, port = parts
             username = f"user{base_idx + idx:03d}"
