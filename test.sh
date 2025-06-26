@@ -1,35 +1,15 @@
 #!/bin/bash
 set -e
 
-# 3proxy Enterprise High-Performance Management System
-# Optimized for Debian 12, 128GB RAM, 32 Core Server
-# Supports 10,000+ concurrent HTTP proxies
-
-WORKDIR=/opt/3proxy-web
-THREEPROXY_PATH=/usr/local/bin/3proxy
-PROXYCFG_PATH=/usr/local/etc/3proxy/3proxy.cfg
-LOGDIR=/var/log/3proxy
-CREDS_FILE=/opt/3proxy-web/.credentials
-BACKUP_DIR=/opt/3proxy-web/backups
-
-# 颜色定义
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-NC='\033[0m'
-
-function print_banner() {
-    echo -e "${GREEN}"
-    echo "================================================"
-    echo "   3proxy Enterprise Management System v2.0"
-    echo "   Optimized for High-Performance Servers"
-    echo "================================================"
-    echo -e "${NC}"
-}
+WORKDIR=/opt/xray-web
+XRAY_PATH=/usr/local/bin/xray
+XRAY_CONFIG=/usr/local/etc/xray/config.json
+XRAY_LOG_DIR=/var/log/xray
+CREDS_FILE=/opt/xray-web/.credentials
 
 function get_local_ip() {
     local pubip lanip
-    pubip=$(curl -s --max-time 3 ifconfig.me || curl -s --max-time 3 ip.sb || echo "")
+    pubip=$(curl -s ifconfig.me || curl -s ip.sb || curl -s icanhazip.com)
     lanip=$(hostname -I | awk '{print $1}')
     if [[ -n "$pubip" && "$pubip" != "$lanip" ]]; then
         echo "$pubip"
@@ -40,1320 +20,299 @@ function get_local_ip() {
 
 function show_credentials() {
     if [ -f "$CREDS_FILE" ]; then
-        echo -e "\n${GREEN}========= 3proxy Web管理系统登录信息 =========${NC}"
+        echo -e "\n========= Xray Web管理系统登录信息 ========="
         cat "$CREDS_FILE"
-        echo -e "${GREEN}============================================${NC}\n"
+        echo -e "============================================\n"
     else
-        echo -e "${RED}未找到登录凭据文件。请运行安装脚本。${NC}"
+        echo -e "\033[31m未找到登录凭据文件。请运行安装脚本。\033[0m"
     fi
 }
 
-function optimize_system_enterprise() {
-    echo -e "\n${YELLOW}========= 企业级系统优化 =========${NC}\n"
+function optimize_system() {
+    echo -e "\n========= 系统性能优化 =========\n"
     
-    # 备份原始配置
-    cp /etc/sysctl.conf /etc/sysctl.conf.backup.$(date +%Y%m%d) 2>/dev/null || true
-    
-    # 检查是否已优化
-    if grep -q "# 3proxy Enterprise Optimization" /etc/sysctl.conf 2>/dev/null; then
-        echo -e "${YELLOW}系统已优化，更新配置...${NC}"
-        sed -i '/# 3proxy Enterprise Optimization/,/# End 3proxy Enterprise Optimization/d' /etc/sysctl.conf
+    if grep -q "# Xray 性能优化" /etc/sysctl.conf 2>/dev/null; then
+        echo -e "\033[33m系统已经优化过，跳过...\033[0m"
+        return
     fi
     
-    # 企业级内核参数优化
-    cat >> /etc/sysctl.conf <<'EOF'
-# 3proxy Enterprise Optimization
-# Network Core
+    cat >> /etc/sysctl.conf <<EOF
+
+# Xray 性能优化 - 支持百万级并发
+# 基础网络优化
 net.ipv4.ip_forward = 1
 net.ipv4.conf.all.forwarding = 1
 net.ipv4.conf.default.forwarding = 1
-net.ipv6.conf.all.forwarding = 1
 
-# Disable IPv6 if not needed
-net.ipv6.conf.all.disable_ipv6 = 1
-net.ipv6.conf.default.disable_ipv6 = 1
-
-# ARP Cache for Multiple Subnets
-net.ipv4.neigh.default.gc_thresh1 = 8192
-net.ipv4.neigh.default.gc_thresh2 = 32768
-net.ipv4.neigh.default.gc_thresh3 = 65536
-net.ipv4.neigh.default.gc_stale_time = 120
-net.ipv4.neigh.default.gc_interval = 30
-net.ipv4.neigh.default.proxy_qlen = 96
-net.ipv4.neigh.default.unres_qlen = 6
-
-# Routing Optimization
-net.ipv4.route.max_size = 2147483647
-net.ipv4.route.gc_thresh = 1048576
-net.ipv4.route.gc_timeout = 300
-net.ipv4.route.gc_min_interval = 0
-net.ipv4.route.gc_min_interval_ms = 10
-
-# TCP Stack Optimization for Proxies
-net.ipv4.tcp_max_syn_backlog = 262144
-net.ipv4.tcp_max_tw_buckets = 2000000
-net.ipv4.tcp_tw_reuse = 1
-net.ipv4.tcp_fin_timeout = 10
-net.ipv4.tcp_keepalive_time = 120
-net.ipv4.tcp_keepalive_intvl = 30
-net.ipv4.tcp_keepalive_probes = 3
+# TCP 连接优化
 net.ipv4.tcp_syncookies = 1
+net.ipv4.tcp_tw_reuse = 1
+net.ipv4.tcp_fin_timeout = 15
+net.ipv4.tcp_keepalive_time = 300
+net.ipv4.tcp_keepalive_probes = 3
+net.ipv4.tcp_keepalive_intvl = 30
+net.ipv4.tcp_max_syn_backlog = 65536
+net.ipv4.tcp_max_tw_buckets = 65536
 net.ipv4.tcp_timestamps = 1
 net.ipv4.tcp_slow_start_after_idle = 0
-net.ipv4.tcp_no_metrics_save = 1
-net.ipv4.tcp_moderate_rcvbuf = 1
-net.ipv4.tcp_rfc1337 = 1
+net.ipv4.tcp_fastopen = 3
 
-# Port Range
+# 端口范围
 net.ipv4.ip_local_port_range = 1024 65535
-net.ipv4.ip_local_reserved_ports = 3128,8080-8090
 
-# Connection Tracking for 10K+ Proxies
-net.netfilter.nf_conntrack_max = 10000000
-net.netfilter.nf_conntrack_buckets = 2500000
-net.netfilter.nf_conntrack_tcp_timeout_syn_recv = 30
-net.netfilter.nf_conntrack_tcp_timeout_syn_sent = 30
-net.netfilter.nf_conntrack_tcp_timeout_established = 600
-net.netfilter.nf_conntrack_tcp_timeout_fin_wait = 30
+# 连接跟踪优化
+net.netfilter.nf_conntrack_max = 3000000
+net.netfilter.nf_conntrack_tcp_timeout_established = 1200
+net.netfilter.nf_conntrack_tcp_timeout_time_wait = 60
 net.netfilter.nf_conntrack_tcp_timeout_close_wait = 30
-net.netfilter.nf_conntrack_tcp_timeout_last_ack = 30
-net.netfilter.nf_conntrack_tcp_timeout_time_wait = 30
-net.netfilter.nf_conntrack_tcp_timeout_close = 10
-net.netfilter.nf_conntrack_tcp_timeout_max_retrans = 300
-net.netfilter.nf_conntrack_tcp_timeout_unacknowledged = 300
-net.netfilter.nf_conntrack_tcp_loose = 1
-net.netfilter.nf_conntrack_tcp_be_liberal = 1
+net.netfilter.nf_conntrack_tcp_timeout_fin_wait = 60
 
-# Memory Management for 128GB RAM
-net.core.somaxconn = 262144
-net.core.netdev_max_backlog = 262144
-net.core.optmem_max = 134217728
-net.ipv4.tcp_mem = 134217728 268435456 536870912
-net.ipv4.udp_mem = 134217728 268435456 536870912
-net.ipv4.tcp_rmem = 4096 131072 134217728
-net.ipv4.tcp_wmem = 4096 65536 134217728
+# 套接字优化
+net.core.somaxconn = 65535
+net.core.netdev_max_backlog = 65536
+net.core.optmem_max = 25165824
+net.ipv4.tcp_mem = 786432 1048576 26777216
+net.ipv4.udp_mem = 65536 131072 262144
+net.ipv4.tcp_rmem = 4096 87380 67108864
+net.ipv4.tcp_wmem = 4096 65536 67108864
 net.core.rmem_max = 134217728
 net.core.wmem_max = 134217728
-net.core.rmem_default = 1048576
-net.core.wmem_default = 1048576
-vm.min_free_kbytes = 2097152
-vm.swappiness = 10
-vm.dirty_ratio = 15
-vm.dirty_background_ratio = 5
+net.core.rmem_default = 262144
+net.core.wmem_default = 262144
 
-# TCP Congestion Control
+# TCP 拥塞控制
 net.ipv4.tcp_congestion_control = bbr
 net.core.default_qdisc = fq
-net.ipv4.tcp_fastopen = 3
-net.ipv4.tcp_mtu_probing = 1
-net.ipv4.tcp_autocorking = 1
-net.ipv4.tcp_ecn = 2
 
-# Security Hardening
-net.ipv4.conf.all.rp_filter = 0
-net.ipv4.conf.default.rp_filter = 0
-net.ipv4.conf.all.accept_redirects = 0
-net.ipv4.conf.default.accept_redirects = 0
-net.ipv4.conf.all.send_redirects = 0
-net.ipv4.conf.default.send_redirects = 0
-net.ipv4.conf.all.accept_source_route = 0
-net.ipv4.conf.default.accept_source_route = 0
-net.ipv4.conf.all.arp_ignore = 1
-net.ipv4.conf.default.arp_ignore = 1
-net.ipv4.conf.all.arp_announce = 2
-net.ipv4.conf.default.arp_announce = 2
-net.ipv4.conf.all.proxy_arp = 0
-net.ipv4.icmp_echo_ignore_broadcasts = 1
-net.ipv4.icmp_ignore_bogus_error_responses = 1
-net.ipv4.icmp_ratelimit = 1000
+# 文件句柄
+fs.file-max = 6000000
+fs.nr_open = 6000000
 
-# File System
-fs.file-max = 10000000
-fs.nr_open = 10000000
-fs.inotify.max_user_watches = 1048576
-fs.inotify.max_user_instances = 8192
-fs.aio-max-nr = 1048576
-
-# Process Limits
-kernel.pid_max = 4194304
-kernel.threads-max = 4194304
-# End 3proxy Enterprise Optimization
+# 内存优化
+vm.swappiness = 10
+vm.dirty_ratio = 40
+vm.dirty_background_ratio = 10
+vm.overcommit_memory = 1
 EOF
     
-    # 应用系统参数
     sysctl -p >/dev/null 2>&1
-    
-    # 加载必要的内核模块
     modprobe nf_conntrack >/dev/null 2>&1
-    modprobe nf_conntrack_ipv4 >/dev/null 2>&1 || true
-    echo "nf_conntrack" >> /etc/modules-load.d/3proxy.conf
     
-    # 设置 conntrack hashsize (需要 root)
-    echo 2500000 > /sys/module/nf_conntrack/parameters/hashsize 2>/dev/null || true
-    
-    # 禁用所有接口的 rp_filter
-    for i in /proc/sys/net/ipv4/conf/*/rp_filter; do
-        echo 0 > $i 2>/dev/null || true
-    done
-    
-    # 优化限制
-    cat > /etc/security/limits.d/3proxy.conf <<EOF
-# 3proxy Enterprise Limits
-* soft nofile 10000000
-* hard nofile 10000000
-* soft nproc 4194304
-* hard nproc 4194304
-* soft memlock unlimited
-* hard memlock unlimited
-* soft stack unlimited
-* hard stack unlimited
-root soft nofile 10000000
-root hard nofile 10000000
-root soft nproc 4194304
-root hard nproc 4194304
+    if ! grep -q "# Xray limits" /etc/security/limits.conf 2>/dev/null; then
+        cat >> /etc/security/limits.conf <<EOF
+
+# Xray limits
+* soft nofile 3000000
+* hard nofile 3000000
+* soft nproc 3000000
+* hard nproc 3000000
+root soft nofile 3000000
+root hard nofile 3000000
+root soft nproc 3000000
+root hard nproc 3000000
 EOF
+    fi
     
-    # Systemd 限制优化
-    mkdir -p /etc/systemd/system.conf.d/
-    cat > /etc/systemd/system.conf.d/3proxy.conf <<EOF
-[Manager]
-DefaultLimitNOFILE=10000000
-DefaultLimitNPROC=4194304
-DefaultLimitMEMLOCK=infinity
-DefaultLimitSTACK=infinity
-DefaultTasksMax=infinity
-EOF
+    if [ -f /etc/systemd/system.conf ]; then
+        sed -i 's/^#DefaultLimitNOFILE=.*/DefaultLimitNOFILE=3000000/' /etc/systemd/system.conf
+        sed -i 's/^#DefaultLimitNPROC=.*/DefaultLimitNPROC=3000000/' /etc/systemd/system.conf
+    fi
     
-    # 创建高性能启动脚本
-    cat > /usr/local/bin/3proxy-enterprise.sh <<'EOF'
+    echo -e "\033[32m系统优化完成！支持百万级代理并发\033[0m"
+}
+
+function setup_backup() {
+    echo -e "\n========= 设置自动备份 =========\n"
+    
+    mkdir -p $WORKDIR/backups
+    
+    cat > $WORKDIR/backup.sh <<'EOF'
 #!/bin/bash
-# 3proxy Enterprise Startup Script
+BACKUP_DIR="/opt/xray-web/backups"
+DB_FILE="/opt/xray-web/xray.db"
+CONFIG_FILE="/usr/local/etc/xray/config.json"
+DATE=$(date +%Y%m%d_%H%M%S)
 
-# CPU亲和性设置 (使用前16个核心)
-CPUS="0-15"
+mkdir -p "$BACKUP_DIR"
 
-# 设置进程限制
-ulimit -n 10000000
-ulimit -u 4194304
-ulimit -s unlimited
-ulimit -l unlimited
+if [ ! -f "$DB_FILE" ] || [ ! -f "$CONFIG_FILE" ]; then
+    echo "Warning: Some files not found for backup"
+    exit 0
+fi
 
-# 优化运行时参数
-echo 2500000 > /sys/module/nf_conntrack/parameters/hashsize 2>/dev/null || true
-echo 10000000 > /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || true
-
-# 禁用 rp_filter
-for i in /proc/sys/net/ipv4/conf/*/rp_filter; do
-    echo 0 > $i 2>/dev/null || true
-done
-
-# ARP 优化
-for i in /proc/sys/net/ipv4/conf/*/arp_ignore; do
-    echo 1 > $i 2>/dev/null || true
-done
-for i in /proc/sys/net/ipv4/conf/*/arp_announce; do
-    echo 2 > $i 2>/dev/null || true
-done
-
-# 增加网络缓冲区
-echo 134217728 > /proc/sys/net/core/rmem_max
-echo 134217728 > /proc/sys/net/core/wmem_max
-
-# 清理旧连接
-conntrack -F 2>/dev/null || true
-
-# 生成配置
-cd /opt/3proxy-web && /opt/3proxy-web/venv/bin/python3 /opt/3proxy-web/config_gen.py
-
-# 启动 3proxy with CPU affinity
-exec taskset -c $CPUS /usr/local/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
+cd "$BACKUP_DIR"
+find "$BACKUP_DIR" -name "backup_*.tar.gz" -mtime +7 -delete 2>/dev/null || true
+tar -czf "backup_$DATE.tar.gz" "$DB_FILE" "$CONFIG_FILE" 2>/dev/null || true
+echo "Backup completed: backup_$DATE.tar.gz"
 EOF
     
-    chmod +x /usr/local/bin/3proxy-enterprise.sh
-    
-    # 创建日志轮转配置
-    cat > /etc/logrotate.d/3proxy <<EOF
-/var/log/3proxy/*.log {
-    daily
-    rotate 7
-    compress
-    delaycompress
-    missingok
-    notifempty
-    create 0640 root root
-    sharedscripts
-    postrotate
-        systemctl reload 3proxy-autostart >/dev/null 2>&1 || true
-    endscript
-}
-EOF
-    
-    echo -e "${GREEN}企业级系统优化完成！${NC}"
-    echo -e "${YELLOW}优化项目：${NC}"
-    echo "- 支持1000万并发连接"
-    echo "- 优化内存管理(128GB)"
-    echo "- CPU亲和性设置"
-    echo "- 高性能网络栈"
-    echo "- 自动日志管理"
+    chmod +x $WORKDIR/backup.sh
+    echo "0 2 * * * root $WORKDIR/backup.sh > /dev/null 2>&1" > /etc/cron.d/xray-backup
+    echo -e "\033[32m自动备份已设置（每天凌晨2点）\033[0m"
 }
 
-function install_dependencies() {
-    echo -e "\n${YELLOW}========= 安装依赖 =========${NC}\n"
+function install_xray() {
+    echo -e "\n========= 安装 Xray =========\n"
     
-    apt update
-    apt install -y \
-        build-essential \
-        git \
-        wget \
-        python3 \
-        python3-pip \
-        python3-venv \
-        python3-dev \
-        sqlite3 \
-        libsqlite3-dev \
-        cron \
-        logrotate \
-        conntrack \
-        htop \
-        iotop \
-        sysstat \
-        net-tools \
-        nginx \
-        redis-server \
-        supervisor
+    if [ -f "$XRAY_PATH" ]; then
+        echo "Xray 已安装，跳过..."
+        return
+    fi
+    
+    # 下载最新版 Xray
+    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+    
+    # 创建必要目录
+    mkdir -p /usr/local/etc/xray
+    mkdir -p $XRAY_LOG_DIR
+    
+    # 移动二进制文件到标准位置
+    if [ -f "/usr/local/bin/xray" ]; then
+        XRAY_PATH="/usr/local/bin/xray"
+    elif [ -f "/usr/bin/xray" ]; then
+        cp /usr/bin/xray /usr/local/bin/xray
+        XRAY_PATH="/usr/local/bin/xray"
+    fi
+    
+    chmod +x $XRAY_PATH
 }
 
-function install_3proxy_optimized() {
-    echo -e "\n${YELLOW}========= 编译优化版 3proxy =========${NC}\n"
-    
-    cd /tmp
-    rm -rf 3proxy
-    git clone --depth=1 https://github.com/z3APA3A/3proxy.git
-    cd 3proxy
-    
-    # 优化编译选项
-    cat > Makefile.Linux <<'EOF'
-CC = gcc
-CFLAGS = -O3 -march=native -mtune=native -fomit-frame-pointer -pipe -fno-strict-aliasing -pthread -DWITH_STD_MALLOC -DNDEBUG
-LDFLAGS = -O3 -pthread
-LIBS = -ldl -lpthread
-PLUGINS =
-
-include Makefile.inc
-EOF
-    
-    make -f Makefile.Linux -j$(nproc)
-    mkdir -p /usr/local/bin /usr/local/etc/3proxy /var/log/3proxy
-    cp bin/3proxy /usr/local/bin/
-    chmod +x /usr/local/bin/3proxy
+function uninstall_xray_web() {
+    systemctl stop xray-web 2>/dev/null || true
+    systemctl stop xray 2>/dev/null || true
+    systemctl disable xray-web 2>/dev/null || true
+    systemctl disable xray 2>/dev/null || true
+    rm -rf $WORKDIR
+    rm -f /etc/systemd/system/xray-web.service
+    rm -f /usr/local/bin/xray
+    rm -rf /usr/local/etc/xray
+    rm -f /etc/cron.d/xray-backup
+    systemctl daemon-reload
+    echo -e "\033[31mXray Web管理及全部相关内容已卸载。\033[0m"
 }
 
-function setup_web_management() {
-    echo -e "\n${YELLOW}========= 部署Web管理系统 =========${NC}\n"
-    
-    mkdir -p $WORKDIR/templates $WORKDIR/static $BACKUP_DIR
-    cd $WORKDIR
-    
-    # 创建虚拟环境
-    python3 -m venv venv
-    source venv/bin/activate
-    
-    # 安装Python依赖
-    pip install --upgrade pip
-    pip install \
-        flask==2.3.3 \
-        flask-login==0.6.2 \
-        flask-wtf==1.1.1 \
-        flask-caching==2.0.2 \
-        gunicorn==21.2.0 \
-        gevent==23.9.1 \
-        werkzeug==2.3.7 \
-        psutil==5.9.5 \
-        redis==5.0.0 \
-        sqlalchemy==2.0.21 \
-        alembic==1.12.0
-#!/bin/bash
-# 这个脚本应该添加到主安装脚本的 setup_web_management 函数中
+# 处理命令行参数
+case "$1" in
+    "uninstall")
+        uninstall_xray_web
+        exit 0
+        ;;
+    "reinstall")
+        uninstall_xray_web
+        echo -e "\033[32m正在重新安装...\033[0m"
+        ;;
+    "show")
+        show_credentials
+        exit 0
+        ;;
+esac
 
-# 在 setup_web_management 函数的末尾添加以下内容：
+PORT=$((RANDOM%55534+10000))
+ADMINUSER="admin$RANDOM"
+ADMINPASS=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
+API_PORT=$((PORT + 1))
 
-# ========== 创建前端模板 ==========
-cat > $WORKDIR/templates/login.html << 'EOF'
-<!DOCTYPE html>
-<html lang="zh">
-<head>
-    <meta charset="UTF-8">
-    <title>3proxy Enterprise - 登录</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        body {
-            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        .login-card {
-            backdrop-filter: blur(10px);
-            background: rgba(255, 255, 255, 0.95);
-            border: none;
-            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.2);
-            animation: slideIn 0.5s ease-out;
-            border-radius: 20px;
-            overflow: hidden;
-        }
-        @keyframes slideIn {
-            from {
-                opacity: 0;
-                transform: translateY(-30px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-        .form-control:focus {
-            border-color: #2a5298;
-            box-shadow: 0 0 0 0.2rem rgba(42, 82, 152, 0.25);
-        }
-        .btn-login {
-            background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-            border: none;
-            transition: transform 0.2s;
-            padding: 12px;
-            font-weight: 500;
-        }
-        .btn-login:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
-        }
-        .enterprise-badge {
-            background: #f8f9fa;
-            padding: 10px 20px;
-            text-align: center;
-            font-size: 0.9rem;
-            color: #666;
-            border-bottom: 1px solid #e9ecef;
-        }
-    </style>
-</head>
-<body>
-<div class="container" style="max-width:450px;">
-    <div class="card login-card">
-        <div class="enterprise-badge">
-            <strong>Enterprise Edition</strong> | High Performance Proxy Management
-        </div>
-        <div class="card-body p-5">
-            <h3 class="mb-4 text-center">3proxy 管理系统</h3>
-            <form method="post">
-                <div class="mb-3">
-                    <label class="form-label">用户名</label>
-                    <input type="text" class="form-control form-control-lg" name="username" autofocus required>
-                </div>
-                <div class="mb-3">
-                    <label class="form-label">密码</label>
-                    <input type="password" class="form-control form-control-lg" name="password" required>
-                </div>
-                <button class="btn btn-primary btn-login w-100 btn-lg mt-4" type="submit">登录系统</button>
-            </form>
-            {% with messages = get_flashed_messages(with_categories=true) %}
-              {% if messages %}
-                {% for category, message in messages %}
-                <div class="alert alert-{{ 'danger' if category == 'danger' else 'info' }} mt-3 mb-0">{{ message }}</div>
-                {% endfor %}
-              {% endif %}
-            {% endwith %}
-        </div>
-    </div>
-</div>
-</body>
-</html>
-EOF
+echo -e "\n========= 1. 自动安装依赖 =========\n"
 
-cat > $WORKDIR/templates/index.html << 'EOF'
-<!DOCTYPE html>
-<html lang="zh">
-<head>
-    <meta charset="utf-8">
-    <title>3proxy Enterprise Management</title>
-    <meta name="viewport" content="width=device-width,initial-scale=1">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
-    <style>
-        :root {
-            --primary-gradient: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
-            --success-gradient: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
-            --warning-gradient: linear-gradient(135deg, #f2994a 0%, #f2c94c 100%);
-            --danger-gradient: linear-gradient(135deg, #eb3349 0%, #f45c43 100%);
-            --info-gradient: linear-gradient(135deg, #2196f3 0%, #21cbf3 100%);
-            --card-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
-            --hover-shadow: 0 8px 25px rgba(0, 0, 0, 0.15);
-            --btn-radius: 8px;
-        }
-        
-        body {
-            background: #f5f7fa;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        }
-        
-        .navbar {
-            background: var(--primary-gradient);
-            box-shadow: var(--card-shadow);
-            padding: 1rem 0;
-        }
-        
-        .navbar-brand {
-            font-weight: 600;
-            font-size: 1.4rem;
-        }
-        
-        .enterprise-info {
-            background: rgba(255,255,255,0.1);
-            padding: 5px 15px;
-            border-radius: 20px;
-            font-size: 0.85rem;
-        }
-        
-        /* 系统监控样式 */
-        .system-monitor {
-            background: white;
-            border-radius: 15px;
-            padding: 25px;
-            margin-bottom: 25px;
-            box-shadow: var(--card-shadow);
-        }
-        
-        .stat-card {
-            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-            border-radius: 15px;
-            padding: 20px;
-            text-align: center;
-            transition: all 0.3s ease;
-            position: relative;
-            overflow: hidden;
-        }
-        
-        .stat-card::before {
-            content: '';
-            position: absolute;
-            top: -50%;
-            right: -50%;
-            width: 200%;
-            height: 200%;
-            background: radial-gradient(circle, rgba(255,255,255,0.3) 0%, transparent 70%);
-            transform: rotate(45deg);
-        }
-        
-        .stat-card:hover {
-            transform: translateY(-5px);
-            box-shadow: var(--hover-shadow);
-        }
-        
-        .stat-number {
-            font-size: 2.5rem;
-            font-weight: bold;
-            background: var(--primary-gradient);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            position: relative;
-            z-index: 1;
-        }
-        
-        .stat-label {
-            color: #666;
-            font-size: 0.9rem;
-            margin-top: 5px;
-        }
-        
-        .progress {
-            height: 10px;
-            border-radius: 5px;
-            overflow: hidden;
-            margin-top: 10px;
-        }
-        
-        .progress-bar {
-            background: var(--primary-gradient);
-            transition: width 0.6s ease;
-        }
-        
-        /* 标签页样式 */
-        .nav-tabs {
-            border: none;
-            background: white;
-            border-radius: 10px;
-            padding: 5px;
-            box-shadow: var(--card-shadow);
-            margin-bottom: 25px;
-        }
-        
-        .nav-tabs .nav-link {
-            border: none;
-            color: #666;
-            padding: 12px 24px;
-            border-radius: 8px;
-            transition: all 0.3s ease;
-            font-weight: 500;
-        }
-        
-        .nav-tabs .nav-link:hover {
-            background: #f8f9fa;
-            color: #2a5298;
-        }
-        
-        .nav-tabs .nav-link.active {
-            background: var(--primary-gradient);
-            color: white;
-        }
-        
-        /* 卡片样式 */
-        .card {
-            border: none;
-            border-radius: 15px;
-            box-shadow: var(--card-shadow);
-            transition: all 0.3s ease;
-            overflow: hidden;
-        }
-        
-        .card:hover {
-            transform: translateY(-5px);
-            box-shadow: var(--hover-shadow);
-        }
-        
-        /* 代理组卡片 */
-        .proxy-card {
-            cursor: pointer;
-            background: white;
-            border-radius: 15px;
-            padding: 20px;
-            margin-bottom: 15px;
-            position: relative;
-            overflow: hidden;
-            transition: all 0.3s ease;
-            border: 1px solid #e0e0e0;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-            user-select: none;
-        }
-        
-        .proxy-card::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 5px;
-            height: 100%;
-            background: var(--primary-gradient);
-            transition: width 0.3s ease;
-        }
-        
-        .proxy-card:hover {
-            transform: translateY(-3px);
-            box-shadow: var(--hover-shadow);
-            border-color: #2a5298;
-        }
-        
-        .proxy-card:hover::before {
-            width: 8px;
-        }
-        
-        .proxy-card.selected {
-            background: linear-gradient(to right, #f0f4ff, #ffffff);
-            border-color: #2a5298;
-            box-shadow: 0 0 0 2px rgba(42, 82, 152, 0.2);
-        }
-        
-        .proxy-card.selected::before {
-            width: 10px;
-        }
-        
-        /* 按钮样式 */
-        .btn {
-            border-radius: var(--btn-radius);
-            transition: all 0.2s ease;
-            font-weight: 500;
-            border: none;
-            position: relative;
-            overflow: hidden;
-        }
-        
-        .btn::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: -100%;
-            width: 100%;
-            height: 100%;
-            background: rgba(255, 255, 255, 0.2);
-            transition: left 0.3s ease;
-        }
-        
-        .btn:hover::before {
-            left: 100%;
-        }
-        
-        .btn-primary {
-            background: var(--primary-gradient);
-            box-shadow: 0 2px 10px rgba(30, 60, 114, 0.3);
-        }
-        
-        .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(30, 60, 114, 0.4);
-            background: var(--primary-gradient);
-        }
-        
-        .btn-success {
-            background: var(--success-gradient);
-            box-shadow: 0 2px 10px rgba(17, 153, 142, 0.3);
-        }
-        
-        .btn-warning {
-            background: var(--warning-gradient);
-            box-shadow: 0 2px 10px rgba(242, 153, 74, 0.3);
-            color: white;
-        }
-        
-        .btn-danger {
-            background: var(--danger-gradient);
-            box-shadow: 0 2px 10px rgba(235, 51, 73, 0.3);
-        }
-        
-        .btn-info {
-            background: var(--info-gradient);
-            box-shadow: 0 2px 10px rgba(33, 150, 243, 0.3);
-        }
-        
-        /* 徽章样式 */
-        .badge {
-            font-weight: 500;
-            padding: 5px 12px;
-            border-radius: 20px;
-            font-size: 0.85rem;
-        }
-        
-        /* 输入框样式 */
-        .form-control, .form-select {
-            border-radius: var(--btn-radius);
-            border: 1px solid #e0e0e0;
-            padding: 12px 15px;
-            transition: all 0.3s ease;
-        }
-        
-        .form-control:focus, .form-select:focus {
-            border-color: #2a5298;
-            box-shadow: 0 0 0 0.2rem rgba(42, 82, 152, 0.25);
-        }
-        
-        /* 模态框样式 */
-        .modal-dialog {
-            max-width: 1100px;
-        }
-        
-        .modal-content {
-            border-radius: 20px;
-            border: none;
-            overflow: hidden;
-        }
-        
-        .modal-header {
-            background: var(--primary-gradient);
-            color: white;
-            border-radius: 0;
-            border: none;
-            padding: 1.5rem;
-        }
-        
-        .modal-body {
-            padding: 0;
-            max-height: 85vh;
-            overflow-y: auto;
-        }
-        
-        /* Toast样式 */
-        .toast-container {
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            z-index: 1050;
-        }
-        
-        /* 加载动画 */
-        .loading-spinner {
-            display: none;
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            z-index: 9999;
-        }
-        
-        .loading-spinner.show {
-            display: block;
-        }
-        
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(20px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        
-        .animate-fade-in {
-            animation: fadeIn 0.5s ease-out;
-        }
-        
-        /* 深色模式 */
-        .dark-mode {
-            background: #1a1a2e;
-            color: #eee;
-        }
-        
-        .switch-mode {
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            z-index: 1000;
-            width: 50px;
-            height: 50px;
-            border-radius: 50%;
-            background: var(--primary-gradient);
-            color: white;
-            border: none;
-            box-shadow: var(--card-shadow);
-            transition: all 0.3s ease;
-        }
-        
-        /* 连接跟踪进度条 */
-        .conntrack-progress {
-            background: #e9ecef;
-            border-radius: 10px;
-            padding: 15px;
-            margin-top: 10px;
-        }
-        
-        .conntrack-info {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 5px;
-            font-size: 0.9rem;
-        }
-        
-        /* 性能优化：减少重绘 */
-        .stat-card, .proxy-card {
-            will-change: transform;
-        }
-    </style>
-</head>
-<body>
-    <!-- 导航栏 -->
-    <nav class="navbar navbar-dark">
-        <div class="container-fluid">
-            <span class="navbar-brand mb-0 h1">
-                <i class="bi bi-shield-check"></i> 3proxy Enterprise
-            </span>
-            <div class="d-flex align-items-center">
-                <span class="enterprise-info me-3">
-                    <i class="bi bi-server"></i> 128GB RAM | 32 Cores
-                </span>
-                <span class="text-white me-3" id="currentTime"></span>
-                <a href="/logout" class="btn btn-outline-light btn-sm">
-                    <i class="bi bi-box-arrow-right"></i> 退出
-                </a>
-            </div>
-        </div>
-    </nav>
+# 检测系统版本
+if [ -f /etc/debian_version ]; then
+    DEBIAN_VERSION=$(cat /etc/debian_version | cut -d. -f1)
+    echo "检测到 Debian $DEBIAN_VERSION"
+fi
 
-    <!-- 主内容区 -->
-    <div class="container-fluid px-4 py-4">
-        <!-- 系统监控 -->
-        <div class="system-monitor animate-fade-in">
-            <h5 class="mb-3"><i class="bi bi-speedometer2"></i> 系统监控</h5>
-            <div class="row g-3">
-                <div class="col-md-2">
-                    <div class="stat-card">
-                        <div class="stat-number" id="cpuUsage">0%</div>
-                        <div class="stat-label">CPU 使用率</div>
-                        <div class="progress">
-                            <div class="progress-bar" id="cpuProgress" style="width: 0%"></div>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-2">
-                    <div class="stat-card">
-                        <div class="stat-number" id="memUsage">0%</div>
-                        <div class="stat-label">内存使用率</div>
-                        <div class="progress">
-                            <div class="progress-bar" id="memProgress" style="width: 0%"></div>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-2">
-                    <div class="stat-card">
-                        <div class="stat-number" id="diskUsage">0%</div>
-                        <div class="stat-label">磁盘使用率</div>
-                        <div class="progress">
-                            <div class="progress-bar" id="diskProgress" style="width: 0%"></div>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-2">
-                    <div class="stat-card">
-                        <div class="stat-number" id="proxyStatus">
-                            <i class="bi bi-circle-fill text-danger"></i>
-                        </div>
-                        <div class="stat-label">3proxy 状态</div>
-                        <div class="mt-1">
-                            <small id="proxyInfo">未运行</small>
-                        </div>
-                    </div>
-                </div>
-                <div class="col-md-4">
-                    <div class="conntrack-progress">
-                        <div class="conntrack-info">
-                            <span>连接跟踪</span>
-                            <span><strong id="conntrackCount">0</strong> / <span id="conntrackMax">0</span></span>
-                        </div>
-                        <div class="progress">
-                            <div class="progress-bar" id="conntrackProgress" style="width: 0%"></div>
-                        </div>
-                        <small class="text-muted">使用率: <span id="conntrackPercent">0</span>%</small>
-                    </div>
-                </div>
-            </div>
-        </div>
+apt update
+apt install -y gcc make git wget curl python3 python3-pip python3-venv sqlite3 cron redis-server
 
-        <!-- 标签页 -->
-        <ul class="nav nav-tabs" id="mainTabs" role="tablist">
-            <li class="nav-item" role="presentation">
-                <button class="nav-link active" id="proxy-tab" data-bs-toggle="tab" data-bs-target="#proxy-pane">
-                    <i class="bi bi-hdd-network"></i> 代理管理
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="user-tab" data-bs-toggle="tab" data-bs-target="#user-pane">
-                    <i class="bi bi-people"></i> 用户管理
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="ip-tab" data-bs-toggle="tab" data-bs-target="#ip-pane">
-                    <i class="bi bi-diagram-3"></i> IP管理
-                </button>
-            </li>
-        </ul>
+# 启动Redis
+systemctl enable redis-server
+systemctl start redis-server
 
-        <!-- 标签内容 -->
-        <div class="tab-content">
-            <!-- 代理管理 -->
-            <div class="tab-pane fade show active animate-fade-in" id="proxy-pane" role="tabpanel">
-                <div class="row">
-                    <div class="col-lg-4">
-                        <div class="card mb-3">
-                            <div class="card-body">
-                                <h5 class="card-title"><i class="bi bi-plus-circle"></i> 批量添加代理</h5>
-                                <div class="alert alert-info">
-                                    <i class="bi bi-info-circle"></i> 
-                                    端口范围可留空，系统将从 5000-65534 中自动分配未使用的端口
-                                </div>
-                                <form id="batchAddForm">
-                                    <div class="mb-3">
-                                        <label class="form-label">IP范围 <span class="text-danger">*</span></label>
-                                        <input type="text" class="form-control" name="iprange" placeholder="192.168.1.2-254" required>
-                                    </div>
-                                    <div class="mb-3">
-                                        <label class="form-label">端口范围 <small class="text-muted">(可选)</small></label>
-                                        <input type="text" class="form-control" name="portrange" placeholder="20000-30000 或留空">
-                                    </div>
-                                    <div class="mb-3">
-                                        <label class="form-label">用户名前缀 <span class="text-danger">*</span></label>
-                                        <input type="text" class="form-control" name="userprefix" placeholder="user" required>
-                                    </div>
-                                    <button type="submit" class="btn btn-primary w-100">
-                                        <i class="bi bi-cloud-upload"></i> 批量添加
-                                    </button>
-                                </form>
-                            </div>
-                        </div>
+# 安装 Xray
+install_xray
 
-                        <div class="card">
-                            <div class="card-body">
-                                <h5 class="card-title"><i class="bi bi-file-text"></i> 手动批量添加</h5>
-                                <form id="manualBatchForm">
-                                    <div class="mb-3">
-                                        <textarea name="batchproxy" class="form-control" rows="6" 
-                                                  placeholder="每行一个：&#10;ip,端口&#10;或 ip:端口&#10;或 ip,端口,用户名,密码"></textarea>
-                                    </div>
-                                    <button type="submit" class="btn btn-primary w-100">
-                                        <i class="bi bi-upload"></i> 添加
-                                    </button>
-                                </form>
-                            </div>
-                        </div>
-                    </div>
+# 执行系统优化
+optimize_system
 
-                    <div class="col-lg-8">
-                        <div class="card">
-                            <div class="card-body">
-                                <div class="d-flex justify-content-between align-items-center mb-3">
-                                    <h5 class="card-title mb-0">
-                                        <i class="bi bi-list-ul"></i> 代理组列表
-                                    </h5>
-                                    <div>
-                                        <button class="btn btn-sm btn-outline-primary" id="refreshGroups">
-                                            <i class="bi bi-arrow-clockwise"></i> 刷新
-                                        </button>
-                                        <button class="btn btn-sm btn-outline-success" id="exportGroups">
-                                            <i class="bi bi-download"></i> 导出选中
-                                        </button>
-                                    </div>
-                                </div>
-                                
-                                <div id="proxyGroups" class="overflow-auto" style="max-height: 600px;">
-                                    <!-- 代理组卡片将在这里动态生成 -->
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
+echo -e "\n========= 2. 部署 Python Web 管理环境 =========\n"
+mkdir -p $WORKDIR/templates $WORKDIR/static $WORKDIR/backups
+cd $WORKDIR
 
-            <!-- 用户管理 -->
-            <div class="tab-pane fade" id="user-pane" role="tabpanel">
-                <div class="card animate-fade-in">
-                    <div class="card-body">
-                        <h5 class="card-title"><i class="bi bi-person-plus"></i> Web用户管理</h5>
-                        <form id="addUserForm" class="row g-3 mb-4">
-                            <div class="col-md-5">
-                                <input type="text" name="username" class="form-control" placeholder="用户名" required>
-                            </div>
-                            <div class="col-md-5">
-                                <input type="password" name="password" class="form-control" placeholder="密码" required>
-                            </div>
-                            <div class="col-md-2">
-                                <button type="submit" class="btn btn-primary w-100">添加</button>
-                            </div>
-                        </form>
-                        <div id="usersList">
-                            <!-- 用户列表将在这里动态生成 -->
-                        </div>
-                    </div>
-                </div>
-            </div>
+# 设置自动备份
+setup_backup
 
-            <!-- IP管理 -->
-            <div class="tab-pane fade" id="ip-pane" role="tabpanel">
-                <div class="card animate-fade-in">
-                    <div class="card-body">
-                        <h5 class="card-title"><i class="bi bi-diagram-3"></i> IP批量管理</h5>
-                        <div class="alert alert-warning">
-                            <i class="bi bi-exclamation-triangle"></i> 
-                            单次最多添加1000个IP地址，超大规模请分批添加
-                        </div>
-                        <form id="addIpForm" class="row g-3 mb-4">
-                            <div class="col-md-2">
-                                <input type="text" name="iface" class="form-control" placeholder="网卡" value="eth0">
-                            </div>
-                            <div class="col-md-5">
-                                <input type="text" name="ip_input" class="form-control" 
-                                       placeholder="192.168.1.2-254 或 192.168.1.2,192.168.1.3" required>
-                            </div>
-                            <div class="col-md-3">
-                                <select name="mode" class="form-select">
-                                    <option value="perm">永久</option>
-                                    <option value="temp">临时</option>
-                                </select>
-                            </div>
-                            <div class="col-md-2">
-                                <button type="submit" class="btn btn-primary w-100">添加</button>
-                            </div>
-                        </form>
-                        <div id="ipConfigsList">
-                            <!-- IP配置列表将在这里动态生成 -->
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
+python3 -m venv venv
+source venv/bin/activate
 
-    <!-- 代理详情模态框 -->
-    <div class="modal fade" id="proxyDetailModal" tabindex="-1">
-        <div class="modal-dialog modal-xl">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title">代理详情</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-                </div>
-                <div class="modal-body">
-                    <div id="proxyDetailContent">
-                        <!-- 代理详情将在这里动态生成 -->
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
+# 兼容Debian 11和12的pip安装
+if [ "$DEBIAN_VERSION" == "11" ]; then
+    pip install flask flask_login flask_wtf wtforms Werkzeug psutil redis celery gevent gunicorn requests grpcio grpcio-tools
+else
+    pip install flask flask_login flask_wtf wtforms Werkzeug psutil redis celery gevent gunicorn requests grpcio grpcio-tools --break-system-packages
+fi
 
-    <!-- Toast 通知容器 -->
-    <div class="toast-container"></div>
-
-    <!-- 加载动画 -->
-    <div class="loading-spinner">
-        <div class="spinner-border text-primary" style="width: 3rem; height: 3rem;">
-            <span class="visually-hidden">Loading...</span>
-        </div>
-    </div>
-
-    <!-- 深色模式切换 -->
-    <button class="switch-mode" id="darkModeToggle">
-        <i class="bi bi-moon-fill"></i>
-    </button>
-
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        // 复制之前版本的JavaScript代码
-        // 这里的代码与之前的版本基本相同，只需要添加连接跟踪监控的部分
-        
-        // 全局变量
-        let selectedGroups = new Set();
-        let selectedProxies = new Set();
-
-        // 工具函数
-        function showLoading() {
-            document.querySelector('.loading-spinner').classList.add('show');
-        }
-
-        function hideLoading() {
-            document.querySelector('.loading-spinner').classList.remove('show');
-        }
-
-        function showToast(message, type = 'success') {
-            const toast = document.createElement('div');
-            toast.className = `toast align-items-center text-white bg-${type} border-0`;
-            toast.innerHTML = `
-                <div class="d-flex">
-                    <div class="toast-body">${message}</div>
-                    <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
-                </div>
-            `;
-            document.querySelector('.toast-container').appendChild(toast);
-            const bsToast = new bootstrap.Toast(toast);
-            bsToast.show();
-            toast.addEventListener('hidden.bs.toast', () => toast.remove());
-        }
-
-        // 时间更新
-        function updateTime() {
-            const now = new Date();
-            document.getElementById('currentTime').textContent = 
-                now.toLocaleString('zh-CN', { hour12: false });
-        }
-        setInterval(updateTime, 1000);
-        updateTime();
-
-        // 系统监控（增强版）
-        function updateSystemStatus() {
-            fetch('/api/system_status')
-                .then(res => res.json())
-                .then(data => {
-                    // CPU
-                    document.getElementById('cpuUsage').textContent = data.cpu.toFixed(1) + '%';
-                    document.getElementById('cpuProgress').style.width = data.cpu + '%';
-                    
-                    // 内存
-                    document.getElementById('memUsage').textContent = data.memory.percent.toFixed(1) + '%';
-                    document.getElementById('memProgress').style.width = data.memory.percent + '%';
-                    
-                    // 磁盘
-                    document.getElementById('diskUsage').textContent = data.disk.percent.toFixed(1) + '%';
-                    document.getElementById('diskProgress').style.width = data.disk.percent + '%';
-                    
-                    // 3proxy状态
-                    const statusIcon = document.getElementById('proxyStatus');
-                    const statusInfo = document.getElementById('proxyInfo');
-                    if (data.proxy.running) {
-                        statusIcon.innerHTML = '<i class="bi bi-circle-fill text-success"></i>';
-                        statusInfo.innerHTML = `PID: ${data.proxy.pid}<br>连接: ${data.proxy.connections}<br>内存: ${data.proxy.memory.toFixed(0)}MB`;
-                    } else {
-                        statusIcon.innerHTML = '<i class="bi bi-circle-fill text-danger"></i>';
-                        statusInfo.textContent = '未运行';
-                    }
-                    
-                    // 连接跟踪
-                    if (data.conntrack) {
-                        document.getElementById('conntrackCount').textContent = data.conntrack.count.toLocaleString();
-                        document.getElementById('conntrackMax').textContent = data.conntrack.max.toLocaleString();
-                        document.getElementById('conntrackPercent').textContent = data.conntrack.percent.toFixed(1);
-                        document.getElementById('conntrackProgress').style.width = data.conntrack.percent + '%';
-                        
-                        // 根据使用率改变颜色
-                        const progress = document.getElementById('conntrackProgress');
-                        if (data.conntrack.percent > 80) {
-                            progress.className = 'progress-bar bg-danger';
-                        } else if (data.conntrack.percent > 60) {
-                            progress.className = 'progress-bar bg-warning';
-                        } else {
-                            progress.className = 'progress-bar';
-                        }
-                    }
-                })
-                .catch(err => {
-                    console.error('System status error:', err);
-                });
-        }
-        setInterval(updateSystemStatus, 5000);
-        updateSystemStatus();
-
-        // 其余的JavaScript代码与之前版本相同...
-        // 包括：loadProxyGroups, viewProxyGroup, 各种事件处理等
-        // 由于代码过长，这里省略，但应该从之前的版本完整复制过来
-        
-        // 初始化
-        window.addEventListener('DOMContentLoaded', () => {
-            // 恢复深色模式设置
-            if (localStorage.getItem('darkMode') === 'true') {
-                document.body.classList.add('dark-mode');
-                document.querySelector('#darkModeToggle i').className = 'bi bi-sun-fill';
-            }
-            
-            // 清空全局选择集合
-            selectedGroups.clear();
-            selectedProxies.clear();
-            
-            // 加载初始数据
-            loadProxyGroups();
-        });
-    </script>
-</body>
-</html>
-EOF
-
-# 创建错误页面
-cat > $WORKDIR/templates/404.html << 'EOF'
-<!DOCTYPE html>
-<html lang="zh">
-<head>
-    <meta charset="UTF-8">
-    <title>404 - 页面未找到</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-</head>
-<body class="bg-light">
-    <div class="container text-center" style="margin-top: 100px;">
-        <h1 class="display-1">404</h1>
-        <p class="fs-3"><span class="text-danger">Oops!</span> 页面未找到</p>
-        <p class="lead">您访问的页面不存在</p>
-        <a href="/" class="btn btn-primary">返回首页</a>
-    </div>
-</body>
-</html>
-EOF
-
-cat > $WORKDIR/templates/500.html << 'EOF'
-<!DOCTYPE html>
-<html lang="zh">
-<head>
-    <meta charset="UTF-8">
-    <title>500 - 服务器错误</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-</head>
-<body class="bg-light">
-    <div class="container text-center" style="margin-top: 100px;">
-        <h1 class="display-1">500</h1>
-        <p class="fs-3"><span class="text-danger">Oops!</span> 服务器错误</p>
-        <p class="lead">服务器遇到了一个错误，请稍后再试</p>
-        <a href="/" class="btn btn-primary">返回首页</a>
-    </div>
-</body>
-</html>
-EOF
-# ========== manage.py (高性能版本) ==========
-cat > $WORKDIR/manage.py << 'EOF'
-import os, sqlite3, random, string, re, collections, json, psutil, datetime, threading, time
+# ------------------- xray_manage.py (主后端) -------------------
+cat > $WORKDIR/xray_manage.py << 'EOF'
+import os, sqlite3, random, string, re, collections, json, psutil, datetime
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, Response
 from flask_login import LoginManager, login_user, login_required, logout_user, UserMixin
-from flask_caching import Cache
 from werkzeug.security import generate_password_hash, check_password_hash
-from werkzeug.middleware.proxy_fix import ProxyFix
 from io import BytesIO
-import logging
-from logging.handlers import RotatingFileHandler
-from concurrent.futures import ThreadPoolExecutor
-import sqlite3
+import threading
+import queue
+import time
+import subprocess
+from contextlib import contextmanager
+import redis
+import pickle
+import requests
 
-# 配置
-DB = '3proxy.db'
-SECRET = os.urandom(32).hex()
-PORT = int(os.environ.get('PORT', 9999))
-THREEPROXY_PATH = '/usr/local/bin/3proxy'
-PROXYCFG_PATH = '/usr/local/etc/3proxy/3proxy.cfg'
-LOGFILE = '/var/log/3proxy/3proxy.log'
-INTERFACES_FILE = '/etc/network/interfaces'
+DB = 'xray.db'
+SECRET = 'changeme_xray_secret_key'
+import sys
+PORT = int(sys.argv[1]) if len(sys.argv)>1 else 9999
+API_PORT = int(sys.argv[2]) if len(sys.argv)>2 else 10085
+XRAY_PATH = '/usr/local/bin/xray'
+XRAY_CONFIG = '/usr/local/etc/xray/config.json'
 
-# Flask应用配置
 app = Flask(__name__, template_folder='templates', static_folder='static')
 app.secret_key = SECRET
-app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
-
-# 缓存配置
-cache = Cache(app, config={
-    'CACHE_TYPE': 'RedisCache',
-    'CACHE_REDIS_HOST': 'localhost',
-    'CACHE_REDIS_PORT': 6379,
-    'CACHE_REDIS_DB': 0,
-    'CACHE_DEFAULT_TIMEOUT': 300
-})
-
-# 登录管理
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
 
-# 线程池
-executor = ThreadPoolExecutor(max_workers=10)
-
 # 数据库连接池
 class DatabasePool:
-    def __init__(self, database, max_connections=20):
-        self.database = database
-        self.max_connections = max_connections
-        self.connections = []
-        self.lock = threading.Lock()
-        self._create_connections()
+    def __init__(self, db_path, pool_size=20):
+        self.db_path = db_path
+        self.pool = queue.Queue(maxsize=pool_size)
+        for _ in range(pool_size):
+            conn = sqlite3.connect(db_path, check_same_thread=False)
+            conn.execute('PRAGMA journal_mode=WAL')
+            conn.execute('PRAGMA synchronous=NORMAL')
+            conn.execute('PRAGMA cache_size=10000')
+            conn.execute('PRAGMA temp_store=MEMORY')
+            self.pool.put(conn)
     
-    def _create_connections(self):
-        for _ in range(self.max_connections):
-            conn = sqlite3.connect(self.database, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            self.connections.append(conn)
-    
+    @contextmanager
     def get_connection(self):
-        with self.lock:
-            if self.connections:
-                return self.connections.pop()
-            else:
-                conn = sqlite3.connect(self.database, check_same_thread=False)
-                conn.row_factory = sqlite3.Row
-                return conn
-    
-    def return_connection(self, conn):
-        with self.lock:
-            if len(self.connections) < self.max_connections:
-                self.connections.append(conn)
-            else:
-                conn.close()
+        conn = self.pool.get()
+        try:
+            yield conn
+        finally:
+            self.pool.put(conn)
 
+# 初始化数据库池
 db_pool = DatabasePool(DB)
 
-def get_db():
-    return db_pool.get_connection()
+# Redis连接
+redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=False)
 
-def return_db(conn):
-    db_pool.return_connection(conn)
+# 任务队列
+task_queue = queue.Queue(maxsize=1000)
 
 def detect_nic():
-    """检测主网卡"""
-    try:
-        for nic, addrs in psutil.net_if_addrs().items():
-            if nic.startswith(('e', 'en')) and any(addr.family == 2 for addr in addrs):
-                return nic
-    except:
-        pass
+    for nic in os.listdir('/sys/class/net'):
+        if nic.startswith('e') or nic.startswith('en') or nic.startswith('eth'):
+            return nic
     return 'eth0'
 
 class User(UserMixin):
@@ -1361,53 +320,311 @@ class User(UserMixin):
         self.id = id
         self.username = username
         self.password_hash = password
-    
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
 
 @login_manager.user_loader
 def load_user(user_id):
-    db = get_db()
-    try:
-        cur = db.execute("SELECT id,username,password FROM users WHERE id=?", (user_id,))
+    with db_pool.get_connection() as conn:
+        cur = conn.execute("SELECT id,username,password FROM users WHERE id=?", (user_id,))
         row = cur.fetchone()
         if row:
             return User(row[0], row[1], row[2])
-    finally:
-        return_db(db)
     return None
 
-def reload_3proxy_async():
-    """异步重载3proxy配置"""
-    def _reload():
-        try:
-            os.system(f'python3 {os.path.join(os.path.dirname(__file__), "config_gen.py")}')
-            # 使用reload信号而不是重启
-            os.system('pkill -HUP 3proxy 2>/dev/null || true')
-            # 如果进程不存在，启动它
-            if os.system('pgrep 3proxy > /dev/null') != 0:
-                os.system(f'{THREEPROXY_PATH} {PROXYCFG_PATH} &')
-        except Exception as e:
-            app.logger.error(f"3proxy reload error: {e}")
-    
-    executor.submit(_reload)
+class XrayConfigManager:
+    def __init__(self):
+        self.api_port = API_PORT
+        
+    def generate_config(self, proxies):
+        """生成Xray配置"""
+        config = {
+            "log": {
+                "loglevel": "warning",
+                "access": "/var/log/xray/access.log",
+                "error": "/var/log/xray/error.log"
+            },
+            "api": {
+                "tag": "api",
+                "services": ["HandlerService", "StatsService"]
+            },
+            "stats": {},
+            "policy": {
+                "levels": {
+                    "0": {
+                        "statsUserUplink": True,
+                        "statsUserDownlink": True,
+                        "handshake": 4,
+                        "connIdle": 300,
+                        "uplinkOnly": 2,
+                        "downlinkOnly": 5,
+                        "bufferSize": 512
+                    }
+                },
+                "system": {
+                    "statsInboundUplink": True,
+                    "statsInboundDownlink": True,
+                    "statsOutboundUplink": True,
+                    "statsOutboundDownlink": True
+                }
+            },
+            "inbounds": [],
+            "outbounds": [
+                {
+                    "protocol": "freedom",
+                    "tag": "direct",
+                    "settings": {
+                        "domainStrategy": "UseIP"
+                    }
+                },
+                {
+                    "protocol": "blackhole",
+                    "tag": "blocked"
+                }
+            ],
+            "routing": {
+                "domainStrategy": "AsIs",
+                "rules": [
+                    {
+                        "type": "field",
+                        "inboundTag": ["api"],
+                        "outboundTag": "api"
+                    }
+                ]
+            },
+            "transport": {
+                "sockopt": {
+                    "tcpFastOpen": True,
+                    "tcpNoDelay": True,
+                    "tcpKeepAliveInterval": 30
+                }
+            }
+        }
+        
+        # 按IP和端口分组
+        grouped = collections.defaultdict(list)
+        for proxy in proxies:
+            key = (proxy['ip'], proxy['port'])
+            grouped[key].append({
+                'user': proxy['username'],
+                'pass': proxy['password']
+            })
+        
+        # 生成入站配置
+        for (ip, port), users in grouped.items():
+            inbound = {
+                "tag": f"http-{ip.replace('.', '_')}-{port}",
+                "protocol": "http",
+                "listen": ip,
+                "port": port,
+                "settings": {
+                    "accounts": users,
+                    "allowTransparent": False,
+                    "userLevel": 0,
+                    "timeout": 300
+                },
+                "sniffing": {
+                    "enabled": True,
+                    "destOverride": ["http", "tls"]
+                },
+                "streamSettings": {
+                    "sockopt": {
+                        "acceptProxyProtocol": False
+                    }
+                }
+            }
+            config['inbounds'].append(inbound)
+        
+        # API入站
+        config['inbounds'].append({
+            "tag": "api",
+            "protocol": "dokodemo-door",
+            "listen": "127.0.0.1",
+            "port": self.api_port,
+            "settings": {
+                "address": "127.0.0.1"
+            }
+        })
+        
+        return config
 
-# 路由处理器
+class XrayAPIClient:
+    def __init__(self, api_addr=f"127.0.0.1:{API_PORT}"):
+        self.api_url = f"http://{api_addr}"
+        
+    def get_stats(self, pattern="", reset=False):
+        """获取统计信息"""
+        try:
+            # 使用 Xray 的 API
+            cmd = [XRAY_PATH, "api", "statsquery", f"--server={self.api_url}"]
+            if pattern:
+                cmd.extend(["--pattern", pattern])
+            if reset:
+                cmd.append("--reset")
+                
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                return json.loads(result.stdout)
+            return None
+        except Exception as e:
+            print(f"API error: {e}")
+            return None
+
+xray_config_manager = XrayConfigManager()
+xray_api_client = XrayAPIClient()
+
+def reload_xray_async():
+    """异步重载Xray配置"""
+    task_queue.put(('reload', None))
+
+def generate_xray_config():
+    """生成Xray配置文件"""
+    with db_pool.get_connection() as conn:
+        cursor = conn.execute('''
+            SELECT ip, port, username, password 
+            FROM proxy 
+            WHERE enabled=1 
+            ORDER BY ip, port
+        ''')
+        
+        proxies = []
+        for ip, port, username, password in cursor:
+            proxies.append({
+                'ip': ip,
+                'port': port,
+                'username': username,
+                'password': password
+            })
+    
+    config = xray_config_manager.generate_config(proxies)
+    
+    # 确保目录存在
+    os.makedirs(os.path.dirname(XRAY_CONFIG), exist_ok=True)
+    
+    # 写入配置文件
+    with open(XRAY_CONFIG, 'w') as f:
+        json.dump(config, f, indent=2)
+    
+    return len(proxies)
+
+# 后台任务处理线程
+def task_worker():
+    """后台任务处理器"""
+    while True:
+        try:
+            task_type, data = task_queue.get(timeout=1)
+            if task_type == 'reload':
+                count = generate_xray_config()
+                # 重载Xray
+                result = subprocess.run(['systemctl', 'reload', 'xray'], capture_output=True)
+                if result.returncode != 0:
+                    # 如果reload失败，尝试restart
+                    subprocess.run(['systemctl', 'restart', 'xray'])
+                print(f"Reloaded Xray with {count} proxies")
+            task_queue.task_done()
+        except queue.Empty:
+            continue
+        except Exception as e:
+            print(f"Task worker error: {e}")
+
+# 启动后台任务线程
+worker_thread = threading.Thread(target=task_worker, daemon=True)
+worker_thread.start()
+
+# 定期流量统计线程
+def traffic_stats_worker():
+    """定期更新流量统计"""
+    while True:
+        try:
+            # 获取所有用户的流量统计
+            stats = xray_api_client.get_stats(pattern="user>>>", reset=False)
+            if stats:
+                # 更新到数据库
+                with db_pool.get_connection() as conn:
+                    for stat in stats.get('stat', []):
+                        # 解析统计名称: user>>>username>>>traffic>>>uplink/downlink
+                        parts = stat['name'].split('>>>')
+                        if len(parts) >= 4:
+                            username = parts[1]
+                            direction = parts[3]
+                            value = stat['value']
+                            
+                            if direction == 'uplink':
+                                conn.execute('''
+                                    UPDATE proxy 
+                                    SET traffic_up = ?, last_used = datetime('now')
+                                    WHERE username = ?
+                                ''', (value, username))
+                            elif direction == 'downlink':
+                                conn.execute('''
+                                    UPDATE proxy 
+                                    SET traffic_down = ?, last_used = datetime('now')
+                                    WHERE username = ?
+                                ''', (value, username))
+                    conn.commit()
+        except Exception as e:
+            print(f"Traffic stats error: {e}")
+        
+        time.sleep(30)  # 30秒更新一次
+
+# 启动流量统计线程
+traffic_thread = threading.Thread(target=traffic_stats_worker, daemon=True)
+traffic_thread.start()
+
+# 过期检查线程
+def expire_check_worker():
+    """检查并禁用过期代理"""
+    while True:
+        try:
+            with db_pool.get_connection() as conn:
+                # 禁用过期代理
+                result = conn.execute('''
+                    UPDATE proxy 
+                    SET enabled = 0 
+                    WHERE enabled = 1 
+                    AND expire_at IS NOT NULL 
+                    AND expire_at < datetime('now')
+                ''')
+                
+                if result.rowcount > 0:
+                    conn.commit()
+                    reload_xray_async()
+                    print(f"Disabled {result.rowcount} expired proxies")
+                
+                # 禁用超流量代理
+                result = conn.execute('''
+                    UPDATE proxy 
+                    SET enabled = 0 
+                    WHERE enabled = 1
+                    AND traffic_limit > 0 
+                    AND (traffic_up + traffic_down) >= traffic_limit
+                ''')
+                
+                if result.rowcount > 0:
+                    conn.commit()
+                    reload_xray_async()
+                    print(f"Disabled {result.rowcount} over-traffic proxies")
+                    
+        except Exception as e:
+            print(f"Expire check error: {e}")
+        
+        time.sleep(300)  # 5分钟检查一次
+
+# 启动过期检查线程
+expire_thread = threading.Thread(target=expire_check_worker, daemon=True)
+expire_thread.start()
+
 @app.route('/login', methods=['GET','POST'])
 def login():
     if request.method == 'POST':
-        db = get_db()
-        try:
-            cur = db.execute('SELECT id,username,password FROM users WHERE username=?', 
-                           (request.form['username'],))
+        with db_pool.get_connection() as conn:
+            cur = conn.execute('SELECT id,username,password FROM users WHERE username=?', (request.form['username'],))
             row = cur.fetchone()
             if row and check_password_hash(row[2], request.form['password']):
                 user = User(row[0], row[1], row[2])
-                login_user(user, remember=True)
+                login_user(user)
                 return redirect('/')
-            flash('登录失败', 'danger')
-        finally:
-            return_db(db)
+        flash('登录失败')
     return render_template('login.html')
 
 @app.route('/logout')
@@ -1416,415 +633,411 @@ def logout():
     logout_user()
     return redirect(url_for('login'))
 
-@app.route('/')
+@app.route('/', methods=['GET', 'POST'])
 @login_required
 def index():
     return render_template('index.html')
 
 @app.route('/api/proxy_groups')
 @login_required
-@cache.cached(timeout=60)
 def api_proxy_groups():
-    db = get_db()
-    try:
-        cursor = db.execute('''
-            SELECT ip, port, enabled, ip_range, port_range, user_prefix 
+    # 尝试从缓存获取
+    cached = redis_client.get('proxy_groups')
+    if cached:
+        return jsonify(pickle.loads(cached))
+    
+    with db_pool.get_connection() as conn:
+        proxies = conn.execute('''
+            SELECT id, ip, port, username, password, enabled, ip_range, port_range, 
+                   user_prefix, created_at, expire_at, traffic_up, traffic_down, 
+                   traffic_limit, last_used, notes
             FROM proxy 
             ORDER BY ip
-        ''')
-        proxies = cursor.fetchall()
+        ''').fetchall()
+    
+    groups = collections.defaultdict(list)
+    for p in proxies:
+        c_seg = '.'.join(p[1].split('.')[:3])
+        groups[c_seg].append({
+            'id': p[0],
+            'ip': p[1],
+            'port': p[2],
+            'username': p[3],
+            'password': p[4],
+            'enabled': p[5],
+            'ip_range': p[6],
+            'port_range': p[7],
+            'user_prefix': p[8],
+            'created_at': p[9],
+            'expire_at': p[10],
+            'traffic_up': p[11] or 0,
+            'traffic_down': p[12] or 0,
+            'traffic_limit': p[13] or 0,
+            'last_used': p[14],
+            'notes': p[15]
+        })
+    
+    result = []
+    for c_seg, proxies_list in groups.items():
+        enabled_count = sum(1 for p in proxies_list if p['enabled'])
+        total_traffic = sum(p['traffic_up'] + p['traffic_down'] for p in proxies_list)
         
-        groups = collections.defaultdict(list)
-        for p in proxies:
-            c_seg = '.'.join(p[0].split('.')[:3])
-            groups[c_seg].append({
-                'ip': p[0],
-                'port': p[1],
-                'enabled': p[2],
-                'ip_range': p[3],
-                'port_range': p[4],
-                'user_prefix': p[5]
-            })
+        # 计算IP和端口范围
+        ips = [p['ip'] for p in proxies_list]
+        ports = sorted([p['port'] for p in proxies_list])
         
-        # 获取流量统计
-        traffic_stats = get_traffic_stats()
-        
-        result = []
-        for c_seg, proxies in groups.items():
-            enabled_count = sum(1 for p in proxies if p['enabled'])
-            
-            # 计算实际范围
-            ips = [p['ip'] for p in proxies]
-            ports = sorted([p['port'] for p in proxies])
-            
-            if ips:
-                ip_nums = sorted([int(ip.split('.')[-1]) for ip in ips])
-                if len(ip_nums) > 1 and ip_nums[-1] - ip_nums[0] == len(ip_nums) - 1:
-                    actual_ip_range = f"{c_seg}.{ip_nums[0]}-{ip_nums[-1]}"
-                else:
-                    actual_ip_range = f"{c_seg}.x ({len(ip_nums)} IPs)"
+        if ips:
+            ip_nums = sorted([int(ip.split('.')[-1]) for ip in ips])
+            if len(ip_nums) > 1 and ip_nums[-1] - ip_nums[0] == len(ip_nums) - 1:
+                actual_ip_range = f"{c_seg}.{ip_nums[0]}-{ip_nums[-1]}"
             else:
-                actual_ip_range = ''
-            
-            if ports:
-                actual_port_range = f"{ports[0]}-{ports[-1]}" if len(ports) > 1 else str(ports[0])
-            else:
-                actual_port_range = ''
-            
-            result.append({
-                'c_segment': c_seg,
-                'total': len(proxies),
-                'enabled': enabled_count,
-                'traffic': traffic_stats.get(c_seg, 0),
-                'ip_range': actual_ip_range,
-                'port_range': actual_port_range,
-                'user_prefix': proxies[0]['user_prefix'] if proxies else ''
-            })
+                actual_ip_range = f"{c_seg}.x ({len(ip_nums)} IPs)"
+        else:
+            actual_ip_range = proxies_list[0]['ip_range'] if proxies_list else ''
         
-        return jsonify(sorted(result, key=lambda x: x['c_segment']))
-    finally:
-        return_db(db)
+        if ports:
+            if len(ports) == 1:
+                actual_port_range = str(ports[0])
+            else:
+                actual_port_range = f"{ports[0]}-{ports[-1]}"
+        else:
+            actual_port_range = proxies_list[0]['port_range'] if proxies_list else ''
+        
+        # 检查即将过期的代理（7天内）
+        expiring_soon = sum(1 for p in proxies_list 
+                          if p['expire_at'] and 
+                          p['expire_at'] > datetime.datetime.now().isoformat() and
+                          p['expire_at'] < (datetime.datetime.now() + datetime.timedelta(days=7)).isoformat())
+        
+        # 获取最早创建时间
+        created_dates = [p['created_at'] for p in proxies_list if p['created_at']]
+        earliest_created = min(created_dates) if created_dates else None
+        
+        result.append({
+            'c_segment': c_seg,
+            'total': len(proxies_list),
+            'enabled': enabled_count,
+            'traffic': round(total_traffic / 1024 / 1024, 2),  # MB
+            'ip_range': actual_ip_range,
+            'port_range': actual_port_range,
+            'user_prefix': proxies_list[0]['user_prefix'] if proxies_list else '',
+            'created_at': earliest_created,
+            'expiring_soon': expiring_soon
+        })
+    
+    sorted_result = sorted(result, key=lambda x: x['c_segment'])
+    # 缓存5秒
+    redis_client.setex('proxy_groups', 5, pickle.dumps(sorted_result))
+    
+    return jsonify(sorted_result)
 
 @app.route('/api/proxy_group/<c_segment>')
 @login_required
 def api_proxy_group_detail(c_segment):
-    db = get_db()
-    try:
-        cursor = db.execute('''
-            SELECT id,ip,port,username,password,enabled,ip_range,port_range,user_prefix 
+    with db_pool.get_connection() as conn:
+        proxies = conn.execute('''
+            SELECT id, ip, port, username, password, enabled, ip_range, port_range, 
+                   user_prefix, created_at, expire_at, traffic_up, traffic_down, 
+                   traffic_limit, last_used, notes
             FROM proxy 
             WHERE ip LIKE ? 
-            ORDER BY ip,port
-        ''', (c_segment + '.%',))
-        
-        proxies = cursor.fetchall()
-        result = []
-        for p in proxies:
-            result.append({
-                'id': p[0],
-                'ip': p[1],
-                'port': p[2],
-                'username': p[3],
-                'password': p[4],
-                'enabled': p[5],
-                'ip_range': p[6],
-                'port_range': p[7],
-                'user_prefix': p[8]
-            })
-        
-        return jsonify(result)
-    finally:
-        return_db(db)
+            ORDER BY ip, port
+        ''', (c_segment + '.%',)).fetchall()
+    
+    result = []
+    for p in proxies:
+        result.append({
+            'id': p[0],
+            'ip': p[1],
+            'port': p[2],
+            'username': p[3],
+            'password': p[4],
+            'enabled': p[5],
+            'ip_range': p[6],
+            'port_range': p[7],
+            'user_prefix': p[8],
+            'created_at': p[9],
+            'expire_at': p[10],
+            'traffic_up': p[11] or 0,
+            'traffic_down': p[12] or 0,
+            'traffic_limit': p[13] or 0,
+            'traffic_total': (p[11] or 0) + (p[12] or 0),
+            'last_used': p[14],
+            'notes': p[15]
+        })
+    
+    return jsonify(result)
 
 @app.route('/api/delete_group/<c_segment>', methods=['POST'])
 @login_required
 def api_delete_group(c_segment):
-    db = get_db()
-    try:
-        db.execute('DELETE FROM proxy WHERE ip LIKE ?', (c_segment + '.%',))
-        db.commit()
-        cache.clear()
-        reload_3proxy_async()
-        return jsonify({'status': 'success'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-    finally:
-        return_db(db)
+    with db_pool.get_connection() as conn:
+        conn.execute('DELETE FROM proxy WHERE ip LIKE ?', (c_segment + '.%',))
+        conn.commit()
+    redis_client.delete('proxy_groups')
+    reload_xray_async()
+    return jsonify({'status': 'success'})
 
 @app.route('/api/toggle_group/<c_segment>/<action>', methods=['POST'])
 @login_required
 def api_toggle_group(c_segment, action):
     enabled = 1 if action == 'enable' else 0
-    db = get_db()
-    try:
-        db.execute('UPDATE proxy SET enabled=? WHERE ip LIKE ?', (enabled, c_segment + '.%'))
-        db.commit()
-        cache.clear()
-        reload_3proxy_async()
-        return jsonify({'status': 'success'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-    finally:
-        return_db(db)
+    with db_pool.get_connection() as conn:
+        conn.execute('UPDATE proxy SET enabled=? WHERE ip LIKE ?', (enabled, c_segment + '.%'))
+        conn.commit()
+    redis_client.delete('proxy_groups')
+    reload_xray_async()
+    return jsonify({'status': 'success'})
+
+@app.route('/api/set_expire_group/<c_segment>', methods=['POST'])
+@login_required
+def api_set_expire_group(c_segment):
+    expire_date = request.form.get('expire_date')
+    with db_pool.get_connection() as conn:
+        conn.execute('UPDATE proxy SET expire_at=? WHERE ip LIKE ?', (expire_date, c_segment + '.%'))
+        conn.commit()
+    redis_client.delete('proxy_groups')
+    return jsonify({'status': 'success'})
 
 @app.route('/api/system_status')
 @login_required
 def api_system_status():
-    try:
-        cpu_percent = psutil.cpu_percent(interval=0.1)
-        memory = psutil.virtual_memory()
-        disk = psutil.disk_usage('/')
-        net_io = psutil.net_io_counters()
-        
-        # 获取3proxy进程信息
-        proxy_info = {'running': False, 'pid': None, 'memory': 0, 'connections': 0}
-        for proc in psutil.process_iter(['pid', 'name']):
-            if proc.info['name'] == '3proxy':
-                proxy_info['running'] = True
-                proxy_info['pid'] = proc.info['pid']
-                try:
-                    p = psutil.Process(proc.info['pid'])
-                    proxy_info['memory'] = p.memory_info().rss / 1024 / 1024  # MB
-                    proxy_info['connections'] = len(p.connections())
-                    proxy_info['cpu_percent'] = p.cpu_percent()
-                except:
-                    pass
-                break
-        
-        # 获取连接跟踪信息
-        conntrack_count = 0
-        conntrack_max = 0
-        try:
-            with open('/proc/sys/net/netfilter/nf_conntrack_count', 'r') as f:
-                conntrack_count = int(f.read().strip())
-            with open('/proc/sys/net/netfilter/nf_conntrack_max', 'r') as f:
-                conntrack_max = int(f.read().strip())
-        except:
-            pass
-        
-        return jsonify({
-            'cpu': cpu_percent,
-            'memory': {
-                'percent': memory.percent,
-                'used': memory.used / 1024 / 1024 / 1024,  # GB
-                'total': memory.total / 1024 / 1024 / 1024  # GB
-            },
-            'disk': {
-                'percent': disk.percent,
-                'used': disk.used / 1024 / 1024 / 1024,  # GB
-                'total': disk.total / 1024 / 1024 / 1024  # GB
-            },
-            'network': {
-                'bytes_sent': net_io.bytes_sent / 1024 / 1024,  # MB
-                'bytes_recv': net_io.bytes_recv / 1024 / 1024   # MB
-            },
-            'proxy': proxy_info,
-            'conntrack': {
-                'count': conntrack_count,
-                'max': conntrack_max,
-                'percent': (conntrack_count / conntrack_max * 100) if conntrack_max > 0 else 0
-            },
-            'timestamp': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        })
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+    # 尝试从缓存获取
+    cached = redis_client.get('system_status')
+    if cached:
+        return jsonify(pickle.loads(cached))
+    
+    cpu_percent = psutil.cpu_percent(interval=0.1)
+    memory = psutil.virtual_memory()
+    disk = psutil.disk_usage('/')
+    
+    # 获取网络流量
+    net_io = psutil.net_io_counters()
+    
+    # 获取Xray进程信息
+    xray_info = {'running': False, 'pid': None, 'memory': 0, 'connections': 0}
+    for proc in psutil.process_iter(['pid', 'name']):
+        if proc.info['name'] == 'xray':
+            xray_info['running'] = True
+            xray_info['pid'] = proc.info['pid']
+            try:
+                p = psutil.Process(proc.info['pid'])
+                xray_info['memory'] = p.memory_info().rss / 1024 / 1024  # MB
+                xray_info['connections'] = len(p.connections())
+            except:
+                pass
+            break
+    
+    result = {
+        'cpu': cpu_percent,
+        'memory': {
+            'percent': memory.percent,
+            'used': memory.used / 1024 / 1024 / 1024,  # GB
+            'total': memory.total / 1024 / 1024 / 1024  # GB
+        },
+        'disk': {
+            'percent': disk.percent,
+            'used': disk.used / 1024 / 1024 / 1024,  # GB
+            'total': disk.total / 1024 / 1024 / 1024  # GB
+        },
+        'network': {
+            'bytes_sent': net_io.bytes_sent / 1024 / 1024,  # MB
+            'bytes_recv': net_io.bytes_recv / 1024 / 1024   # MB
+        },
+        'xray': xray_info,
+        'timestamp': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    }
+    
+    # 缓存2秒
+    redis_client.setex('system_status', 2, pickle.dumps(result))
+    
+    return jsonify(result)
 
 @app.route('/api/users')
 @login_required
 def api_users():
-    db = get_db()
-    try:
-        users = db.execute('SELECT id,username FROM users').fetchall()
-        return jsonify([{'id': u[0], 'username': u[1]} for u in users])
-    finally:
-        return_db(db)
+    with db_pool.get_connection() as conn:
+        users = conn.execute('SELECT id,username FROM users').fetchall()
+    return jsonify([{'id': u[0], 'username': u[1]} for u in users])
 
 @app.route('/api/ip_configs')
 @login_required
 def api_ip_configs():
-    db = get_db()
-    try:
-        configs = db.execute('SELECT id,ip_str,type,iface,created FROM ip_config ORDER BY id DESC').fetchall()
-        return jsonify([{
-            'id': c[0],
-            'ip_str': c[1],
-            'type': c[2],
-            'iface': c[3],
-            'created': c[4]
-        } for c in configs])
-    finally:
-        return_db(db)
-
-@app.route('/addproxy', methods=['POST'])
-@login_required
-def addproxy():
-    try:
-        ip = request.form['ip']
-        port = int(request.form['port'])
-        username = request.form['username']
-        password = request.form['password'] or ''.join(random.choices(string.ascii_letters+string.digits, k=16))
-        user_prefix = request.form.get('userprefix','')
-        
-        db = get_db()
-        try:
-            db.execute('''INSERT INTO proxy 
-                         (ip, port, username, password, enabled, ip_range, port_range, user_prefix) 
-                         VALUES (?,?,?,?,1,?,?,?)''', 
-                      (ip, port, username, password, ip, str(port), user_prefix))
-            db.commit()
-            cache.clear()
-            reload_3proxy_async()
-            return jsonify({'status': 'success', 'message': '已添加代理'})
-        finally:
-            return_db(db)
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 400
+    with db_pool.get_connection() as conn:
+        configs = conn.execute('SELECT id,ip_str,type,iface,created FROM ip_config ORDER BY id DESC').fetchall()
+    return jsonify([{
+        'id': c[0],
+        'ip_str': c[1],
+        'type': c[2],
+        'iface': c[3],
+        'created': c[4]
+    } for c in configs])
 
 @app.route('/batchaddproxy', methods=['POST'])
 @login_required
 def batchaddproxy():
-    try:
-        iprange = request.form.get('iprange')
-        portrange = request.form.get('portrange')
-        userprefix = request.form.get('userprefix')
-        
-        if iprange and userprefix:
-            # 解析IP范围
-            m = re.match(r"(\d+\.\d+\.\d+\.)(\d+)-(\d+)", iprange.strip())
-            if not m:
-                return jsonify({'status': 'error', 'message': 'IP范围格式错误'})
-            
-            ip_base = m.group(1)
-            start = int(m.group(2))
-            end = int(m.group(3))
-            
-            if end - start > 1000:
-                return jsonify({'status': 'error', 'message': '单次最多添加1000个IP'})
-            
-            ips = [f"{ip_base}{i}" for i in range(start, end+1)]
-            
-            # 获取已使用的端口
-            db = get_db()
-            try:
-                cursor = db.execute('SELECT port FROM proxy')
-                used_ports = set(row[0] for row in cursor)
-                
-                # 解析或生成端口范围
-                if portrange and portrange.strip():
-                    m2 = re.match(r"(\d+)-(\d+)", portrange.strip())
-                    if not m2:
-                        return jsonify({'status': 'error', 'message': '端口范围格式错误'})
-                    port_start = int(m2.group(1))
-                    port_end = int(m2.group(2))
-                    if port_start < 1024 or port_end > 65535:
-                        return jsonify({'status': 'error', 'message': '端口范围应在1024-65535之间'})
-                else:
-                    port_start = 5000
-                    port_end = 65534
-                
-                # 生成可用端口列表
-                all_ports = [p for p in range(port_start, port_end+1) if p not in used_ports]
-                if len(all_ports) < len(ips):
-                    return jsonify({'status': 'error', 'message': f'可用端口不足，需要{len(ips)}个，但只有{len(all_ports)}个可用'})
-                
-                # 随机选择端口
-                random.shuffle(all_ports)
-                selected_ports = sorted(all_ports[:len(ips)])
-                
-                # 批量插入
-                count = 0
-                batch_data = []
-                for i, ip in enumerate(ips):
-                    port = selected_ports[i]
-                    uname = userprefix + ''.join(random.choices(string.ascii_lowercase+string.digits, k=4))
-                    pw = ''.join(random.choices(string.ascii_letters+string.digits, k=16))
-                    batch_data.append((ip, port, uname, pw, 1, iprange, f"{selected_ports[0]}-{selected_ports[-1]}", userprefix))
-                    count += 1
-                
-                # 使用事务批量插入
-                db.executemany('''INSERT INTO proxy 
-                                (ip, port, username, password, enabled, ip_range, port_range, user_prefix) 
-                                VALUES (?,?,?,?,?,?,?,?)''', batch_data)
-                db.commit()
-                cache.clear()
-                reload_3proxy_async()
-                
-                return jsonify({'status': 'success', 'message': f'批量添加完成，共添加{count}条代理'})
-            finally:
-                return_db(db)
-        
-        # 处理手动批量添加
-        batch_data = request.form.get('batchproxy','').strip().splitlines()
-        if not batch_data:
-            return jsonify({'status': 'error', 'message': '请输入代理数据'})
-        
-        db = get_db()
-        try:
-            count = 0
-            insert_data = []
-            
-            for line in batch_data[:1000]:  # 限制1000条
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-                
-                if ',' in line:
-                    parts = [x.strip() for x in line.split(',')]
-                elif ':' in line:
-                    parts = [x.strip() for x in line.split(':')]
-                else:
-                    parts = re.split(r'\s+', line)
-                
-                if len(parts) >= 2:
-                    ip = parts[0]
-                    try:
-                        port = int(parts[1])
-                    except:
-                        continue
-                    
-                    if len(parts) >= 3:
-                        username = parts[2]
-                    else:
-                        username = f"user{count:04d}"
-                    
-                    if len(parts) >= 4:
-                        password = parts[3]
-                    else:
-                        password = ''.join(random.choices(string.ascii_letters+string.digits, k=16))
-                    
-                    insert_data.append((ip, port, username, password, 1, ip, str(port), username))
-                    count += 1
-            
-            if insert_data:
-                db.executemany('''INSERT INTO proxy 
-                                (ip, port, username, password, enabled, ip_range, port_range, user_prefix) 
-                                VALUES (?,?,?,?,?,?,?,?)''', insert_data)
-                db.commit()
-                cache.clear()
-                reload_3proxy_async()
-            
-            return jsonify({'status': 'success', 'message': f'批量添加完成，共添加{count}条代理'})
-        finally:
-            return_db(db)
+    iprange = request.form.get('iprange')
+    portrange = request.form.get('portrange')
+    userprefix = request.form.get('userprefix')
+    expire_days = request.form.get('expire_days', type=int)
+    traffic_limit_gb = request.form.get('traffic_limit', type=float)
+    notes = request.form.get('notes', '')
     
-    except Exception as e:
-        app.logger.error(f"Batch add error: {e}")
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+    if iprange and userprefix:
+        # 解析IP范围
+        m = re.match(r"(\d+\.\d+\.\d+\.)(\d+)-(\d+)", iprange.strip())
+        if not m:
+            return jsonify({'status': 'error', 'message': 'IP范围格式错误'})
+        ip_base = m.group(1)
+        start = int(m.group(2))
+        end = int(m.group(3))
+        ips = [f"{ip_base}{i}" for i in range(start, end+1)]
+        
+        with db_pool.get_connection() as conn:
+            # 获取已使用的端口
+            used_ports = set()
+            cursor = conn.execute('SELECT port FROM proxy')
+            for row in cursor:
+                used_ports.add(row[0])
+            
+            # 解析或生成端口范围
+            if portrange and portrange.strip():
+                m2 = re.match(r"(\d+)-(\d+)", portrange.strip())
+                if not m2:
+                    return jsonify({'status': 'error', 'message': '端口范围格式错误'})
+                port_start = int(m2.group(1))
+                port_end = int(m2.group(2))
+                if port_start < 1024 or port_end > 65535:
+                    return jsonify({'status': 'error', 'message': '端口范围应在1024-65535之间'})
+            else:
+                port_start = 10000
+                port_end = 65534
+            
+            # 生成可用端口列表
+            all_ports = [p for p in range(port_start, port_end+1) if p not in used_ports]
+            if len(all_ports) < len(ips):
+                return jsonify({'status': 'error', 'message': f'可用端口不足，需要{len(ips)}个端口，但只有{len(all_ports)}个可用'})
+            
+            # 随机选择端口
+            import random
+            random.shuffle(all_ports)
+            selected_ports = all_ports[:len(ips)]
+            selected_ports.sort()
+            
+            # 计算实际使用的端口范围
+            actual_port_range = f"{selected_ports[0]}-{selected_ports[-1]}"
+            
+            # 计算过期时间
+            expire_at = None
+            if expire_days and expire_days > 0:
+                expire_at = (datetime.datetime.now() + datetime.timedelta(days=expire_days)).isoformat()
+            
+            # 计算流量限制（转换为字节）
+            traffic_limit = 0
+            if traffic_limit_gb and traffic_limit_gb > 0:
+                traffic_limit = int(traffic_limit_gb * 1024 * 1024 * 1024)
+            
+            # 批量插入数据
+            batch_data = []
+            for i, ip in enumerate(ips):
+                port = selected_ports[i]
+                uname = userprefix + ''.join(random.choices(string.ascii_lowercase+string.digits, k=4))
+                pw = ''.join(random.choices(string.ascii_letters+string.digits, k=12))
+                batch_data.append((
+                    ip, port, uname, pw, 1, iprange, actual_port_range, userprefix,
+                    datetime.datetime.now().isoformat(), expire_at, 0, 0, traffic_limit, notes
+                ))
+            
+            # 批量插入
+            conn.executemany('''
+                INSERT INTO proxy 
+                (ip, port, username, password, enabled, ip_range, port_range, user_prefix,
+                 created_at, expire_at, traffic_up, traffic_down, traffic_limit, notes) 
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ''', batch_data)
+            conn.commit()
+            count = len(batch_data)
+        
+        redis_client.delete('proxy_groups')
+        reload_xray_async()
+        return jsonify({'status': 'success', 'message': f'批量范围添加完成，共添加{count}条代理，端口范围：{actual_port_range}'})
+    
+    # 处理手动批量添加
+    batch_data = request.form.get('batchproxy','').strip().splitlines()
+    
+    with db_pool.get_connection() as conn:
+        count = 0
+        base_idx = conn.execute("SELECT MAX(id) FROM proxy").fetchone()[0]
+        if base_idx is None:
+            base_idx = 0
+        idx = 1
+        
+        batch_insert = []
+        for line in batch_data:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            if ',' in line:
+                parts = [x.strip() for x in line.split(',')]
+            elif ':' in line:
+                parts = [x.strip() for x in line.split(':')]
+            else:
+                parts = re.split(r'\s+', line)
+            
+            if len(parts) == 2:
+                ip, port = parts
+                username = f"user{base_idx + idx:03d}"
+                password = ''.join(random.choices(string.ascii_letters+string.digits, k=12))
+                idx += 1
+            elif len(parts) == 3:
+                ip, port, username = parts
+                password = ''.join(random.choices(string.ascii_letters+string.digits, k=12))
+            elif len(parts) >= 4:
+                ip, port, username, password = parts[:4]
+            else:
+                continue
+            
+            batch_insert.append((
+                ip, int(port), username, password, 1, ip, port, username,
+                datetime.datetime.now().isoformat(), None, 0, 0, 0, ''
+            ))
+            count += 1
+        
+        if batch_insert:
+            conn.executemany('''
+                INSERT INTO proxy 
+                (ip, port, username, password, enabled, ip_range, port_range, user_prefix,
+                 created_at, expire_at, traffic_up, traffic_down, traffic_limit, notes) 
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ''', batch_insert)
+            conn.commit()
+    
+    if count:
+        redis_client.delete('proxy_groups')
+        reload_xray_async()
+    
+    return jsonify({'status': 'success', 'message': f'批量添加完成，共添加{count}条代理'})
 
 @app.route('/delproxy/<int:pid>')
 @login_required
 def delproxy(pid):
-    db = get_db()
-    try:
-        db.execute('DELETE FROM proxy WHERE id=?', (pid,))
-        db.commit()
-        cache.clear()
-        reload_3proxy_async()
-        return jsonify({'status': 'success'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-    finally:
-        return_db(db)
+    with db_pool.get_connection() as conn:
+        conn.execute('DELETE FROM proxy WHERE id=?', (pid,))
+        conn.commit()
+    redis_client.delete('proxy_groups')
+    reload_xray_async()
+    return jsonify({'status': 'success'})
 
 @app.route('/batchdelproxy', methods=['POST'])
 @login_required
 def batchdelproxy():
     ids = request.form.getlist('ids')
-    if not ids:
-        return jsonify({'status': 'error', 'message': '未选择代理'}), 400
-    
-    db = get_db()
-    try:
-        placeholders = ','.join('?' * len(ids))
-        db.execute(f'DELETE FROM proxy WHERE id IN ({placeholders})', ids)
-        db.commit()
-        cache.clear()
-        reload_3proxy_async()
-        return jsonify({'status': 'success', 'message': f'已批量删除 {len(ids)} 条代理'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-    finally:
-        return_db(db)
+    with db_pool.get_connection() as conn:
+        conn.executemany('DELETE FROM proxy WHERE id=?', [(i,) for i in ids])
+        conn.commit()
+    redis_client.delete('proxy_groups')
+    reload_xray_async()
+    return jsonify({'status': 'success', 'message': f'已批量删除 {len(ids)} 条代理'})
 
 @app.route('/batch_enable', methods=['POST'])
 @login_required
@@ -1832,19 +1045,12 @@ def batch_enable():
     ids = request.form.getlist('ids[]')
     if not ids:
         return jsonify({'status': 'error', 'message': 'No proxies selected'}), 400
-    
-    db = get_db()
-    try:
-        placeholders = ','.join('?' * len(ids))
-        db.execute(f'UPDATE proxy SET enabled=1 WHERE id IN ({placeholders})', ids)
-        db.commit()
-        cache.clear()
-        reload_3proxy_async()
-        return jsonify({'status': 'success'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-    finally:
-        return_db(db)
+    with db_pool.get_connection() as conn:
+        conn.executemany('UPDATE proxy SET enabled=1 WHERE id=?', [(i,) for i in ids])
+        conn.commit()
+    redis_client.delete('proxy_groups')
+    reload_xray_async()
+    return jsonify({'status': 'success'})
 
 @app.route('/batch_disable', methods=['POST'])
 @login_required
@@ -1852,459 +1058,322 @@ def batch_disable():
     ids = request.form.getlist('ids[]')
     if not ids:
         return jsonify({'status': 'error', 'message': 'No proxies selected'}), 400
-    
-    db = get_db()
-    try:
-        placeholders = ','.join('?' * len(ids))
-        db.execute(f'UPDATE proxy SET enabled=0 WHERE id IN ({placeholders})', ids)
-        db.commit()
-        cache.clear()
-        reload_3proxy_async()
-        return jsonify({'status': 'success'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-    finally:
-        return_db(db)
+    with db_pool.get_connection() as conn:
+        conn.executemany('UPDATE proxy SET enabled=0 WHERE id=?', [(i,) for i in ids])
+        conn.commit()
+    redis_client.delete('proxy_groups')
+    reload_xray_async()
+    return jsonify({'status': 'success'})
 
 @app.route('/enableproxy/<int:pid>')
 @login_required
 def enableproxy(pid):
-    db = get_db()
-    try:
-        db.execute('UPDATE proxy SET enabled=1 WHERE id=?', (pid,))
-        db.commit()
-        cache.clear()
-        reload_3proxy_async()
-        return jsonify({'status': 'success'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-    finally:
-        return_db(db)
+    with db_pool.get_connection() as conn:
+        conn.execute('UPDATE proxy SET enabled=1 WHERE id=?', (pid,))
+        conn.commit()
+    redis_client.delete('proxy_groups')
+    reload_xray_async()
+    return jsonify({'status': 'success'})
 
 @app.route('/disableproxy/<int:pid>')
 @login_required
 def disableproxy(pid):
-    db = get_db()
-    try:
-        db.execute('UPDATE proxy SET enabled=0 WHERE id=?', (pid,))
-        db.commit()
-        cache.clear()
-        reload_3proxy_async()
-        return jsonify({'status': 'success'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-    finally:
-        return_db(db)
+    with db_pool.get_connection() as conn:
+        conn.execute('UPDATE proxy SET enabled=0 WHERE id=?', (pid,))
+        conn.commit()
+    redis_client.delete('proxy_groups')
+    reload_xray_async()
+    return jsonify({'status': 'success'})
 
 @app.route('/adduser', methods=['POST'])
 @login_required
 def adduser():
     username = request.form['username']
     password = generate_password_hash(request.form['password'])
-    
-    db = get_db()
     try:
-        db.execute('INSERT INTO users (username, password) VALUES (?,?)', (username, password))
-        db.commit()
+        with db_pool.get_connection() as conn:
+            conn.execute('INSERT INTO users (username, password) VALUES (?,?)', (username, password))
+            conn.commit()
         return jsonify({'status': 'success', 'message': '已添加用户'})
-    except sqlite3.IntegrityError:
+    except:
         return jsonify({'status': 'error', 'message': '用户名已存在'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-    finally:
-        return_db(db)
 
 @app.route('/deluser/<int:uid>')
 @login_required
 def deluser(uid):
-    db = get_db()
-    try:
-        db.execute('DELETE FROM users WHERE id=?', (uid,))
-        db.commit()
-        return jsonify({'status': 'success'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
-    finally:
-        return_db(db)
+    with db_pool.get_connection() as conn:
+        conn.execute('DELETE FROM users WHERE id=?', (uid,))
+        conn.commit()
+    return jsonify({'status': 'success'})
 
 @app.route('/export_selected', methods=['POST'])
 @login_required
 def export_selected():
     csegs = request.form.getlist('csegs[]')
+    export_format = request.form.get('format', 'txt')
+    
     if not csegs:
         return jsonify({'status': 'error', 'message': '未选择C段'}), 400
     
-    db = get_db()
-    try:
-        output = ""
-        prefix_for_filename = None
-        
-        for cseg in csegs:
-            cursor = db.execute("""SELECT ip,port,username,password,user_prefix 
-                               FROM proxy 
-                               WHERE ip LIKE ? 
-                               ORDER BY ip,port""", (cseg + '.%',))
-            rows = cursor.fetchall()
-            
-            if not prefix_for_filename and rows:
+    with db_pool.get_connection() as conn:
+        if export_format == 'json':
+            # JSON格式导出
+            result = []
+            for cseg in csegs:
+                rows = conn.execute('''
+                    SELECT ip, port, username, password, expire_at, traffic_limit, notes
+                    FROM proxy WHERE ip LIKE ? ORDER BY ip, port
+                ''', (cseg + '.%',)).fetchall()
+                
                 for row in rows:
-                    if row[4]:
-                        prefix_for_filename = row[4]
-                        break
+                    result.append({
+                        'proxy': f'http://{row[2]}:{row[3]}@{row[0]}:{row[1]}',
+                        'expire_at': row[4],
+                        'traffic_limit_gb': round(row[5] / 1024 / 1024 / 1024, 2) if row[5] else 0,
+                        'notes': row[6]
+                    })
             
-            for ip, port, user, pw, _ in rows:
-                output += f"{ip}:{port}:{user}:{pw}\n"
-        
-        if not prefix_for_filename:
-            prefix_for_filename = 'proxy'
-        
-        cseg_names = [cseg.replace('.', '_') for cseg in sorted(csegs)]
-        filename = f"{prefix_for_filename}_{'_'.join(cseg_names)}.txt"
-        
-        return Response(
-            output,
-            mimetype='text/plain',
-            headers={
-                'Content-Disposition': f'attachment; filename="{filename}"',
-                'Content-Type': 'text/plain; charset=utf-8'
-            }
-        )
-    finally:
-        return_db(db)
+            return jsonify(result)
+        else:
+            # 文本格式导出
+            output = ""
+            prefix_for_filename = None
+            
+            for cseg in csegs:
+                rows = conn.execute('''
+                    SELECT ip, port, username, password, user_prefix 
+                    FROM proxy WHERE ip LIKE ? ORDER BY ip, port
+                ''', (cseg + '.%',)).fetchall()
+                
+                if not prefix_for_filename and rows:
+                    for row in rows:
+                        if row[4]:
+                            prefix_for_filename = row[4]
+                            break
+                
+                for ip, port, user, pw, _ in rows:
+                    output += f"{ip}:{port}:{user}:{pw}\n"
+            
+            if not prefix_for_filename:
+                prefix_for_filename = 'proxy'
+            
+            cseg_names = []
+            for cseg in sorted(csegs):
+                cseg_names.append(cseg.replace('.', '_'))
+            
+            filename = f"{prefix_for_filename}_{'_'.join(cseg_names)}.txt"
+            
+            mem = BytesIO()
+            mem.write(output.encode('utf-8'))
+            mem.seek(0)
+            
+            return Response(
+                mem.read(), 
+                mimetype='text/plain', 
+                headers={
+                    'Content-Disposition': f'attachment; filename="{filename}"',
+                    'Content-Type': 'text/plain; charset=utf-8'
+                }
+            )
 
-@app.route('/export_selected_proxy', methods=['POST'])
+@app.route('/api/usage_report')
 @login_required
-def export_selected_proxy():
-    ids = request.form.getlist('ids[]')
-    if not ids:
-        return jsonify({'status': 'error', 'message': 'No proxies selected'}), 400
+def api_usage_report():
+    with db_pool.get_connection() as conn:
+        # 按C段统计使用情况
+        report = conn.execute('''
+            SELECT 
+                substr(ip, 1, instr(ip||'.', '.', 1, 3)-1) as c_segment,
+                COUNT(*) as total,
+                COUNT(CASE WHEN enabled = 1 THEN 1 END) as active,
+                COUNT(CASE WHEN last_used > datetime('now', '-1 day') THEN 1 END) as used_24h,
+                SUM(traffic_up + traffic_down) as total_traffic,
+                MIN(created_at) as first_created,
+                COUNT(CASE WHEN expire_at < datetime('now', '+7 day') THEN 1 END) as expiring_soon,
+                COUNT(CASE WHEN traffic_limit > 0 AND (traffic_up + traffic_down) > traffic_limit * 0.8 THEN 1 END) as near_limit
+            FROM proxy
+            GROUP BY c_segment
+            ORDER BY total_traffic DESC
+        ''').fetchall()
     
-    db = get_db()
-    try:
-        placeholders = ','.join('?' * len(ids))
-        cursor = db.execute(f'''SELECT ip, port, username, password 
-                            FROM proxy 
-                            WHERE id IN ({placeholders})''', ids)
-        rows = cursor.fetchall()
-        
-        output = ''
-        for ip, port, user, pw in rows:
-            output += f"{ip}:{port}:{user}:{pw}\n"
-        
-        filename = f"proxy_export_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
-        
-        return Response(
-            output,
-            mimetype='text/plain',
-            headers={
-                'Content-Disposition': f'attachment; filename="{filename}"',
-                'Content-Type': 'text/plain; charset=utf-8'
-            }
-        )
-    finally:
-        return_db(db)
+    return jsonify([{
+        'c_segment': r[0],
+        'total': r[1],
+        'active': r[2],
+        'used_24h': r[3],
+        'total_traffic_gb': round(r[4] / 1024 / 1024 / 1024, 2) if r[4] else 0,
+        'first_created': r[5],
+        'expiring_soon': r[6],
+        'near_limit': r[7]
+    } for r in report])
 
 @app.route('/add_ip_config', methods=['POST'])
 @login_required
 def add_ip_config():
-    try:
-        ip_input = request.form.get('ip_input', '').strip()
-        iface = request.form.get('iface', detect_nic())
-        mode = request.form.get('mode', 'perm')
-        
-        # 解析IP输入
-        pattern_full = re.match(r"^(\d+\.\d+\.\d+\.)(\d+)-(\d+)$", ip_input)
-        pattern_short = re.match(r"^(\d+)-(\d+)$", ip_input)
-        
-        if pattern_full:
-            base = pattern_full.group(1)
-            start = int(pattern_full.group(2))
-            end = int(pattern_full.group(3))
-            ip_range = f"{base}{start}-{end}"
-            ip_list = [f"{base}{i}" for i in range(start, end+1)]
-        elif pattern_short:
-            base = "192.168.1."
-            start = int(pattern_short.group(1))
-            end = int(pattern_short.group(2))
-            ip_range = f"{base}{start}-{end}"
-            ip_list = [f"{base}{i}" for i in range(start, end+1)]
+    ip_input = request.form.get('ip_input', '').strip()
+    iface = request.form.get('iface', detect_nic())
+    mode = request.form.get('mode', 'perm')
+    pattern_full = re.match(r"^(\d+\.\d+\.\d+\.)(\d+)-(\d+)$", ip_input)
+    pattern_short = re.match(r"^(\d+)-(\d+)$", ip_input)
+    
+    if pattern_full:
+        base = pattern_full.group(1)
+        start = int(pattern_full.group(2))
+        end = int(pattern_full.group(3))
+        ip_range = f"{base}{{{start}..{end}}}"
+        ip_list = [f"{base}{i}" for i in range(start, end+1)]
+    elif pattern_short:
+        base = "192.168.1."
+        start = int(pattern_short.group(1))
+        end = int(pattern_short.group(2))
+        ip_range = f"{base}{{{start}..{end}}}"
+        ip_list = [f"{base}{i}" for i in range(start, end+1)]
+    elif '{' in ip_input and '..' in ip_input:
+        ip_range = ip_input
+        match = re.match(r"(\d+\.\d+\.\d+\.?)\{(\d+)\.\.(\d+)\}", ip_input)
+        if match:
+            base = match.group(1)
+            s = int(match.group(2))
+            e = int(match.group(3))
+            ip_list = [f"{base}{i}" for i in range(s, e+1)]
         else:
-            ip_range = ip_input
-            ip_list = [ip.strip() for ip in re.split(r'[,\s]+', ip_input) if ip.strip()]
-        
-        if len(ip_list) > 1000:
-            return jsonify({'status': 'error', 'message': '单次最多添加1000个IP'})
-        
-        # 保存到数据库
-        db = get_db()
-        try:
-            db.execute('''INSERT INTO ip_config (ip_str, type, iface, created) 
-                         VALUES (?,?,?,datetime("now"))''', (ip_range, 'range', iface))
-            db.commit()
-        finally:
-            return_db(db)
-        
-        # 异步添加IP
-        def add_ips():
-            try:
-                for ip in ip_list:
-                    # 使用/32掩码避免路由冲突
-                    os.system(f"ip addr add {ip}/32 dev {iface} 2>/dev/null")
-                    # 添加主机路由
-                    os.system(f"ip route add {ip}/32 dev {iface} 2>/dev/null")
-                
-                if mode == 'perm':
-                    # 永久保存配置
-                    with open(INTERFACES_FILE, 'a+') as f:
-                        f.write(f"\n# 3proxy IP配置 - {ip_range}\n")
-                        for ip in ip_list:
-                            f.write(f"up ip addr add {ip}/32 dev {iface} 2>/dev/null || true\n")
-                            f.write(f"down ip addr del {ip}/32 dev {iface} 2>/dev/null || true\n")
-                
-                # 刷新ARP缓存
-                os.system("ip neigh flush all")
-            except Exception as e:
-                app.logger.error(f"Add IP error: {e}")
-        
-        executor.submit(add_ips)
-        
-        return jsonify({'status': 'success', 'message': f'正在添加{len(ip_list)}个IP配置'})
+            ip_list = []
+    else:
+        ip_range = ip_input
+        ip_list = [ip.strip() for ip in re.split(r'[,\s]+', ip_input) if ip.strip()]
     
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)}), 500
+    with db_pool.get_connection() as conn:
+        conn.execute('INSERT INTO ip_config (ip_str, type, iface, created) VALUES (?,?,?,datetime("now"))', (ip_range, 'range', iface))
+        conn.commit()
+    
+    # 批量添加IP
+    for i, ip in enumerate(ip_list):
+        os.system(f"ip addr add {ip}/32 dev {iface} 2>/dev/null")
+        os.system(f"ip route add {ip}/32 dev {iface} 2>/dev/null")
+    
+    # 永久添加
+    if mode == 'perm':
+        with open('/etc/network/interfaces', 'a+') as f:
+            f.write(f"\n# Xray IP配置 - {ip_range}\n")
+            for ip in ip_list:
+                f.write(f"up ip addr add {ip}/32 dev {iface} 2>/dev/null || true\n")
+                f.write(f"down ip addr del {ip}/32 dev {iface} 2>/dev/null || true\n")
+    
+    # 刷新ARP缓存
+    os.system("ip neigh flush all")
+    
+    return jsonify({'status': 'success', 'message': '已添加IP配置'})
 
-def get_traffic_stats():
-    """获取流量统计（优化版）"""
-    stats = collections.defaultdict(int)
-    if not os.path.exists(LOGFILE):
-        return stats
-    
+# 初始化时确保Xray运行
+def ensure_xray_running():
+    """确保Xray正在运行"""
     try:
-        # 只读取最后10MB的日志
-        file_size = os.path.getsize(LOGFILE)
-        read_size = min(file_size, 10 * 1024 * 1024)
-        
-        with open(LOGFILE, 'rb') as f:
-            if file_size > read_size:
-                f.seek(file_size - read_size)
-                f.readline()  # 跳过可能不完整的行
-            
-            for line in f:
-                try:
-                    line = line.decode('utf-8', errors='ignore')
-                    parts = line.split()
-                    if len(parts) > 7:
-                        srcip = parts[2]
-                        bytes_sent = int(parts[-2])
-                        cseg = '.'.join(srcip.split('.')[:3])
-                        stats[cseg] += bytes_sent
-                except:
-                    continue
-    except:
-        pass
-    
-    return {k: round(v/1024/1024, 2) for k, v in stats.items()}
+        result = subprocess.run(['pgrep', 'xray'], capture_output=True)
+        if result.returncode != 0:
+            # Xray未运行，生成配置并启动
+            generate_xray_config()
+            subprocess.run(['systemctl', 'start', 'xray'])
+            print("Xray started")
+    except Exception as e:
+        print(f"Error checking Xray: {e}")
 
-# 错误处理
-@app.errorhandler(404)
-def not_found(error):
-    if request.path.startswith('/api/'):
-        return jsonify({'error': 'Not found'}), 404
-    return render_template('404.html'), 404
-
-@app.errorhandler(500)
-def internal_error(error):
-    if request.path.startswith('/api/'):
-        return jsonify({'error': 'Internal server error'}), 500
-    return render_template('500.html'), 500
-
-# 日志配置
-if not app.debug:
-    file_handler = RotatingFileHandler('/var/log/3proxy/web.log', maxBytes=10240000, backupCount=10)
-    file_handler.setFormatter(logging.Formatter(
-        '%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'
-    ))
-    file_handler.setLevel(logging.INFO)
-    app.logger.addHandler(file_handler)
-    app.logger.setLevel(logging.INFO)
-    app.logger.info('3proxy web startup')
+# 在启动时确保Xray运行
+ensure_xray_running()
 
 if __name__ == '__main__':
-    # 生产环境使用gunicorn
-    app.run('0.0.0.0', PORT, debug=False)
-EOF
-
-# ========== config_gen.py (高性能版本) ==========
-cat > $WORKDIR/config_gen.py << 'EOF'
-#!/usr/bin/env python3
-import sqlite3
-import os
-import sys
-import time
-
-def generate_config():
-    """生成3proxy配置文件（优化版）"""
-    start_time = time.time()
+    import sys
+    from gevent.pywsgi import WSGIServer
+    port = int(sys.argv[1]) if len(sys.argv)>1 else 9999
     
-    try:
-        db = sqlite3.connect('3proxy.db')
-        db.row_factory = sqlite3.Row
-        
-        # 使用索引优化查询
-        cursor = db.execute('SELECT ip, port, username, password FROM proxy WHERE enabled=1 ORDER BY ip, port')
-        
-        # 配置头
-        cfg = [
-            "# 3proxy Enterprise Configuration",
-            "# Generated: " + time.strftime("%Y-%m-%d %H:%M:%S"),
-            "",
-            "daemon",
-            "maxconn 500000",
-            "nserver 8.8.8.8",
-            "nserver 1.1.1.1",
-            "nserver 8.8.4.4",
-            "nserver 1.0.0.1",
-            "nscache 65536",
-            "nscache6 65536",
-            "nsrecord www.google.com 60",
-            "nsrecord www.youtube.com 60",
-            "stacksize 6291456",
-            "timeouts 1 5 30 60 180 1800 15 60",
-            "log /var/log/3proxy/3proxy.log D",
-            "logformat \"- +_L%t.%. %N.%p %E %U %C:%c %R:%r %O %I %h %T\"",
-            "rotate 30",
-            "archiver gz /usr/bin/gzip %F",
-            "auth strong cache",
-            "allow * * * * HTTP",
-            "allow * * * * HTTPS",
-            ""
-        ]
-        
-        # 收集用户
-        users = {}
-        proxies = []
-        
-        for row in cursor:
-            key = (row['username'], row['password'])
-            if key not in users:
-                users[key] = True
-            proxies.append(row)
-        
-        # 分批添加用户（避免单行过长）
-        user_list = [f"{u}:CL:{p}" for u, p in users.keys()]
-        batch_size = 50
-        
-        for i in range(0, len(user_list), batch_size):
-            batch = user_list[i:i+batch_size]
-            cfg.append(f"users {' '.join(batch)}")
-        
-        cfg.append("")
-        
-        # 添加代理配置
-        for proxy in proxies:
-            cfg.extend([
-                f"auth strong cache",
-                f"allow {proxy['username']}",
-                f"parent 1000 none",
-                f"proxy -n -a -p{proxy['port']} -i{proxy['ip']} -e{proxy['ip']}",
-                ""
-            ])
-        
-        # 写入配置文件
-        config_path = '/usr/local/etc/3proxy/3proxy.cfg'
-        with open(config_path, 'w') as f:
-            f.write('\n'.join(cfg))
-        
-        # 设置权限
-        os.chmod(config_path, 0o600)
-        
-        db.close()
-        
-        elapsed = time.time() - start_time
-        print(f"Configuration generated successfully in {elapsed:.2f} seconds")
-        print(f"Total proxies: {len(proxies)}")
-        print(f"Total users: {len(users)}")
-        
-    except Exception as e:
-        print(f"Error generating configuration: {e}", file=sys.stderr)
-        sys.exit(1)
-
-if __name__ == "__main__":
-    generate_config()
+    # 使用gevent提供更好的并发性能
+    print(f"Starting server on port {port}...")
+    http_server = WSGIServer(('0.0.0.0', port), app, log=None)
+    http_server.serve_forever()
 EOF
 
-chmod +x $WORKDIR/config_gen.py
-
-# ========== init_db.py ==========
+# ------------------- init_db.py (数据库初始化) -------------------
 cat > $WORKDIR/init_db.py << 'EOF'
 import sqlite3
 from werkzeug.security import generate_password_hash
 import os
 
-def init_database():
-    """初始化数据库"""
-    user = os.environ.get('ADMINUSER', 'admin')
-    passwd = os.environ.get('ADMINPASS', 'changeme')
-    
-    db = sqlite3.connect('3proxy.db')
-    
-    # 创建表
-    db.execute('''CREATE TABLE IF NOT EXISTS proxy (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ip TEXT NOT NULL,
-        port INTEGER NOT NULL,
-        username TEXT NOT NULL,
-        password TEXT NOT NULL,
-        enabled INTEGER DEFAULT 1,
-        ip_range TEXT,
-        port_range TEXT,
-        user_prefix TEXT,
-        created TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(ip, port)
-    )''')
-    
-    db.execute('''CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        username TEXT UNIQUE NOT NULL,
-        password TEXT NOT NULL,
-        created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )''')
-    
-    db.execute('''CREATE TABLE IF NOT EXISTS ip_config (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        ip_str TEXT NOT NULL,
-        type TEXT NOT NULL,
-        iface TEXT NOT NULL,
-        created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )''')
-    
-    # 创建索引
-    db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_ip ON proxy(ip)')
-    db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_enabled ON proxy(enabled)')
-    db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_port ON proxy(port)')
-    
-    # 添加默认管理员
-    db.execute('INSERT OR IGNORE INTO users (username, password) VALUES (?,?)', 
-               (user, generate_password_hash(passwd)))
-    
-    db.commit()
-    db.close()
-    
-    print(f"Database initialized")
-    print(f"Admin user: {user}")
-    print(f"Admin password: {passwd}")
+user = os.environ.get('ADMINUSER')
+passwd = os.environ.get('ADMINPASS')
 
-if __name__ == "__main__":
-    init_database()
+db = sqlite3.connect('xray.db')
+
+# 启用WAL模式和优化
+db.execute('PRAGMA journal_mode=WAL')
+db.execute('PRAGMA synchronous=NORMAL')
+db.execute('PRAGMA cache_size=10000')
+db.execute('PRAGMA temp_store=MEMORY')
+
+# 创建表
+db.execute('''CREATE TABLE IF NOT EXISTS proxy (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ip TEXT NOT NULL,
+    port INTEGER NOT NULL,
+    username TEXT NOT NULL,
+    password TEXT NOT NULL,
+    enabled INTEGER DEFAULT 1,
+    ip_range TEXT,
+    port_range TEXT,
+    user_prefix TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    expire_at DATETIME,
+    last_used DATETIME,
+    traffic_up INTEGER DEFAULT 0,
+    traffic_down INTEGER DEFAULT 0,
+    traffic_limit INTEGER DEFAULT 0,
+    notes TEXT,
+    UNIQUE(ip, port)
+)''')
+
+# 创建索引以提升查询性能
+db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_ip ON proxy(ip)')
+db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_enabled ON proxy(enabled)')
+db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_port ON proxy(port)')
+db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_username ON proxy(username)')
+db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_expire ON proxy(expire_at)')
+
+db.execute('''CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    password TEXT NOT NULL
+)''')
+
+db.execute('''CREATE TABLE IF NOT EXISTS ip_config (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ip_str TEXT,
+    type TEXT,
+    iface TEXT,
+    created TEXT
+)''')
+
+# 创建API密钥表
+db.execute('''CREATE TABLE IF NOT EXISTS api_keys (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    key TEXT UNIQUE NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_used DATETIME,
+    enabled INTEGER DEFAULT 1
+)''')
+
+db.execute('INSERT OR IGNORE INTO users (username, password) VALUES (?,?)', (user, generate_password_hash(passwd)))
+db.commit()
+
+print("WebAdmin: "+user)
+print("Webpassword:  "+passwd)
 EOF
 
-# --------- login.html ---------
+# 复制原有的HTML模板文件（使用相同的前端）
 cat > $WORKDIR/templates/login.html << 'EOF'
 <!DOCTYPE html>
 <html lang="zh">
 <head>
     <meta charset="UTF-8">
-    <title>3proxy 登录</title>
+    <title>Xray 登录</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         body {
@@ -2350,7 +1419,7 @@ cat > $WORKDIR/templates/login.html << 'EOF'
 <div class="container" style="max-width:400px;">
     <div class="card login-card">
         <div class="card-body p-5">
-            <h3 class="mb-4 text-center">3proxy 管理系统</h3>
+            <h3 class="mb-4 text-center">Xray 管理系统</h3>
             <form method="post">
                 <div class="mb-3">
                     <label class="form-label">用户名</label>
@@ -2374,13 +1443,13 @@ cat > $WORKDIR/templates/login.html << 'EOF'
 </html>
 EOF
 
-# --------- index.html（主UI） ---------
+# 创建index.html（修改版本，适配Xray）
 cat > $WORKDIR/templates/index.html << 'EOF'
 <!DOCTYPE html>
 <html lang="zh">
 <head>
     <meta charset="utf-8">
-    <title>3proxy 管理面板</title>
+    <title>Xray 代理管理面板</title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
@@ -2471,6 +1540,17 @@ cat > $WORKDIR/templates/index.html << 'EOF'
         .proxy-card:hover {
             transform: translateX(10px);
             box-shadow: var(--hover-shadow);
+        }
+        
+        .proxy-card.selected {
+            background: #f0f0ff;
+            border: 2px solid #667eea;
+        }
+        
+        .proxy-card-footer {
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid #eee;
         }
         
         .stat-card {
@@ -2646,6 +1726,11 @@ cat > $WORKDIR/templates/index.html << 'EOF'
             background: var(--info-gradient) !important;
         }
         
+        .badge.bg-warning {
+            background: var(--warning-gradient) !important;
+            color: white;
+        }
+        
         /* 输入框美化 */
         .form-control {
             border-radius: var(--btn-radius);
@@ -2796,6 +1881,67 @@ cat > $WORKDIR/templates/index.html << 'EOF'
             transform: scale(1.1);
             box-shadow: var(--hover-shadow);
         }
+        
+        .detail-header {
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #f0f0f0;
+        }
+        
+        .info-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 20px;
+            margin-top: 10px;
+        }
+        
+        .info-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            color: #666;
+        }
+        
+        .action-bar {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .proxy-row:hover {
+            background: #f8f9fa;
+        }
+        
+        .traffic-info {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 0.9rem;
+        }
+        
+        .traffic-up {
+            color: #28a745;
+        }
+        
+        .traffic-down {
+            color: #dc3545;
+        }
+        
+        .expire-badge {
+            font-size: 0.8rem;
+            padding: 4px 10px;
+        }
+        
+        .expire-soon {
+            background: var(--warning-gradient) !important;
+            color: white;
+        }
+        
+        .expired {
+            background: var(--danger-gradient) !important;
+            color: white;
+        }
     </style>
 </head>
 <body>
@@ -2803,7 +1949,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
     <nav class="navbar navbar-dark mb-4">
         <div class="container-fluid">
             <span class="navbar-brand mb-0 h1">
-                <i class="bi bi-shield-check"></i> 3proxy 管理系统
+                <i class="bi bi-shield-check"></i> Xray 代理管理系统
             </span>
             <div class="d-flex align-items-center">
                 <span class="text-white me-3" id="currentTime"></span>
@@ -2852,7 +1998,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                         <div class="stat-number" id="proxyStatus">
                             <i class="bi bi-circle-fill text-danger"></i>
                         </div>
-                        <small>3proxy 状态</small>
+                        <small>Xray 状态</small>
                         <div class="mt-1">
                             <small id="proxyInfo">未运行</small>
                         </div>
@@ -2866,6 +2012,11 @@ cat > $WORKDIR/templates/index.html << 'EOF'
             <li class="nav-item" role="presentation">
                 <button class="nav-link active" id="proxy-tab" data-bs-toggle="tab" data-bs-target="#proxy-pane">
                     <i class="bi bi-hdd-network"></i> 代理管理
+                </button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="report-tab" data-bs-toggle="tab" data-bs-target="#report-pane">
+                    <i class="bi bi-graph-up"></i> 使用报表
                 </button>
             </li>
             <li class="nav-item" role="presentation">
@@ -2892,15 +2043,27 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                 <form id="batchAddForm">
                                     <div class="mb-3">
                                         <label class="form-label">IP范围</label>
-                                        <input type="text" class="form-control" name="iprange" placeholder="192.168.1.2-254">
+                                        <input type="text" class="form-control" name="iprange" placeholder="192.168.1.2-254" required>
                                     </div>
                                     <div class="mb-3">
-                                        <label class="form-label">端口范围</label>
+                                        <label class="form-label">端口范围（可选）</label>
                                         <input type="text" class="form-control" name="portrange" placeholder="20000-30000">
                                     </div>
                                     <div class="mb-3">
                                         <label class="form-label">用户名前缀</label>
-                                        <input type="text" class="form-control" name="userprefix" placeholder="user">
+                                        <input type="text" class="form-control" name="userprefix" placeholder="user" required>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">有效期（天）</label>
+                                        <input type="number" class="form-control" name="expire_days" placeholder="0表示永久">
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">流量限制（GB）</label>
+                                        <input type="number" class="form-control" name="traffic_limit" step="0.1" placeholder="0表示无限">
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">备注</label>
+                                        <input type="text" class="form-control" name="notes" placeholder="可选">
                                     </div>
                                     <button type="submit" class="btn btn-gradient w-100">
                                         <i class="bi bi-cloud-upload"></i> 批量添加
@@ -2946,6 +2109,18 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                     <!-- 代理组卡片将在这里动态生成 -->
                                 </div>
                             </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 使用报表 -->
+            <div class="tab-pane fade" id="report-pane" role="tabpanel">
+                <div class="card animate-fade-in">
+                    <div class="card-body">
+                        <h5 class="card-title"><i class="bi bi-graph-up"></i> 使用情况报表</h5>
+                        <div id="usageReport">
+                            <!-- 报表内容将在这里动态生成 -->
                         </div>
                     </div>
                 </div>
@@ -3023,6 +2198,28 @@ cat > $WORKDIR/templates/index.html << 'EOF'
         </div>
     </div>
 
+    <!-- 设置过期时间模态框 -->
+    <div class="modal fade" id="setExpireModal" tabindex="-1">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">设置过期时间</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="setExpireForm">
+                        <input type="hidden" id="expireSegment" name="segment">
+                        <div class="mb-3">
+                            <label class="form-label">过期时间</label>
+                            <input type="datetime-local" class="form-control" name="expire_date" required>
+                        </div>
+                        <button type="submit" class="btn btn-primary">确定</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Toast 通知容器 -->
     <div class="toast-container"></div>
 
@@ -3068,6 +2265,29 @@ cat > $WORKDIR/templates/index.html << 'EOF'
             toast.addEventListener('hidden.bs.toast', () => toast.remove());
         }
 
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        function formatDateTime(dateStr) {
+            if (!dateStr) return '永久';
+            const date = new Date(dateStr);
+            const now = new Date();
+            const diff = date - now;
+            
+            if (diff < 0) return '<span class="text-danger">已过期</span>';
+            if (diff < 7 * 24 * 60 * 60 * 1000) {
+                const days = Math.floor(diff / (24 * 60 * 60 * 1000));
+                return `<span class="text-warning">${days}天后过期</span>`;
+            }
+            
+            return date.toLocaleString('zh-CN');
+        }
+
         // 时间更新
         function updateTime() {
             const now = new Date();
@@ -3094,12 +2314,12 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     document.getElementById('diskUsage').textContent = data.disk.percent.toFixed(1) + '%';
                     document.getElementById('diskProgress').style.width = data.disk.percent + '%';
                     
-                    // 3proxy状态
+                    // Xray状态
                     const statusIcon = document.getElementById('proxyStatus');
                     const statusInfo = document.getElementById('proxyInfo');
-                    if (data.proxy.running) {
+                    if (data.xray.running) {
                         statusIcon.innerHTML = '<i class="bi bi-circle-fill text-success"></i>';
-                        statusInfo.textContent = `PID: ${data.proxy.pid} | 连接: ${data.proxy.connections}`;
+                        statusInfo.textContent = `PID: ${data.xray.pid} | 连接: ${data.xray.connections}`;
                     } else {
                         statusIcon.innerHTML = '<i class="bi bi-circle-fill text-danger"></i>';
                         statusInfo.textContent = '未运行';
@@ -3111,7 +2331,6 @@ cat > $WORKDIR/templates/index.html << 'EOF'
 
         // 加载代理组
         function loadProxyGroups() {
-            // 加载前先验证选中的组是否还存在
             const currentSelected = new Set(selectedGroups);
             
             showLoading();
@@ -3121,10 +2340,8 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     const container = document.getElementById('proxyGroups');
                     container.innerHTML = '';
                     
-                    // 获取当前存在的C段列表
                     const existingSegments = new Set(groups.map(g => g.c_segment));
                     
-                    // 清理已不存在的选中项
                     currentSelected.forEach(cseg => {
                         if (!existingSegments.has(cseg)) {
                             selectedGroups.delete(cseg);
@@ -3135,10 +2352,18 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                         const card = document.createElement('div');
                         card.className = 'proxy-card';
                         
-                        // 如果这个组在选中集合中，添加选中样式
                         if (selectedGroups.has(group.c_segment)) {
                             card.classList.add('selected');
                         }
+                        
+                        // 过期提示
+                        let expireInfo = '';
+                        if (group.expiring_soon > 0) {
+                            expireInfo = `<span class="badge expire-badge expire-soon">
+                                <i class="bi bi-exclamation-triangle"></i> ${group.expiring_soon} 个即将过期
+                            </span>`;
+                        }
+                        
                         card.innerHTML = `
                             <div class="row align-items-center">
                                 <div class="col-md-7">
@@ -3147,6 +2372,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                                data-group="${group.c_segment}" onclick="event.stopPropagation();">
                                         <i class="bi bi-hdd-network text-primary me-2"></i>
                                         <strong>${group.c_segment}.x</strong>
+                                        ${expireInfo}
                                     </h6>
                                     <div class="d-flex flex-wrap gap-2 mb-2">
                                         <span class="badge rounded-pill bg-primary">
@@ -3164,15 +2390,27 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                         ${group.port_range ? `<i class="bi bi-ethernet"></i> ${group.port_range}` : ''}
                                         ${group.user_prefix ? `<i class="bi bi-person"></i> ${group.user_prefix}` : ''}
                                     </small>
+                                    <div class="proxy-card-footer">
+                                        <small class="text-muted">
+                                            ${group.created_at ? `<i class="bi bi-calendar"></i> 创建: ${new Date(group.created_at).toLocaleDateString()}` : ''}
+                                        </small>
+                                    </div>
                                 </div>
                                 <div class="col-md-5 text-end">
                                     <div class="btn-toolbar justify-content-end" role="toolbar">
-                                        <div class="btn-group btn-group-sm" role="group">
+                                        <div class="btn-group btn-group-sm me-2" role="group">
                                             <button class="btn btn-primary" 
                                                     onclick="event.stopPropagation(); viewProxyGroup('${group.c_segment}')"
                                                     title="查看详情">
                                                 <i class="bi bi-eye"></i> 查看
                                             </button>
+                                            <button class="btn btn-warning" 
+                                                    onclick="event.stopPropagation(); showSetExpireModal('${group.c_segment}')"
+                                                    title="设置过期">
+                                                <i class="bi bi-clock"></i> 过期
+                                            </button>
+                                        </div>
+                                        <div class="btn-group btn-group-sm" role="group">
                                             <button class="btn btn-success" 
                                                     onclick="event.stopPropagation(); toggleGroup('${group.c_segment}', 'enable')"
                                                     title="启用全部">
@@ -3196,7 +2434,6 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                         
                         // 点击卡片切换选中状态
                         card.addEventListener('click', (e) => {
-                            // 如果点击的是按钮或输入框，不处理
                             if (e.target.closest('button') || e.target.closest('input')) {
                                 return;
                             }
@@ -3213,10 +2450,9 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                             }
                         });
                         
-                        // 复选框事件（阻止冒泡）
+                        // 复选框事件
                         const checkbox = card.querySelector('input[type="checkbox"]');
                         
-                        // 如果这个组在选中集合中，勾选复选框
                         if (selectedGroups.has(group.c_segment)) {
                             checkbox.checked = true;
                         }
@@ -3244,7 +2480,6 @@ cat > $WORKDIR/templates/index.html << 'EOF'
 
         // 查看代理组详情
         function viewProxyGroup(cSegment) {
-            // 清空之前的选择
             selectedProxies.clear();
             
             showLoading();
@@ -3254,7 +2489,6 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     const content = document.getElementById('proxyDetailContent');
                     const firstProxy = proxies[0] || {};
                     
-                    // 构建完整的HTML，确保表格结构正确
                     let html = `
                         <div class="detail-header">
                             <h5>${cSegment}.x 段代理详情</h5>
@@ -3293,7 +2527,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                         </div>
                         
                         <div style="overflow-x: auto;">
-                            <table class="table table-sm" style="width: 100%; min-width: 900px;">
+                            <table class="table table-sm" style="width: 100%; min-width: 1200px;">
                                 <thead style="background: #343a40; color: white;">
                                     <tr>
                                         <th style="width: 40px; text-align: center;">选</th>
@@ -3302,15 +2536,19 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                         <th style="width: 80px; text-align: center;">端口</th>
                                         <th style="width: 120px;">用户名</th>
                                         <th style="width: 200px;">密码</th>
+                                        <th style="width: 150px; text-align: center;">流量</th>
+                                        <th style="width: 120px; text-align: center;">过期时间</th>
                                         <th style="width: 70px; text-align: center;">状态</th>
                                         <th style="width: 100px; text-align: center;">操作</th>
                                     </tr>
                                 </thead>
                                 <tbody>`;
                     
-                    // 逐行构建表格内容
                     proxies.forEach((proxy, index) => {
                         const rowClass = index % 2 === 0 ? 'table-light' : '';
+                        const trafficPercent = proxy.traffic_limit > 0 ? 
+                            ((proxy.traffic_total / proxy.traffic_limit) * 100).toFixed(1) : 0;
+                        
                         html += `
                             <tr class="proxy-row ${rowClass}">
                                 <td style="text-align: center; padding: 8px 4px;">
@@ -3323,7 +2561,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                 <td style="padding: 8px 4px;">
                                     <span class="font-monospace" style="font-size: 0.9rem;">${proxy.ip}</span>
                                 </td>
-                                <td style="padding: 8px 4px;">
+                                <td style="padding: 8px 4px; text-align: center;">
                                     <span class="badge bg-info" style="font-family: monospace;">${proxy.port}</span>
                                 </td>
                                 <td style="padding: 8px 4px;">
@@ -3341,6 +2579,26 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                             <i class="bi bi-clipboard" style="font-size: 0.9rem;"></i>
                                         </button>
                                     </div>
+                                </td>
+                                <td style="padding: 8px 4px;">
+                                    <div class="traffic-info">
+                                        <span class="traffic-up" title="上传">
+                                            <i class="bi bi-arrow-up"></i> ${formatBytes(proxy.traffic_up)}
+                                        </span>
+                                        <span class="traffic-down" title="下载">
+                                            <i class="bi bi-arrow-down"></i> ${formatBytes(proxy.traffic_down)}
+                                        </span>
+                                    </div>
+                                    ${proxy.traffic_limit > 0 ? `
+                                        <div class="progress mt-1" style="height: 5px;">
+                                            <div class="progress-bar ${trafficPercent > 80 ? 'bg-warning' : ''}" 
+                                                 style="width: ${trafficPercent}%"></div>
+                                        </div>
+                                        <small class="text-muted">${trafficPercent}% / ${formatBytes(proxy.traffic_limit)}</small>
+                                    ` : ''}
+                                </td>
+                                <td style="padding: 8px 4px; text-align: center;">
+                                    <small>${formatDateTime(proxy.expire_at)}</small>
                                 </td>
                                 <td style="text-align: center; padding: 8px 4px;">
                                     ${proxy.enabled ? 
@@ -3370,7 +2628,6 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                         </div>
                     `;
                     
-                    // 一次性设置内容
                     content.innerHTML = html;
                     
                     // 绑定事件
@@ -3387,13 +2644,11 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                         updateSelectedCount();
                     });
                     
-                    // 初始化选中数量
                     updateSelectedCount();
                     
                     hideLoading();
                     const modal = new bootstrap.Modal(document.getElementById('proxyDetailModal'));
                     
-                    // 监听模态框关闭事件，清空选择
                     document.getElementById('proxyDetailModal').addEventListener('hidden.bs.modal', function () {
                         selectedProxies.clear();
                         updateSelectedCount();
@@ -3410,7 +2665,10 @@ cat > $WORKDIR/templates/index.html << 'EOF'
         // 更新选中数量
         function updateSelectedCount() {
             const count = document.querySelectorAll('.proxy-check:checked').length;
-            document.getElementById('selectedCount').textContent = count;
+            const countElement = document.getElementById('selectedCount');
+            if (countElement) {
+                countElement.textContent = count;
+            }
         }
 
         // 过滤代理表格
@@ -3420,6 +2678,13 @@ cat > $WORKDIR/templates/index.html << 'EOF'
             rows.forEach(row => {
                 const text = row.textContent.toLowerCase();
                 row.style.display = text.includes(searchTerm) ? '' : 'none';
+            });
+        }
+
+        // 复制密码
+        function copyPassword(password, id) {
+            navigator.clipboard.writeText(password).then(() => {
+                showToast('密码已复制到剪贴板');
             });
         }
 
@@ -3433,7 +2698,6 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                 .then(data => {
                     hideLoading();
                     showToast(`已删除 ${cSegment}.x 段代理组`);
-                    // 从选中集合中移除已删除的组
                     selectedGroups.delete(cSegment);
                     loadProxyGroups();
                 })
@@ -3458,6 +2722,34 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                 });
         }
 
+        // 显示设置过期时间模态框
+        function showSetExpireModal(cSegment) {
+            document.getElementById('expireSegment').value = cSegment;
+            const modal = new bootstrap.Modal(document.getElementById('setExpireModal'));
+            modal.show();
+        }
+
+        // 设置过期时间表单提交
+        document.getElementById('setExpireForm').addEventListener('submit', (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            const cSegment = formData.get('segment');
+            
+            showLoading();
+            fetch(`/api/set_expire_group/${cSegment}`, { method: 'POST', body: formData })
+                .then(res => res.json())
+                .then(data => {
+                    hideLoading();
+                    showToast(`已设置 ${cSegment}.x 段过期时间`);
+                    bootstrap.Modal.getInstance(document.getElementById('setExpireModal')).hide();
+                    loadProxyGroups();
+                })
+                .catch(err => {
+                    hideLoading();
+                    showToast('设置失败: ' + err.message, 'danger');
+                });
+        });
+
         // 单个代理操作
         function toggleProxy(id, enable) {
             const action = enable ? 'enableproxy' : 'disableproxy';
@@ -3465,7 +2757,6 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                 .then(res => res.json())
                 .then(data => {
                     showToast(`代理已${enable ? '启用' : '禁用'}`);
-                    // 刷新当前模态框内容
                     const modal = bootstrap.Modal.getInstance(document.getElementById('proxyDetailModal'));
                     if (modal) {
                         const detailHeader = document.querySelector('.detail-header h5');
@@ -3518,7 +2809,6 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     showToast('批量启用成功');
                     selectedProxies.clear();
                     updateSelectedCount();
-                    // 重新加载当前代理组
                     const cSegment = document.querySelector('.detail-header h5').textContent.split('.')[0];
                     viewProxyGroup(cSegment);
                 });
@@ -3584,10 +2874,8 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     a.click();
                     URL.revokeObjectURL(a.href);
                     showToast('导出成功');
-                    // 导出后清空选择
                     selectedProxies.clear();
                     updateSelectedCount();
-                    // 取消全选
                     const selectAllCheck = document.getElementById('selectAllCheck');
                     if (selectAllCheck) selectAllCheck.checked = false;
                 });
@@ -3596,7 +2884,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
         // 导出选中的代理组
         document.getElementById('exportGroups').addEventListener('click', () => {
             if (selectedGroups.size === 0) {
-                showToast('请先选择代理组', 'warning');
+                                    showToast('请先选择代理组', 'warning');
                 return;
             }
             
@@ -3608,7 +2896,6 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                 .then(res => {
                     if (!res.ok) throw new Error('Export failed');
                     
-                    // 从响应头获取文件名
                     const contentDisposition = res.headers.get('Content-Disposition');
                     let filename = 'proxy_export.txt';
                     if (contentDisposition) {
@@ -3629,13 +2916,10 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     URL.revokeObjectURL(a.href);
                     showToast(`导出成功: ${filename}`);
                     
-                    // 导出后清空选择
                     selectedGroups.clear();
-                    // 取消所有复选框的选中状态
                     document.querySelectorAll('.proxy-card input[type="checkbox"]').forEach(cb => {
                         cb.checked = false;
                     });
-                    // 移除所有卡片的选中样式
                     document.querySelectorAll('.proxy-card.selected').forEach(card => {
                         card.classList.remove('selected');
                     });
@@ -3684,6 +2968,71 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     }
                 });
         });
+
+        // 使用报表
+        function loadUsageReport() {
+            fetch('/api/usage_report')
+                .then(res => res.json())
+                .then(reports => {
+                    const container = document.getElementById('usageReport');
+                    let html = `
+                        <div class="table-responsive">
+                            <table class="table table-hover">
+                                <thead>
+                                    <tr>
+                                        <th>C段</th>
+                                        <th>总数</th>
+                                        <th>活跃</th>
+                                        <th>24小时使用</th>
+                                        <th>总流量</th>
+                                        <th>即将过期</th>
+                                        <th>接近限制</th>
+                                        <th>创建时间</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                    `;
+                    
+                    reports.forEach(report => {
+                        const usageRate = report.total > 0 ? (report.used_24h / report.total * 100).toFixed(1) : 0;
+                        html += `
+                            <tr>
+                                <td><strong>${report.c_segment}.x</strong></td>
+                                <td>${report.total}</td>
+                                <td>
+                                    <span class="badge bg-success">${report.active}</span>
+                                </td>
+                                <td>
+                                    <div class="progress" style="width: 100px;">
+                                        <div class="progress-bar ${usageRate > 50 ? 'bg-success' : 'bg-warning'}" 
+                                             style="width: ${usageRate}%"></div>
+                                    </div>
+                                    <small>${report.used_24h} (${usageRate}%)</small>
+                                </td>
+                                <td>${report.total_traffic_gb} GB</td>
+                                <td>
+                                    ${report.expiring_soon > 0 ? 
+                                        `<span class="badge bg-warning">${report.expiring_soon}</span>` : 
+                                        '<span class="text-muted">-</span>'}
+                                </td>
+                                <td>
+                                    ${report.near_limit > 0 ? 
+                                        `<span class="badge bg-danger">${report.near_limit}</span>` : 
+                                        '<span class="text-muted">-</span>'}
+                                </td>
+                                <td>
+                                    ${report.first_created ? 
+                                        new Date(report.first_created).toLocaleDateString() : 
+                                        '<span class="text-muted">-</span>'}
+                                </td>
+                            </tr>
+                        `;
+                    });
+                    
+                    html += '</tbody></table></div>';
+                    container.innerHTML = html;
+                });
+        }
 
         // 用户管理
         function loadUsers() {
@@ -3822,6 +3171,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
         });
 
         // 标签页切换事件
+        document.getElementById('report-tab').addEventListener('shown.bs.tab', loadUsageReport);
         document.getElementById('user-tab').addEventListener('shown.bs.tab', loadUsers);
         document.getElementById('ip-tab').addEventListener('shown.bs.tab', loadIpConfigs);
 
@@ -3848,163 +3198,165 @@ cat > $WORKDIR/templates/index.html << 'EOF'
 </html>
 EOF
 
-}
-
-function create_services() {
-    echo -e "\n${YELLOW}========= 创建系统服务 =========${NC}\n"
-    
-    # Web服务 (使用gunicorn)
-    cat > /etc/systemd/system/3proxy-web.service <<EOF
+# ------------------- Xray systemd 服务 -------------------
+cat > /etc/systemd/system/xray.service <<EOF
 [Unit]
-Description=3proxy Web Management System
-After=network.target redis.service
+Description=Xray Service
+After=network.target nss-lookup.target
 
 [Service]
-Type=notify
-WorkingDirectory=$WORKDIR
-Environment="PATH=$WORKDIR/venv/bin:/usr/local/bin:/usr/bin:/bin"
-ExecStart=$WORKDIR/venv/bin/gunicorn \
-    --bind 0.0.0.0:$PORT \
-    --workers 4 \
-    --worker-class gevent \
-    --worker-connections 1000 \
-    --timeout 30 \
-    --keep-alive 5 \
-    --max-requests 10000 \
-    --max-requests-jitter 1000 \
-    --access-logfile /var/log/3proxy/access.log \
-    --error-logfile /var/log/3proxy/error.log \
-    --log-level info \
-    manage:app
-Restart=always
+Type=simple
 User=root
-LimitNOFILE=1000000
-LimitNPROC=1000000
+ExecStart=$XRAY_PATH run -config $XRAY_CONFIG
+Restart=on-failure
+RestartSec=10s
+LimitNOFILE=3000000
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-    # 3proxy服务
-    cat > /etc/systemd/system/3proxy-autostart.service <<EOF
+cat > /etc/systemd/system/xray-web.service <<EOF
 [Unit]
-Description=3proxy Enterprise Server
-After=network.target
+Description=Xray Web管理后台
+After=network.target redis-server.service
 
 [Service]
 Type=simple
 WorkingDirectory=$WORKDIR
-ExecStart=/usr/local/bin/3proxy-enterprise.sh
+ExecStart=$WORKDIR/venv/bin/python3 $WORKDIR/xray_manage.py $PORT $API_PORT
 Restart=always
-RestartSec=5
 User=root
-LimitNOFILE=10000000
-LimitNPROC=4194304
-LimitMEMLOCK=infinity
-LimitSTACK=infinity
-OOMScoreAdjust=-1000
-CPUAccounting=true
-MemoryAccounting=true
-TasksAccounting=true
-IOAccounting=true
+Environment="PYTHONUNBUFFERED=1"
+LimitNOFILE=3000000
+LimitNPROC=3000000
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-    # Nginx反向代理配置
-    cat > /etc/nginx/sites-available/3proxy <<EOF
-server {
-    listen 80;
-    server_name _;
-    
-    client_max_body_size 100M;
-    
-    location / {
-        proxy_pass http://127.0.0.1:$PORT;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_connect_timeout 300s;
-        proxy_send_timeout 300s;
-        proxy_read_timeout 300s;
+# 初始化数据库
+cd $WORKDIR
+export ADMINUSER
+export ADMINPASS
+$WORKDIR/venv/bin/python3 init_db.py
+
+# 创建日志目录
+mkdir -p $XRAY_LOG_DIR
+touch $XRAY_LOG_DIR/access.log
+touch $XRAY_LOG_DIR/error.log
+chmod 666 $XRAY_LOG_DIR/*.log
+
+# 生成初始Xray配置
+cat > $XRAY_CONFIG <<EOF
+{
+  "log": {
+    "loglevel": "warning",
+    "access": "$XRAY_LOG_DIR/access.log",
+    "error": "$XRAY_LOG_DIR/error.log"
+  },
+  "api": {
+    "tag": "api",
+    "services": ["HandlerService", "StatsService"]
+  },
+  "stats": {},
+  "policy": {
+    "levels": {
+      "0": {
+        "statsUserUplink": true,
+        "statsUserDownlink": true
+      }
+    },
+    "system": {
+      "statsInboundUplink": true,
+      "statsInboundDownlink": true
     }
-    
-    location /static {
-        alias $WORKDIR/static;
-        expires 30d;
+  },
+  "inbounds": [
+    {
+      "tag": "api",
+      "protocol": "dokodemo-door",
+      "listen": "127.0.0.1",
+      "port": $API_PORT,
+      "settings": {
+        "address": "127.0.0.1"
+      }
     }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ],
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [
+      {
+        "type": "field",
+        "inboundTag": ["api"],
+        "outboundTag": "api"
+      }
+    ]
+  }
 }
 EOF
 
-    ln -sf /etc/nginx/sites-available/3proxy /etc/nginx/sites-enabled/
-    rm -f /etc/nginx/sites-enabled/default
-    
-    systemctl daemon-reload
-}
-
-function setup_monitoring() {
-    echo -e "\n${YELLOW}========= 设置监控 =========${NC}\n"
-    
-    # 创建监控脚本
-    cat > /usr/local/bin/3proxy-monitor.sh <<'EOF'
-#!/bin/bash
-# 3proxy监控脚本
-
-LOGFILE="/var/log/3proxy/monitor.log"
-THRESHOLD_CPU=80
-THRESHOLD_MEM=90
-THRESHOLD_CONN=8000000
-
-while true; do
-    # CPU使用率
-    CPU=$(top -bn1 | grep "Cpu(s)" | sed "s/.*, *\([0-9.]*\)%* id.*/\1/" | awk '{print 100 - $1}')
-    
-    # 内存使用率
-    MEM=$(free | grep Mem | awk '{print ($2-$7)/$2 * 100.0}')
-    
-    # 连接数
-    CONN=$(cat /proc/sys/net/netfilter/nf_conntrack_count 2>/dev/null || echo 0)
-    
-    # 3proxy进程检查
-    if ! pgrep -x 3proxy > /dev/null; then
-        echo "$(date): 3proxy not running, restarting..." >> $LOGFILE
-        systemctl restart 3proxy-autostart
-    fi
-    
-    # 告警
-    if (( $(echo "$CPU > $THRESHOLD_CPU" | bc -l) )); then
-        echo "$(date): High CPU usage: $CPU%" >> $LOGFILE
-    fi
-    
-    if (( $(echo "$MEM > $THRESHOLD_MEM" | bc -l) )); then
-        echo "$(date): High memory usage: $MEM%" >> $LOGFILE
-    fi
-    
-    if [ $CONN -gt $THRESHOLD_CONN ]; then
-        echo "$(date): High connection count: $CONN" >> $LOGFILE
-    fi
-    
-    sleep 60
-done
+# 保存登录凭据
+cat > $CREDS_FILE <<EOF
+Web管理地址: http://$(get_local_ip):${PORT}
+管理员用户名: $ADMINUSER
+管理员密码: $ADMINPASS
+API端口: $API_PORT
+安装时间: $(date)
 EOF
-    
-    chmod +x /usr/local/bin/3proxy-monitor.sh
-    
-    # 创建监控服务
-    cat > /etc/systemd/system/3proxy-monitor.service <<EOF
-[Unit]
-Description=3proxy Monitoring Service
-After=3proxy-autostart.service
+chmod 600 $CREDS_FILE
 
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/3proxy-monitor.sh
-Restart=always
-User=root
+systemctl daemon-reload
+systemctl enable xray
+systemctl enable xray-web
 
-[Install]
-WantedBy=multi-user.target
-EOF
-}
+# 先停止旧服务
+systemctl stop xray 2>/dev/null || true
+systemctl stop xray-web 2>/dev/null || true
+
+# 杀死所有xray进程
+pkill -9 xray 2>/dev/null || true
+sleep 2
+
+# 启动服务
+systemctl start xray
+sleep 2
+systemctl start xray-web
+
+# 验证Xray是否运行
+sleep 3
+if pgrep xray > /dev/null; then
+    echo -e "\033[32mXray 已成功启动\033[0m"
+else
+    echo -e "\033[31m警告: Xray 未能启动，尝试手动启动...\033[0m"
+    $XRAY_PATH run -config $XRAY_CONFIG &
+fi
+
+echo -e "\n========= 部署完成！========="
+MYIP=$(get_local_ip)
+echo -e "浏览器访问：\n  \033[36mhttp://$MYIP:${PORT}\033[0m"
+echo "Web管理用户名: $ADMINUSER"
+echo "Web管理密码:  $ADMINPASS"
+echo -e "\n功能说明："
+echo "1. 基于 Xray 的高性能代理管理系统"
+echo "2. 支持过期时间和流量限制管理"
+echo "3. 实时流量统计和使用报表"
+echo "4. 支持百万级并发连接"
+echo "5. 自动备份每天凌晨2点执行"
+echo -e "\n新增功能："
+echo "- 代理过期时间设置"
+echo "- 流量限制和统计"
+echo "- 使用情况报表"
+echo "- 批量设置过期时间"
+echo -e "\n常用命令："
+echo "查看登录信息: bash $0 show"
+echo "卸载系统: bash $0 uninstall"
+echo "重新安装: bash $0 reinstall"
+echo "查看Xray日志: tail -f $XRAY_LOG_DIR/access.log"
+echo "查看系统状态: systemctl status xray xray-web"
