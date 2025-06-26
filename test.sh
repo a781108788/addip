@@ -424,13 +424,8 @@ class XrayConfigManager:
                     "timeout": 300
                 },
                 "sniffing": {
-                    "enabled": True,
+                    "enabled": False,  # HTTP代理不需要嗅探
                     "destOverride": ["http", "tls"]
-                },
-                "streamSettings": {
-                    "sockopt": {
-                        "acceptProxyProtocol": False
-                    }
                 }
             }
             config['inbounds'].append(inbound)
@@ -496,15 +491,40 @@ def generate_xray_config():
                 'password': password
             })
     
-    config = xray_config_manager.generate_config(proxies)
+    # 如果没有启用的代理，至少保留基础配置
+    if not proxies:
+        config = {
+            "log": {
+                "loglevel": "warning",
+                "access": "/var/log/xray/access.log",
+                "error": "/var/log/xray/error.log"
+            },
+            "inbounds": [],
+            "outbounds": [
+                {
+                    "protocol": "freedom",
+                    "tag": "direct"
+                }
+            ]
+        }
+    else:
+        config = xray_config_manager.generate_config(proxies)
     
     # 确保目录存在
     os.makedirs(os.path.dirname(XRAY_CONFIG), exist_ok=True)
+    os.makedirs('/var/log/xray', exist_ok=True)
     
     # 写入配置文件
     with open(XRAY_CONFIG, 'w') as f:
         json.dump(config, f, indent=2)
     
+    # 确保日志文件存在并有正确权限
+    for log_file in ['/var/log/xray/access.log', '/var/log/xray/error.log']:
+        if not os.path.exists(log_file):
+            open(log_file, 'a').close()
+        os.chmod(log_file, 0o666)
+    
+    print(f"Generated Xray config with {len(proxies)} proxies")
     return len(proxies)
 
 # 后台任务处理线程
@@ -1279,11 +1299,74 @@ def ensure_xray_running():
         result = subprocess.run(['pgrep', 'xray'], capture_output=True)
         if result.returncode != 0:
             # Xray未运行，生成配置并启动
-            generate_xray_config()
+            count = generate_xray_config()
             subprocess.run(['systemctl', 'start', 'xray'])
-            print("Xray started")
+            print(f"Xray started with {count} proxies")
+            time.sleep(2)  # 等待Xray启动
     except Exception as e:
         print(f"Error checking Xray: {e}")
+
+# 添加调试路由
+@app.route('/api/debug/config')
+@login_required
+def debug_config():
+    """查看当前Xray配置（调试用）"""
+    try:
+        with open(XRAY_CONFIG, 'r') as f:
+            config = json.load(f)
+        return jsonify({
+            'status': 'success',
+            'config': config,
+            'inbounds_count': len(config.get('inbounds', [])) - 1  # 减去API入站
+        })
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        })
+
+@app.route('/api/debug/test_proxy/<int:proxy_id>')
+@login_required
+def test_proxy(proxy_id):
+    """测试单个代理是否工作"""
+    with db_pool.get_connection() as conn:
+        proxy = conn.execute('''
+            SELECT ip, port, username, password 
+            FROM proxy 
+            WHERE id = ?
+        ''', (proxy_id,)).fetchone()
+    
+    if not proxy:
+        return jsonify({'status': 'error', 'message': '代理不存在'})
+    
+    ip, port, username, password = proxy
+    proxy_url = f"http://{username}:{password}@{ip}:{port}"
+    
+    try:
+        import requests
+        # 测试代理
+        test_response = requests.get(
+            'http://httpbin.org/ip',
+            proxies={'http': proxy_url, 'https': proxy_url},
+            timeout=10
+        )
+        
+        if test_response.status_code == 200:
+            return jsonify({
+                'status': 'success',
+                'message': '代理工作正常',
+                'response': test_response.json()
+            })
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': f'代理返回错误: {test_response.status_code}'
+            })
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': f'代理测试失败: {str(e)}'
+        })
 
 # 在启动时确保Xray运行
 ensure_xray_running()
