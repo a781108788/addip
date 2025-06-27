@@ -243,11 +243,11 @@ setup_backup
 python3 -m venv venv
 source venv/bin/activate
 
-# 兼容Debian 11和12的pip安装
+# 确保Python包含requests模块
 if [ "$DEBIAN_VERSION" == "11" ]; then
-    pip install flask flask_login flask_wtf wtforms Werkzeug psutil redis celery gevent gunicorn requests grpcio grpcio-tools
+    pip install flask flask_login flask_wtf wtforms Werkzeug psutil redis celery gevent gunicorn requests grpcio grpcio-tools aiohttp
 else
-    pip install flask flask_login flask_wtf wtforms Werkzeug psutil redis celery gevent gunicorn requests grpcio grpcio-tools --break-system-packages
+    pip install flask flask_login flask_wtf wtforms Werkzeug psutil redis celery gevent gunicorn requests grpcio grpcio-tools aiohttp --break-system-packages
 fi
 
 # ------------------- xray_manage.py (主后端) -------------------
@@ -412,19 +412,23 @@ class XrayConfigManager:
         
         # 生成入站配置
         for (ip, port), users in grouped.items():
+            # 确保端口是整数类型
+            port = int(port)
+            
             inbound = {
                 "tag": f"http-{ip.replace('.', '_')}-{port}",
                 "protocol": "http",
-                "listen": ip,
-                "port": port,
+                "listen": str(ip),  # 确保是字符串
+                "port": port,       # 确保是整数
                 "settings": {
                     "accounts": users,
                     "allowTransparent": False,
                     "userLevel": 0,
-                    "timeout": 300
+                    "timeout": 300,
+                    "auth": "password"  # 明确指定认证方式
                 },
                 "sniffing": {
-                    "enabled": False,  # HTTP代理不需要嗅探
+                    "enabled": False,
                     "destOverride": ["http", "tls"]
                 }
             }
@@ -535,11 +539,29 @@ def task_worker():
             task_type, data = task_queue.get(timeout=1)
             if task_type == 'reload':
                 count = generate_xray_config()
-                # 使用后台进程重载Xray，避免阻塞
-                subprocess.Popen(['systemctl', 'reload', 'xray'], 
-                               stdout=subprocess.DEVNULL, 
-                               stderr=subprocess.DEVNULL)
-                print(f"Reloaded Xray with {count} proxies")
+                # 先测试配置文件
+                test_result = subprocess.run(
+                    [XRAY_PATH, 'test', '-config', XRAY_CONFIG],
+                    capture_output=True,
+                    text=True
+                )
+                
+                if test_result.returncode == 0:
+                    # 配置正确，重载Xray
+                    reload_result = subprocess.run(
+                        ['systemctl', 'reload', 'xray'],
+                        capture_output=True,
+                        text=True
+                    )
+                    
+                    if reload_result.returncode != 0:
+                        # 重载失败，尝试重启
+                        subprocess.run(['systemctl', 'restart', 'xray'])
+                    
+                    print(f"Reloaded Xray with {count} proxies")
+                else:
+                    print(f"Xray config test failed: {test_result.stderr}")
+                    
             task_queue.task_done()
         except queue.Empty:
             continue
@@ -1306,32 +1328,75 @@ def ensure_xray_running():
     except Exception as e:
         print(f"Error checking Xray: {e}")
 
-# 添加调试路由
-@app.route('/api/debug/config')
+# 添加手动重载配置的路由
+@app.route('/api/reload_xray', methods=['POST'])
 @login_required
-def debug_config():
-    """查看当前Xray配置（调试用）"""
+def reload_xray_manual():
+    """手动重载Xray配置"""
     try:
-        with open(XRAY_CONFIG, 'r') as f:
-            config = json.load(f)
-        return jsonify({
-            'status': 'success',
-            'config': config,
-            'inbounds_count': len(config.get('inbounds', [])) - 1  # 减去API入站
-        })
+        count = generate_xray_config()
+        
+        # 测试配置
+        test_result = subprocess.run(
+            [XRAY_PATH, 'test', '-config', XRAY_CONFIG],
+            capture_output=True,
+            text=True
+        )
+        
+        if test_result.returncode != 0:
+            return jsonify({
+                'status': 'error',
+                'message': f'配置文件测试失败: {test_result.stderr}'
+            })
+        
+        # 重启Xray服务
+        restart_result = subprocess.run(
+            ['systemctl', 'restart', 'xray'],
+            capture_output=True,
+            text=True
+        )
+        
+        if restart_result.returncode != 0:
+            return jsonify({
+                'status': 'error',
+                'message': f'Xray重启失败: {restart_result.stderr}'
+            })
+        
+        # 等待服务启动
+        time.sleep(2)
+        
+        # 检查服务状态
+        status_result = subprocess.run(
+            ['systemctl', 'is-active', 'xray'],
+            capture_output=True,
+            text=True
+        )
+        
+        if status_result.stdout.strip() == 'active':
+            return jsonify({
+                'status': 'success',
+                'message': f'Xray已重载，当前有{count}个代理'
+            })
+        else:
+            return jsonify({
+                'status': 'error',
+                'message': 'Xray服务未能正常启动'
+            })
+            
     except Exception as e:
         return jsonify({
             'status': 'error',
-            'message': str(e)
+            'message': f'重载失败: {str(e)}'
         })
 
-@app.route('/api/debug/test_proxy/<int:proxy_id>')
+# 添加查看代理配置的路由
+@app.route('/api/proxy/<int:proxy_id>/config')
 @login_required
-def test_proxy(proxy_id):
-    """测试单个代理是否工作"""
+def get_proxy_config(proxy_id):
+    """获取单个代理的配置信息"""
     with db_pool.get_connection() as conn:
         proxy = conn.execute('''
-            SELECT ip, port, username, password 
+            SELECT ip, port, username, password, enabled
             FROM proxy 
             WHERE id = ?
         ''', (proxy_id,)).fetchone()
@@ -1339,34 +1404,141 @@ def test_proxy(proxy_id):
     if not proxy:
         return jsonify({'status': 'error', 'message': '代理不存在'})
     
-    ip, port, username, password = proxy
+    ip, port, username, password, enabled = proxy
+    
+    # 构建代理URL
     proxy_url = f"http://{username}:{password}@{ip}:{port}"
     
+    # 测试命令
+    test_commands = [
+        f"curl -x {proxy_url} http://httpbin.org/ip",
+        f"curl -x http://{ip}:{port} -U {username}:{password} http://httpbin.org/ip",
+        f"export http_proxy='http://{username}:{password}@{ip}:{port}' && curl http://httpbin.org/ip"
+    ]
+    
+    return jsonify({
+        'status': 'success',
+        'proxy': {
+            'id': proxy_id,
+            'ip': ip,
+            'port': port,
+            'username': username,
+            'password': password,
+            'enabled': enabled,
+            'proxy_url': proxy_url,
+            'test_commands': test_commands
+        }
+    })
+
+@app.route('/api/diagnose')
+@login_required
+def diagnose_system():
+    """系统诊断"""
+    diagnostics = {
+        'xray_service': {},
+        'config_file': {},
+        'listening_ports': [],
+        'ip_addresses': [],
+        'proxy_count': {},
+        'errors': []
+    }
+    
     try:
-        import requests
-        # 测试代理
-        test_response = requests.get(
-            'http://httpbin.org/ip',
-            proxies={'http': proxy_url, 'https': proxy_url},
-            timeout=10
+        # 1. 检查Xray服务状态
+        service_status = subprocess.run(
+            ['systemctl', 'is-active', 'xray'],
+            capture_output=True,
+            text=True
         )
+        diagnostics['xray_service']['active'] = service_status.stdout.strip() == 'active'
         
-        if test_response.status_code == 200:
-            return jsonify({
-                'status': 'success',
-                'message': '代理工作正常',
-                'response': test_response.json()
-            })
+        # 2. 检查配置文件
+        if os.path.exists(XRAY_CONFIG):
+            diagnostics['config_file']['exists'] = True
+            
+            # 测试配置文件
+            test_result = subprocess.run(
+                [XRAY_PATH, 'test', '-config', XRAY_CONFIG],
+                capture_output=True,
+                text=True
+            )
+            diagnostics['config_file']['valid'] = test_result.returncode == 0
+            if test_result.returncode != 0:
+                diagnostics['errors'].append(f"配置文件错误: {test_result.stderr}")
+            
+            # 读取配置
+            try:
+                with open(XRAY_CONFIG, 'r') as f:
+                    config = json.load(f)
+                    http_inbounds = [ib for ib in config.get('inbounds', []) if ib.get('protocol') == 'http']
+                    diagnostics['config_file']['http_inbounds'] = len(http_inbounds)
+            except Exception as e:
+                diagnostics['errors'].append(f"读取配置文件失败: {str(e)}")
         else:
-            return jsonify({
-                'status': 'error',
-                'message': f'代理返回错误: {test_response.status_code}'
-            })
+            diagnostics['config_file']['exists'] = False
+            diagnostics['errors'].append("配置文件不存在")
+        
+        # 3. 检查监听端口
+        netstat_result = subprocess.run(
+            ['ss', '-tlnp'],
+            capture_output=True,
+            text=True
+        )
+        for line in netstat_result.stdout.splitlines():
+            if 'xray' in line:
+                parts = line.split()
+                if len(parts) >= 4:
+                    diagnostics['listening_ports'].append(parts[3])
+        
+        # 4. 检查IP地址
+        ip_result = subprocess.run(
+            ['ip', 'addr', 'show'],
+            capture_output=True,
+            text=True
+        )
+        for line in ip_result.stdout.splitlines():
+            if 'inet ' in line and not 'inet6' in line:
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    ip = parts[1].split('/')[0]
+                    if not ip.startswith('127.'):
+                        diagnostics['ip_addresses'].append(ip)
+        
+        # 5. 检查代理数量
+        with db_pool.get_connection() as conn:
+            total = conn.execute('SELECT COUNT(*) FROM proxy').fetchone()[0]
+            enabled = conn.execute('SELECT COUNT(*) FROM proxy WHERE enabled=1').fetchone()[0]
+            
+            diagnostics['proxy_count']['total'] = total
+            diagnostics['proxy_count']['enabled'] = enabled
+            
+            # 获取一个示例代理
+            sample = conn.execute('''
+                SELECT id, ip, port, username 
+                FROM proxy 
+                WHERE enabled=1 
+                LIMIT 1
+            ''').fetchone()
+            
+            if sample:
+                diagnostics['sample_proxy'] = {
+                    'id': sample[0],
+                    'ip': sample[1],
+                    'port': sample[2],
+                    'username': sample[3]
+                }
+        
+        # 6. 检查日志文件
+        if os.path.exists('/var/log/xray/error.log'):
+            # 获取最后10行错误日志
+            with open('/var/log/xray/error.log', 'r') as f:
+                lines = f.readlines()
+                diagnostics['recent_errors'] = lines[-10:] if lines else []
+        
     except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'message': f'代理测试失败: {str(e)}'
-        })
+        diagnostics['errors'].append(f"诊断过程错误: {str(e)}")
+    
+    return jsonify(diagnostics)
 
 # 在启动时确保Xray运行
 ensure_xray_running()
@@ -3338,7 +3510,7 @@ touch $XRAY_LOG_DIR/access.log
 touch $XRAY_LOG_DIR/error.log
 chmod 666 $XRAY_LOG_DIR/*.log
 
-# 生成初始Xray配置
+# 生成初始Xray配置（支持多IP监听）
 cat > $XRAY_CONFIG <<EOF
 {
   "log": {
@@ -3355,7 +3527,9 @@ cat > $XRAY_CONFIG <<EOF
     "levels": {
       "0": {
         "statsUserUplink": true,
-        "statsUserDownlink": true
+        "statsUserDownlink": true,
+        "handshake": 4,
+        "connIdle": 300
       }
     },
     "system": {
@@ -3377,7 +3551,8 @@ cat > $XRAY_CONFIG <<EOF
   "outbounds": [
     {
       "protocol": "freedom",
-      "tag": "direct"
+      "tag": "direct",
+      "settings": {}
     }
   ],
   "routing": {
