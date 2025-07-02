@@ -1,15 +1,39 @@
 #!/bin/bash
 set -e
 
-WORKDIR=/opt/xray-web
+# 系统配置
+WORKDIR=/opt/xray-manager
 XRAY_PATH=/usr/local/bin/xray
-XRAY_CONFIG=/usr/local/etc/xray/config.json
-XRAY_LOG_DIR=/var/log/xray
-CREDS_FILE=/opt/xray-web/.credentials
+XRAY_CONFIG_PATH=/usr/local/etc/xray/config.json
+XRAY_LOG_PATH=/var/log/xray
+CREDS_FILE=/opt/xray-manager/.credentials
+
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+function print_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+function print_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+function print_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+function print_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
 
 function get_local_ip() {
     local pubip lanip
-    pubip=$(curl -s ifconfig.me || curl -s ip.sb || curl -s icanhazip.com)
+    pubip=$(curl -s --connect-timeout 3 ifconfig.me || curl -s --connect-timeout 3 ip.sb || curl -s --connect-timeout 3 icanhazip.com || echo "")
     lanip=$(hostname -I | awk '{print $1}')
     if [[ -n "$pubip" && "$pubip" != "$lanip" ]]; then
         echo "$pubip"
@@ -20,56 +44,96 @@ function get_local_ip() {
 
 function show_credentials() {
     if [ -f "$CREDS_FILE" ]; then
-        echo -e "\n========= Xray Web管理系统登录信息 ========="
+        echo -e "\n========= Xray 代理管理系统登录信息 ========="
         cat "$CREDS_FILE"
         echo -e "============================================\n"
     else
-        echo -e "\033[31m未找到登录凭据文件。请运行安装脚本。\033[0m"
+        print_error "未找到登录凭据文件。请运行安装脚本。"
+    fi
+}
+
+function check_system() {
+    print_info "检查系统环境..."
+    
+    # 检查操作系统
+    if [ -f /etc/debian_version ]; then
+        DEBIAN_VERSION=$(cat /etc/debian_version | cut -d. -f1)
+        print_info "检测到 Debian $DEBIAN_VERSION"
+    else
+        print_error "此脚本仅支持 Debian 系统"
+        exit 1
+    fi
+    
+    # 检查架构
+    ARCH=$(uname -m)
+    case $ARCH in
+        x86_64)
+            XRAY_ARCH="64"
+            ;;
+        aarch64)
+            XRAY_ARCH="arm64-v8a"
+            ;;
+        *)
+            print_error "不支持的架构: $ARCH"
+            exit 1
+            ;;
+    esac
+    
+    # 检查内存
+    MEM_TOTAL=$(free -g | awk '/^Mem:/{print $2}')
+    if [ "$MEM_TOTAL" -lt 4 ]; then
+        print_warning "系统内存小于4GB，可能影响性能"
     fi
 }
 
 function optimize_system() {
-    echo -e "\n========= 系统性能优化 =========\n"
+    print_info "优化系统参数..."
     
+    # 检查是否已经优化过
     if grep -q "# Xray 性能优化" /etc/sysctl.conf 2>/dev/null; then
-        echo -e "\033[33m系统已经优化过，跳过...\033[0m"
+        print_warning "系统已经优化过，跳过..."
         return
     fi
     
-    cat >> /etc/sysctl.conf <<EOF
+    # 备份原始配置
+    cp /etc/sysctl.conf /etc/sysctl.conf.bak
+    
+    # 优化内核参数
+    cat >> /etc/sysctl.conf <<'EOF'
 
 # Xray 性能优化 - 支持百万级并发
 # 基础网络优化
 net.ipv4.ip_forward = 1
 net.ipv4.conf.all.forwarding = 1
 net.ipv4.conf.default.forwarding = 1
+net.ipv6.conf.all.forwarding = 1
 
-# TCP 连接优化
+# TCP 优化
 net.ipv4.tcp_syncookies = 1
 net.ipv4.tcp_tw_reuse = 1
-net.ipv4.tcp_fin_timeout = 15
-net.ipv4.tcp_keepalive_time = 300
+net.ipv4.tcp_fin_timeout = 30
+net.ipv4.tcp_keepalive_time = 1200
 net.ipv4.tcp_keepalive_probes = 3
 net.ipv4.tcp_keepalive_intvl = 30
 net.ipv4.tcp_max_syn_backlog = 65536
 net.ipv4.tcp_max_tw_buckets = 65536
-net.ipv4.tcp_timestamps = 1
-net.ipv4.tcp_slow_start_after_idle = 0
 net.ipv4.tcp_fastopen = 3
+net.ipv4.tcp_mtu_probing = 1
 
 # 端口范围
 net.ipv4.ip_local_port_range = 1024 65535
 
-# 连接跟踪优化
-net.netfilter.nf_conntrack_max = 3000000
-net.netfilter.nf_conntrack_tcp_timeout_established = 1200
-net.netfilter.nf_conntrack_tcp_timeout_time_wait = 60
-net.netfilter.nf_conntrack_tcp_timeout_close_wait = 30
-net.netfilter.nf_conntrack_tcp_timeout_fin_wait = 60
+# 连接跟踪
+net.netfilter.nf_conntrack_max = 2000000
+net.netfilter.nf_conntrack_tcp_timeout_established = 3600
+net.netfilter.nf_conntrack_tcp_timeout_time_wait = 120
+net.netfilter.nf_conntrack_tcp_timeout_close_wait = 60
+net.netfilter.nf_conntrack_tcp_timeout_fin_wait = 120
 
-# 套接字优化
+# 网络缓冲
 net.core.somaxconn = 65535
 net.core.netdev_max_backlog = 65536
+net.core.netdev_budget = 600
 net.core.optmem_max = 25165824
 net.ipv4.tcp_mem = 786432 1048576 26777216
 net.ipv4.udp_mem = 65536 131072 262144
@@ -80,216 +144,239 @@ net.core.wmem_max = 134217728
 net.core.rmem_default = 262144
 net.core.wmem_default = 262144
 
-# TCP 拥塞控制
-net.ipv4.tcp_congestion_control = bbr
+# BBR 拥塞控制
 net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
 
 # 文件句柄
 fs.file-max = 6000000
 fs.nr_open = 6000000
+fs.inotify.max_user_instances = 65536
 
 # 内存优化
 vm.swappiness = 10
 vm.dirty_ratio = 40
 vm.dirty_background_ratio = 10
 vm.overcommit_memory = 1
+
+# 安全优化
+net.ipv4.tcp_synack_retries = 2
+net.ipv4.tcp_syn_retries = 2
+net.ipv4.tcp_max_orphans = 65536
+net.ipv4.tcp_timestamps = 1
+net.ipv4.tcp_sack = 1
+net.ipv4.tcp_window_scaling = 1
 EOF
     
+    # 立即应用
     sysctl -p >/dev/null 2>&1
-    modprobe nf_conntrack >/dev/null 2>&1
     
+    # 加载必要模块
+    modprobe tcp_bbr 2>/dev/null || true
+    modprobe nf_conntrack 2>/dev/null || true
+    
+    # 优化文件描述符限制
     if ! grep -q "# Xray limits" /etc/security/limits.conf 2>/dev/null; then
-        cat >> /etc/security/limits.conf <<EOF
+        cat >> /etc/security/limits.conf <<'EOF'
 
 # Xray limits
-* soft nofile 3000000
-* hard nofile 3000000
-* soft nproc 3000000
-* hard nproc 3000000
-root soft nofile 3000000
-root hard nofile 3000000
-root soft nproc 3000000
-root hard nproc 3000000
+* soft nofile 1000000
+* hard nofile 1000000
+* soft nproc 1000000
+* hard nproc 1000000
+root soft nofile 1000000
+root hard nofile 1000000
+root soft nproc 1000000
+root hard nproc 1000000
 EOF
     fi
     
-    if [ -f /etc/systemd/system.conf ]; then
-        sed -i 's/^#DefaultLimitNOFILE=.*/DefaultLimitNOFILE=3000000/' /etc/systemd/system.conf
-        sed -i 's/^#DefaultLimitNPROC=.*/DefaultLimitNPROC=3000000/' /etc/systemd/system.conf
-    fi
-    
-    echo -e "\033[32m系统优化完成！支持百万级代理并发\033[0m"
-}
-
-function setup_backup() {
-    echo -e "\n========= 设置自动备份 =========\n"
-    
-    mkdir -p $WORKDIR/backups
-    
-    cat > $WORKDIR/backup.sh <<'EOF'
-#!/bin/bash
-BACKUP_DIR="/opt/xray-web/backups"
-DB_FILE="/opt/xray-web/xray.db"
-CONFIG_FILE="/usr/local/etc/xray/config.json"
-DATE=$(date +%Y%m%d_%H%M%S)
-
-mkdir -p "$BACKUP_DIR"
-
-if [ ! -f "$DB_FILE" ] || [ ! -f "$CONFIG_FILE" ]; then
-    echo "Warning: Some files not found for backup"
-    exit 0
-fi
-
-cd "$BACKUP_DIR"
-find "$BACKUP_DIR" -name "backup_*.tar.gz" -mtime +7 -delete 2>/dev/null || true
-tar -czf "backup_$DATE.tar.gz" "$DB_FILE" "$CONFIG_FILE" 2>/dev/null || true
-echo "Backup completed: backup_$DATE.tar.gz"
+    # 优化 systemd 限制
+    mkdir -p /etc/systemd/system.conf.d
+    cat > /etc/systemd/system.conf.d/99-xray-limits.conf <<'EOF'
+[Manager]
+DefaultLimitNOFILE=1000000
+DefaultLimitNPROC=1000000
+DefaultTasksMax=infinity
 EOF
     
-    chmod +x $WORKDIR/backup.sh
-    echo "0 2 * * * root $WORKDIR/backup.sh > /dev/null 2>&1" > /etc/cron.d/xray-backup
-    echo -e "\033[32m自动备份已设置（每天凌晨2点）\033[0m"
+    systemctl daemon-reload
+    
+    print_success "系统优化完成"
 }
 
 function install_xray() {
-    echo -e "\n========= 安装 Xray =========\n"
+    print_info "安装 Xray..."
     
+    # 检查是否已安装
     if [ -f "$XRAY_PATH" ]; then
-        echo "Xray 已安装，跳过..."
+        CURRENT_VERSION=$($XRAY_PATH version | grep Xray | cut -d' ' -f2)
+        print_info "Xray 已安装，版本: $CURRENT_VERSION"
         return
     fi
     
     # 下载最新版 Xray
-    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+    cd /tmp
+    LATEST_VERSION=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep tag_name | cut -d'"' -f4)
+    print_info "下载 Xray $LATEST_VERSION..."
     
-    # 创建必要目录
+    wget -q --show-progress "https://github.com/XTLS/Xray-core/releases/download/${LATEST_VERSION}/Xray-linux-${XRAY_ARCH}.zip"
+    
+    # 解压安装
+    unzip -q Xray-linux-${XRAY_ARCH}.zip
+    mkdir -p /usr/local/bin /usr/local/etc/xray /usr/local/share/xray
+    cp xray /usr/local/bin/
+    cp *.dat /usr/local/share/xray/
+    chmod +x /usr/local/bin/xray
+    
+    # 清理
+    rm -f Xray-linux-${XRAY_ARCH}.zip xray *.dat
+    
+    print_success "Xray 安装完成"
+}
+
+function setup_directories() {
+    print_info "创建目录结构..."
+    
+    mkdir -p $WORKDIR/{templates,static,backups,logs}
+    mkdir -p $XRAY_LOG_PATH
     mkdir -p /usr/local/etc/xray
-    mkdir -p $XRAY_LOG_DIR
     
-    # 移动二进制文件到标准位置
-    if [ -f "/usr/local/bin/xray" ]; then
-        XRAY_PATH="/usr/local/bin/xray"
-    elif [ -f "/usr/bin/xray" ]; then
-        cp /usr/bin/xray /usr/local/bin/xray
-        XRAY_PATH="/usr/local/bin/xray"
-    fi
-    
-    chmod +x $XRAY_PATH
+    # 创建日志文件
+    touch $XRAY_LOG_PATH/access.log
+    touch $XRAY_LOG_PATH/error.log
+    chmod 666 $XRAY_LOG_PATH/*.log
 }
 
-function uninstall_xray_web() {
-    systemctl stop xray-web 2>/dev/null || true
-    systemctl stop xray 2>/dev/null || true
-    systemctl disable xray-web 2>/dev/null || true
-    systemctl disable xray 2>/dev/null || true
-    rm -rf $WORKDIR
-    rm -f /etc/systemd/system/xray-web.service
-    rm -f /usr/local/bin/xray
-    rm -rf /usr/local/etc/xray
-    rm -f /etc/cron.d/xray-backup
-    systemctl daemon-reload
-    echo -e "\033[31mXray Web管理及全部相关内容已卸载。\033[0m"
+function install_dependencies() {
+    print_info "安装系统依赖..."
+    
+    apt update
+    apt install -y \
+        python3 python3-pip python3-venv python3-dev \
+        gcc make git wget curl unzip \
+        sqlite3 redis-server \
+        nginx certbot python3-certbot-nginx \
+        supervisor cron \
+        net-tools iftop htop
+    
+    # 启动 Redis
+    systemctl enable redis-server
+    systemctl start redis-server
+    
+    print_success "依赖安装完成"
 }
 
-# 处理命令行参数
-case "$1" in
-    "uninstall")
-        uninstall_xray_web
-        exit 0
-        ;;
-    "reinstall")
-        uninstall_xray_web
-        echo -e "\033[32m正在重新安装...\033[0m"
-        ;;
-    "show")
-        show_credentials
-        exit 0
-        ;;
-esac
+function setup_python_env() {
+    print_info "配置 Python 环境..."
+    
+    cd $WORKDIR
+    python3 -m venv venv
+    source venv/bin/activate
+    
+    # 升级 pip
+    pip install --upgrade pip
+    
+    # 安装 Python 依赖
+    pip install \
+        flask==2.3.3 \
+        flask-login==0.6.2 \
+        flask-wtf==1.1.1 \
+        flask-cors==4.0.0 \
+        werkzeug==2.3.7 \
+        psutil==5.9.5 \
+        redis==5.0.0 \
+        celery==5.3.1 \
+        gevent==23.9.1 \
+        gunicorn==21.2.0 \
+        requests==2.31.0 \
+        python-dateutil==2.8.2 \
+        apscheduler==3.10.4
+    
+    deactivate
+    
+    print_success "Python 环境配置完成"
+}
 
-PORT=$((RANDOM%55534+10000))
-ADMINUSER="admin$RANDOM"
-ADMINPASS=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
-API_PORT=$((PORT + 1))
-
-echo -e "\n========= 1. 自动安装依赖 =========\n"
-
-# 检测系统版本
-if [ -f /etc/debian_version ]; then
-    DEBIAN_VERSION=$(cat /etc/debian_version | cut -d. -f1)
-    echo "检测到 Debian $DEBIAN_VERSION"
-fi
-
-apt update
-apt install -y gcc make git wget curl python3 python3-pip python3-venv sqlite3 cron redis-server
-
-# 启动Redis
-systemctl enable redis-server
-systemctl start redis-server
-
-# 安装 Xray
-install_xray
-
-# 执行系统优化
-optimize_system
-
-echo -e "\n========= 2. 部署 Python Web 管理环境 =========\n"
-mkdir -p $WORKDIR/templates $WORKDIR/static $WORKDIR/backups
-cd $WORKDIR
-
-# 设置自动备份
-setup_backup
-
-python3 -m venv venv
-source venv/bin/activate
-
-# 确保Python包含requests模块
-if [ "$DEBIAN_VERSION" == "11" ]; then
-    pip install flask flask_login flask_wtf wtforms Werkzeug psutil redis celery gevent gunicorn requests grpcio grpcio-tools aiohttp
-else
-    pip install flask flask_login flask_wtf wtforms Werkzeug psutil redis celery gevent gunicorn requests grpcio grpcio-tools aiohttp --break-system-packages
-fi
-
-# ------------------- xray_manage.py (主后端) -------------------
-cat > $WORKDIR/xray_manage.py << 'EOF'
-import os, sqlite3, random, string, re, collections, json, psutil, datetime
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, Response
-from flask_login import LoginManager, login_user, login_required, logout_user, UserMixin
-from werkzeug.security import generate_password_hash, check_password_hash
-from io import BytesIO
+function create_webapp() {
+    print_info "创建 Web 应用..."
+    
+    # ========== app.py - 主应用 ==========
+    cat > $WORKDIR/app.py << 'PYEOF'
+import os
+import sys
+import json
+import time
+import sqlite3
+import random
+import string
+import hashlib
+import subprocess
 import threading
 import queue
-import time
-import subprocess
+from datetime import datetime, timedelta
 from contextlib import contextmanager
+from pathlib import Path
+
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, Response
+from flask_login import LoginManager, login_user, login_required, logout_user, UserMixin, current_user
+from flask_cors import CORS
+from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
+
+import psutil
 import redis
-import pickle
 import requests
+from apscheduler.schedulers.background import BackgroundScheduler
 
-DB = 'xray.db'
-SECRET = 'changeme_xray_secret_key'
-import sys
-PORT = int(sys.argv[1]) if len(sys.argv)>1 else 9999
-API_PORT = int(sys.argv[2]) if len(sys.argv)>2 else 10085
-XRAY_PATH = '/usr/local/bin/xray'
-XRAY_CONFIG = '/usr/local/etc/xray/config.json'
+# 配置
+DB_PATH = 'xray.db'
+XRAY_CONFIG_PATH = '/usr/local/etc/xray/config.json'
+XRAY_LOG_PATH = '/var/log/xray'
+SECRET_KEY = os.environ.get('SECRET_KEY', 'xray-manager-secret-key-change-me')
+REDIS_HOST = 'localhost'
+REDIS_PORT = 6379
 
-app = Flask(__name__, template_folder='templates', static_folder='static')
-app.secret_key = SECRET
+# Flask 应用
+app = Flask(__name__)
+app.secret_key = SECRET_KEY
+app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB
+
+# CORS
+CORS(app)
+
+# 登录管理
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
+login_manager.login_message = '请先登录'
+
+# Redis 连接
+try:
+    redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=True)
+    redis_client.ping()
+except:
+    print("Warning: Redis connection failed, using memory cache")
+    redis_client = None
+
+# 任务队列
+task_queue = queue.Queue(maxsize=1000)
 
 # 数据库连接池
 class DatabasePool:
     def __init__(self, db_path, pool_size=20):
         self.db_path = db_path
         self.pool = queue.Queue(maxsize=pool_size)
-        for _ in range(pool_size):
-            conn = sqlite3.connect(db_path, check_same_thread=False)
+        self._initialize_pool()
+    
+    def _initialize_pool(self):
+        for _ in range(self.pool.qsize(), self.pool.maxsize):
+            conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
             conn.execute('PRAGMA journal_mode=WAL')
             conn.execute('PRAGMA synchronous=NORMAL')
             conn.execute('PRAGMA cache_size=10000')
             conn.execute('PRAGMA temp_store=MEMORY')
+            conn.execute('PRAGMA foreign_keys=ON')
             self.pool.put(conn)
     
     @contextmanager
@@ -297,375 +384,360 @@ class DatabasePool:
         conn = self.pool.get()
         try:
             yield conn
+            conn.commit()
+        except Exception as e:
+            conn.rollback()
+            raise e
         finally:
             self.pool.put(conn)
 
 # 初始化数据库池
-db_pool = DatabasePool(DB)
+db_pool = DatabasePool(DB_PATH)
 
-# Redis连接
-redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=False)
-
-# 任务队列
-task_queue = queue.Queue(maxsize=1000)
-
-def detect_nic():
-    for nic in os.listdir('/sys/class/net'):
-        if nic.startswith('e') or nic.startswith('en') or nic.startswith('eth'):
-            return nic
-    return 'eth0'
-
+# 用户模型
 class User(UserMixin):
-    def __init__(self, id, username, password):
+    def __init__(self, id, username, email, role='user'):
         self.id = id
         self.username = username
-        self.password_hash = password
-    def check_password(self, password):
-        return check_password_hash(self.password_hash, password)
+        self.email = email
+        self.role = role
 
 @login_manager.user_loader
 def load_user(user_id):
     with db_pool.get_connection() as conn:
-        cur = conn.execute("SELECT id,username,password FROM users WHERE id=?", (user_id,))
-        row = cur.fetchone()
-        if row:
-            return User(row[0], row[1], row[2])
+        user = conn.execute(
+            "SELECT id, username, email, role FROM users WHERE id = ?", 
+            (user_id,)
+        ).fetchone()
+        if user:
+            return User(user['id'], user['username'], user['email'], user['role'])
     return None
 
-class XrayConfigManager:
+# Xray 配置管理
+class XrayManager:
     def __init__(self):
-        self.api_port = API_PORT
+        self.config_lock = threading.Lock()
         
-    def generate_config(self, proxies):
-        """生成Xray配置"""
-        config = {
-            "log": {
-                "loglevel": "warning",
-                "access": "/var/log/xray/access.log",
-                "error": "/var/log/xray/error.log"
-            },
-            "api": {
-                "tag": "api",
-                "services": ["HandlerService", "StatsService"]
-            },
-            "stats": {},
-            "policy": {
-                "levels": {
-                    "0": {
-                        "statsUserUplink": True,
-                        "statsUserDownlink": True,
-                        "handshake": 4,
-                        "connIdle": 300,
-                        "uplinkOnly": 2,
-                        "downlinkOnly": 5,
-                        "bufferSize": 512
-                    }
-                },
-                "system": {
-                    "statsInboundUplink": True,
-                    "statsInboundDownlink": True,
-                    "statsOutboundUplink": True,
-                    "statsOutboundDownlink": True
-                }
-            },
-            "inbounds": [],
-            "outbounds": [
-                {
-                    "protocol": "freedom",
-                    "tag": "direct",
-                    "settings": {
-                        "domainStrategy": "UseIP"
-                    }
-                },
-                {
-                    "protocol": "blackhole",
-                    "tag": "blocked"
-                }
-            ],
-            "routing": {
-                "domainStrategy": "AsIs",
-                "rules": [
-                    {
-                        "type": "field",
-                        "inboundTag": ["api"],
-                        "outboundTag": "api"
-                    }
-                ]
-            },
-            "transport": {
-                "sockopt": {
-                    "tcpFastOpen": True,
-                    "tcpNoDelay": True,
-                    "tcpKeepAliveInterval": 30
-                }
-            }
-        }
-        
-        # 按IP和端口分组
-        grouped = collections.defaultdict(list)
-        for proxy in proxies:
-            key = (proxy['ip'], proxy['port'])
-            grouped[key].append({
-                'user': proxy['username'],
-                'pass': proxy['password']
-            })
-        
-        # 生成入站配置
-        for (ip, port), users in grouped.items():
-            # 确保端口是整数类型
-            port = int(port)
+    def generate_config(self):
+        """生成 Xray 配置"""
+        with db_pool.get_connection() as conn:
+            # 获取所有启用的代理
+            proxies = conn.execute("""
+                SELECT p.*, g.name as group_name 
+                FROM proxies p
+                LEFT JOIN proxy_groups g ON p.group_id = g.id
+                WHERE p.enabled = 1
+                ORDER BY p.port
+            """).fetchall()
             
-            inbound = {
-                "tag": f"http-{ip.replace('.', '_')}-{port}",
-                "protocol": "http",
-                "listen": str(ip),  # 确保是字符串
-                "port": port,       # 确保是整数
-                "settings": {
-                    "accounts": users,
-                    "allowTransparent": False,
-                    "userLevel": 0,
-                    "timeout": 300,
-                    "auth": "password"  # 明确指定认证方式
+            # 基础配置
+            config = {
+                "log": {
+                    "access": f"{XRAY_LOG_PATH}/access.log",
+                    "error": f"{XRAY_LOG_PATH}/error.log",
+                    "loglevel": "warning"
                 },
-                "sniffing": {
-                    "enabled": False,
-                    "destOverride": ["http", "tls"]
+                "api": {
+                    "services": ["HandlerService", "LoggerService", "StatsService"],
+                    "tag": "api"
+                },
+                "inbounds": [],
+                "outbounds": [
+                    {
+                        "protocol": "freedom",
+                        "settings": {},
+                        "tag": "direct"
+                    },
+                    {
+                        "protocol": "blackhole",
+                        "settings": {},
+                        "tag": "blocked"
+                    }
+                ],
+                "routing": {
+                    "domainStrategy": "IPIfNonMatch",
+                    "rules": [
+                        {
+                            "inboundTag": ["api"],
+                            "outboundTag": "api",
+                            "type": "field"
+                        }
+                    ]
+                },
+                "stats": {},
+                "policy": {
+                    "levels": {
+                        "0": {
+                            "handshake": 4,
+                            "connIdle": 300,
+                            "uplinkOnly": 2,
+                            "downlinkOnly": 5,
+                            "statsUserUplink": true,
+                            "statsUserDownlink": true,
+                            "bufferSize": 512
+                        }
+                    },
+                    "system": {
+                        "statsInboundUplink": true,
+                        "statsInboundDownlink": true,
+                        "statsOutboundUplink": true,
+                        "statsOutboundDownlink": true
+                    }
                 }
             }
-            config['inbounds'].append(inbound)
-        
-        # API入站
-        config['inbounds'].append({
-            "tag": "api",
-            "protocol": "dokodemo-door",
-            "listen": "127.0.0.1",
-            "port": self.api_port,
-            "settings": {
-                "address": "127.0.0.1"
-            }
-        })
-        
-        return config
-
-class XrayAPIClient:
-    def __init__(self, api_addr=f"127.0.0.1:{API_PORT}"):
-        self.api_url = f"http://{api_addr}"
-        
-    def get_stats(self, pattern="", reset=False):
-        """获取统计信息"""
-        try:
-            # 使用 Xray 的 API
-            cmd = [XRAY_PATH, "api", "statsquery", f"--server={self.api_url}"]
-            if pattern:
-                cmd.extend(["--pattern", pattern])
-            if reset:
-                cmd.append("--reset")
-                
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode == 0:
-                return json.loads(result.stdout)
-            return None
-        except Exception as e:
-            print(f"API error: {e}")
-            return None
-
-xray_config_manager = XrayConfigManager()
-xray_api_client = XrayAPIClient()
-
-def reload_xray_async():
-    """异步重载Xray配置"""
-    task_queue.put(('reload', None))
-
-def generate_xray_config():
-    """生成Xray配置文件"""
-    with db_pool.get_connection() as conn:
-        cursor = conn.execute('''
-            SELECT ip, port, username, password 
-            FROM proxy 
-            WHERE enabled=1 
-            ORDER BY ip, port
-        ''')
-        
-        proxies = []
-        for ip, port, username, password in cursor:
-            proxies.append({
-                'ip': ip,
-                'port': port,
-                'username': username,
-                'password': password
+            
+            # API 入站
+            config["inbounds"].append({
+                "listen": "127.0.0.1",
+                "port": 10085,
+                "protocol": "dokodemo-door",
+                "settings": {
+                    "address": "127.0.0.1"
+                },
+                "tag": "api"
             })
-    
-    # 如果没有启用的代理，至少保留基础配置
-    if not proxies:
-        config = {
-            "log": {
-                "loglevel": "warning",
-                "access": "/var/log/xray/access.log",
-                "error": "/var/log/xray/error.log"
-            },
-            "inbounds": [],
-            "outbounds": [
-                {
-                    "protocol": "freedom",
-                    "tag": "direct"
+            
+            # 添加代理入站
+            for proxy in proxies:
+                inbound = {
+                    "listen": proxy['bind_ip'],
+                    "port": proxy['port'],
+                    "protocol": proxy['protocol'],
+                    "tag": f"proxy-{proxy['id']}",
+                    "settings": {}
                 }
-            ]
-        }
-    else:
-        config = xray_config_manager.generate_config(proxies)
+                
+                if proxy['protocol'] == 'http':
+                    inbound["settings"] = {
+                        "auth": "password",
+                        "accounts": [
+                            {
+                                "user": proxy['username'],
+                                "pass": proxy['password']
+                            }
+                        ],
+                        "allowTransparent": False,
+                        "userLevel": 0
+                    }
+                elif proxy['protocol'] == 'socks':
+                    inbound["settings"] = {
+                        "auth": "password",
+                        "accounts": [
+                            {
+                                "user": proxy['username'],
+                                "pass": proxy['password']
+                            }
+                        ],
+                        "udp": True,
+                        "userLevel": 0
+                    }
+                
+                # 流量限制
+                if proxy['traffic_limit'] > 0:
+                    inbound["sniffing"] = {
+                        "enabled": True,
+                        "destOverride": ["http", "tls"]
+                    }
+                
+                config["inbounds"].append(inbound)
+            
+        return config
     
-    # 确保目录存在
-    os.makedirs(os.path.dirname(XRAY_CONFIG), exist_ok=True)
-    os.makedirs('/var/log/xray', exist_ok=True)
-    
-    # 写入配置文件
-    with open(XRAY_CONFIG, 'w') as f:
-        json.dump(config, f, indent=2)
-    
-    # 确保日志文件存在并有正确权限
-    for log_file in ['/var/log/xray/access.log', '/var/log/xray/error.log']:
-        if not os.path.exists(log_file):
-            open(log_file, 'a').close()
-        os.chmod(log_file, 0o666)
-    
-    print(f"Generated Xray config with {len(proxies)} proxies")
-    return len(proxies)
-
-# 后台任务处理线程
-def task_worker():
-    """后台任务处理器"""
-    while True:
-        try:
-            task_type, data = task_queue.get(timeout=1)
-            if task_type == 'reload':
-                count = generate_xray_config()
-                # 先测试配置文件
-                test_result = subprocess.run(
-                    [XRAY_PATH, 'test', '-config', XRAY_CONFIG],
+    def reload_config(self):
+        """重载 Xray 配置"""
+        with self.config_lock:
+            try:
+                # 生成配置
+                config = self.generate_config()
+                
+                # 写入配置文件
+                with open(XRAY_CONFIG_PATH, 'w', encoding='utf-8') as f:
+                    json.dump(config, f, indent=2, ensure_ascii=False)
+                
+                # 验证配置
+                result = subprocess.run(
+                    ['/usr/local/bin/xray', 'test', '-c', XRAY_CONFIG_PATH],
                     capture_output=True,
                     text=True
                 )
                 
-                if test_result.returncode == 0:
-                    # 配置正确，重载Xray
-                    reload_result = subprocess.run(
-                        ['systemctl', 'reload', 'xray'],
-                        capture_output=True,
-                        text=True
-                    )
-                    
-                    if reload_result.returncode != 0:
-                        # 重载失败，尝试重启
-                        subprocess.run(['systemctl', 'restart', 'xray'])
-                    
-                    print(f"Reloaded Xray with {count} proxies")
-                else:
-                    print(f"Xray config test failed: {test_result.stderr}")
-                    
+                if result.returncode != 0:
+                    raise Exception(f"配置验证失败: {result.stderr}")
+                
+                # 重载服务
+                subprocess.run(['systemctl', 'reload', 'xray'], check=True)
+                
+                # 清除缓存
+                if redis_client:
+                    redis_client.delete('proxy_stats')
+                
+                return True, "配置重载成功"
+                
+            except Exception as e:
+                return False, str(e)
+    
+    def get_stats(self):
+        """获取统计信息"""
+        try:
+            # 使用 Xray API 获取统计
+            response = requests.get('http://127.0.0.1:10085/stats/query', timeout=5)
+            if response.status_code == 200:
+                return response.json()
+        except:
+            pass
+        return {}
+
+# 初始化 Xray 管理器
+xray_manager = XrayManager()
+
+# 工具函数
+def generate_password(length=16):
+    """生成随机密码"""
+    chars = string.ascii_letters + string.digits + "!@#$%^&*"
+    return ''.join(random.choice(chars) for _ in range(length))
+
+def format_bytes(bytes_value):
+    """格式化字节数"""
+    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+        if bytes_value < 1024.0:
+            return f"{bytes_value:.2f} {unit}"
+        bytes_value /= 1024.0
+    return f"{bytes_value:.2f} PB"
+
+def get_system_info():
+    """获取系统信息"""
+    return {
+        'cpu_percent': psutil.cpu_percent(interval=1),
+        'memory': {
+            'percent': psutil.virtual_memory().percent,
+            'used': psutil.virtual_memory().used,
+            'total': psutil.virtual_memory().total
+        },
+        'disk': {
+            'percent': psutil.disk_usage('/').percent,
+            'used': psutil.disk_usage('/').used,
+            'total': psutil.disk_usage('/').total
+        },
+        'network': psutil.net_io_counters()._asdict() if psutil.net_io_counters() else {},
+        'xray': check_xray_status()
+    }
+
+def check_xray_status():
+    """检查 Xray 状态"""
+    try:
+        result = subprocess.run(
+            ['systemctl', 'is-active', 'xray'],
+            capture_output=True,
+            text=True
+        )
+        is_running = result.stdout.strip() == 'active'
+        
+        # 获取进程信息
+        if is_running:
+            for proc in psutil.process_iter(['pid', 'name', 'memory_info']):
+                if proc.info['name'] == 'xray':
+                    return {
+                        'running': True,
+                        'pid': proc.info['pid'],
+                        'memory': proc.info['memory_info'].rss,
+                        'connections': len(proc.connections())
+                    }
+        
+        return {'running': False}
+    except:
+        return {'running': False}
+
+# 后台任务
+def background_tasks():
+    """后台任务处理"""
+    while True:
+        try:
+            task = task_queue.get(timeout=1)
+            if task['type'] == 'reload_config':
+                xray_manager.reload_config()
+            elif task['type'] == 'check_expired':
+                check_expired_proxies()
+            elif task['type'] == 'update_traffic':
+                update_traffic_stats()
             task_queue.task_done()
         except queue.Empty:
             continue
         except Exception as e:
-            print(f"Task worker error: {e}")
+            print(f"Background task error: {e}")
+
+def check_expired_proxies():
+    """检查过期代理"""
+    with db_pool.get_connection() as conn:
+        # 禁用过期代理
+        conn.execute("""
+            UPDATE proxies 
+            SET enabled = 0 
+            WHERE enabled = 1 
+            AND expire_time IS NOT NULL 
+            AND expire_time < datetime('now')
+        """)
+        
+        if conn.total_changes > 0:
+            task_queue.put({'type': 'reload_config'})
+
+def update_traffic_stats():
+    """更新流量统计"""
+    # 从 Xray 日志或 API 获取流量信息
+    stats = xray_manager.get_stats()
+    
+    with db_pool.get_connection() as conn:
+        for stat in stats.get('stats', []):
+            if 'user' in stat['name'] and 'traffic' in stat['name']:
+                # 解析用户和流量信息
+                parts = stat['name'].split('>>>')
+                if len(parts) >= 2:
+                    user = parts[0].replace('user>>>', '')
+                    direction = 'uplink' if 'uplink' in parts[1] else 'downlink'
+                    bytes_value = stat['value']
+                    
+                    # 更新数据库
+                    conn.execute("""
+                        UPDATE proxies 
+                        SET traffic_used = traffic_used + ?,
+                            last_used = datetime('now')
+                        WHERE username = ?
+                    """, (bytes_value, user))
+
+# 定时任务
+scheduler = BackgroundScheduler()
+scheduler.add_job(check_expired_proxies, 'interval', minutes=5)
+scheduler.add_job(update_traffic_stats, 'interval', minutes=1)
+scheduler.start()
 
 # 启动后台任务线程
-worker_thread = threading.Thread(target=task_worker, daemon=True)
-worker_thread.start()
+task_thread = threading.Thread(target=background_tasks, daemon=True)
+task_thread.start()
 
-# 定期流量统计线程
-def traffic_stats_worker():
-    """定期更新流量统计"""
-    while True:
-        try:
-            # 获取所有用户的流量统计
-            stats = xray_api_client.get_stats(pattern="user>>>", reset=False)
-            if stats:
-                # 更新到数据库
-                with db_pool.get_connection() as conn:
-                    for stat in stats.get('stat', []):
-                        # 解析统计名称: user>>>username>>>traffic>>>uplink/downlink
-                        parts = stat['name'].split('>>>')
-                        if len(parts) >= 4:
-                            username = parts[1]
-                            direction = parts[3]
-                            value = stat['value']
-                            
-                            if direction == 'uplink':
-                                conn.execute('''
-                                    UPDATE proxy 
-                                    SET traffic_up = ?, last_used = datetime('now')
-                                    WHERE username = ?
-                                ''', (value, username))
-                            elif direction == 'downlink':
-                                conn.execute('''
-                                    UPDATE proxy 
-                                    SET traffic_down = ?, last_used = datetime('now')
-                                    WHERE username = ?
-                                ''', (value, username))
-                    conn.commit()
-        except Exception as e:
-            print(f"Traffic stats error: {e}")
-        
-        time.sleep(60)  # 60秒更新一次
+# 路由
+@app.route('/')
+@login_required
+def index():
+    return render_template('index.html')
 
-# 启动流量统计线程
-traffic_thread = threading.Thread(target=traffic_stats_worker, daemon=True)
-traffic_thread.start()
-
-# 注释掉过期检查线程（按要求取消）
-# def expire_check_worker():
-#     """检查并禁用过期代理"""
-#     while True:
-#         try:
-#             with db_pool.get_connection() as conn:
-#                 # 禁用过期代理
-#                 result = conn.execute('''
-#                     UPDATE proxy 
-#                     SET enabled = 0 
-#                     WHERE enabled = 1 
-#                     AND expire_at IS NOT NULL 
-#                     AND expire_at < datetime('now')
-#                 ''')
-#                 
-#                 if result.rowcount > 0:
-#                     conn.commit()
-#                     reload_xray_async()
-#                     print(f"Disabled {result.rowcount} expired proxies")
-#                 
-#                 # 禁用超流量代理
-#                 result = conn.execute('''
-#                     UPDATE proxy 
-#                     SET enabled = 0 
-#                     WHERE enabled = 1
-#                     AND traffic_limit > 0 
-#                     AND (traffic_up + traffic_down) >= traffic_limit
-#                 ''')
-#                 
-#                 if result.rowcount > 0:
-#                     conn.commit()
-#                     reload_xray_async()
-#                     print(f"Disabled {result.rowcount} over-traffic proxies")
-#                     
-#         except Exception as e:
-#             print(f"Expire check error: {e}")
-#         
-#         time.sleep(300)  # 5分钟检查一次
-# 
-# # 启动过期检查线程
-# expire_thread = threading.Thread(target=expire_check_worker, daemon=True)
-# expire_thread.start()
-
-@app.route('/login', methods=['GET','POST'])
+@app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        
         with db_pool.get_connection() as conn:
-            cur = conn.execute('SELECT id,username,password FROM users WHERE username=?', (request.form['username'],))
-            row = cur.fetchone()
-            if row and check_password_hash(row[2], request.form['password']):
-                user = User(row[0], row[1], row[2])
-                login_user(user)
-                return redirect('/')
-        flash('登录失败')
+            user = conn.execute(
+                "SELECT * FROM users WHERE username = ?",
+                (username,)
+            ).fetchone()
+            
+            if user and check_password_hash(user['password'], password):
+                user_obj = User(user['id'], user['username'], user['email'], user['role'])
+                login_user(user_obj, remember=True)
+                return redirect(url_for('index'))
+            
+            flash('用户名或密码错误', 'error')
+    
     return render_template('login.html')
 
 @app.route('/logout')
@@ -674,970 +746,890 @@ def logout():
     logout_user()
     return redirect(url_for('login'))
 
-@app.route('/', methods=['GET', 'POST'])
+# API 路由
+@app.route('/api/stats')
 @login_required
-def index():
-    return render_template('index.html')
-
-@app.route('/api/proxy_groups')
-@login_required
-def api_proxy_groups():
-    # 尝试从缓存获取
-    cached = redis_client.get('proxy_groups')
-    if cached:
-        return jsonify(pickle.loads(cached))
+def api_stats():
+    """获取统计信息"""
+    # 缓存统计信息
+    if redis_client:
+        cached = redis_client.get('system_stats')
+        if cached:
+            return json.loads(cached)
     
-    with db_pool.get_connection() as conn:
-        proxies = conn.execute('''
-            SELECT id, ip, port, username, password, enabled, ip_range, port_range, 
-                   user_prefix, created_at, expire_at, traffic_up, traffic_down, 
-                   traffic_limit, last_used, notes
-            FROM proxy 
-            ORDER BY ip
-        ''').fetchall()
-    
-    groups = collections.defaultdict(list)
-    for p in proxies:
-        c_seg = '.'.join(p[1].split('.')[:3])
-        groups[c_seg].append({
-            'id': p[0],
-            'ip': p[1],
-            'port': p[2],
-            'username': p[3],
-            'password': p[4],
-            'enabled': p[5],
-            'ip_range': p[6],
-            'port_range': p[7],
-            'user_prefix': p[8],
-            'created_at': p[9],
-            'expire_at': p[10],
-            'traffic_up': p[11] or 0,
-            'traffic_down': p[12] or 0,
-            'traffic_limit': p[13] or 0,
-            'last_used': p[14],
-            'notes': p[15]
-        })
-    
-    result = []
-    for c_seg, proxies_list in groups.items():
-        enabled_count = sum(1 for p in proxies_list if p['enabled'])
-        total_traffic = sum(p['traffic_up'] + p['traffic_down'] for p in proxies_list)
-        
-        # 计算IP和端口范围
-        ips = [p['ip'] for p in proxies_list]
-        ports = sorted([p['port'] for p in proxies_list])
-        
-        if ips:
-            ip_nums = sorted([int(ip.split('.')[-1]) for ip in ips])
-            if len(ip_nums) > 1 and ip_nums[-1] - ip_nums[0] == len(ip_nums) - 1:
-                actual_ip_range = f"{c_seg}.{ip_nums[0]}-{ip_nums[-1]}"
-            else:
-                actual_ip_range = f"{c_seg}.x ({len(ip_nums)} IPs)"
-        else:
-            actual_ip_range = proxies_list[0]['ip_range'] if proxies_list else ''
-        
-        if ports:
-            if len(ports) == 1:
-                actual_port_range = str(ports[0])
-            else:
-                actual_port_range = f"{ports[0]}-{ports[-1]}"
-        else:
-            actual_port_range = proxies_list[0]['port_range'] if proxies_list else ''
-        
-        # 检查即将过期的代理（7天内）
-        expiring_soon = sum(1 for p in proxies_list 
-                          if p['expire_at'] and 
-                          p['expire_at'] > datetime.datetime.now().isoformat() and
-                          p['expire_at'] < (datetime.datetime.now() + datetime.timedelta(days=7)).isoformat())
-        
-        # 获取最早创建时间
-        created_dates = [p['created_at'] for p in proxies_list if p['created_at']]
-        earliest_created = min(created_dates) if created_dates else None
-        
-        result.append({
-            'c_segment': c_seg,
-            'total': len(proxies_list),
-            'enabled': enabled_count,
-            'traffic': round(total_traffic / 1024 / 1024, 2),  # MB
-            'ip_range': actual_ip_range,
-            'port_range': actual_port_range,
-            'user_prefix': proxies_list[0]['user_prefix'] if proxies_list else '',
-            'created_at': earliest_created,
-            'expiring_soon': expiring_soon
-        })
-    
-    sorted_result = sorted(result, key=lambda x: x['c_segment'])
-    # 缓存5秒
-    redis_client.setex('proxy_groups', 5, pickle.dumps(sorted_result))
-    
-    return jsonify(sorted_result)
-
-@app.route('/api/proxy_group/<c_segment>')
-@login_required
-def api_proxy_group_detail(c_segment):
-    with db_pool.get_connection() as conn:
-        proxies = conn.execute('''
-            SELECT id, ip, port, username, password, enabled, ip_range, port_range, 
-                   user_prefix, created_at, expire_at, traffic_up, traffic_down, 
-                   traffic_limit, last_used, notes
-            FROM proxy 
-            WHERE ip LIKE ? 
-            ORDER BY ip, port
-        ''', (c_segment + '.%',)).fetchall()
-    
-    result = []
-    for p in proxies:
-        result.append({
-            'id': p[0],
-            'ip': p[1],
-            'port': p[2],
-            'username': p[3],
-            'password': p[4],
-            'enabled': p[5],
-            'ip_range': p[6],
-            'port_range': p[7],
-            'user_prefix': p[8],
-            'created_at': p[9],
-            'expire_at': p[10],
-            'traffic_up': p[11] or 0,
-            'traffic_down': p[12] or 0,
-            'traffic_limit': p[13] or 0,
-            'traffic_total': (p[11] or 0) + (p[12] or 0),
-            'last_used': p[14],
-            'notes': p[15]
-        })
-    
-    return jsonify(result)
-
-@app.route('/api/delete_group/<c_segment>', methods=['POST'])
-@login_required
-def api_delete_group(c_segment):
-    with db_pool.get_connection() as conn:
-        conn.execute('DELETE FROM proxy WHERE ip LIKE ?', (c_segment + '.%',))
-        conn.commit()
-    redis_client.delete('proxy_groups')
-    reload_xray_async()
-    return jsonify({'status': 'success'})
-
-@app.route('/api/toggle_group/<c_segment>/<action>', methods=['POST'])
-@login_required
-def api_toggle_group(c_segment, action):
-    enabled = 1 if action == 'enable' else 0
-    with db_pool.get_connection() as conn:
-        conn.execute('UPDATE proxy SET enabled=? WHERE ip LIKE ?', (enabled, c_segment + '.%'))
-        conn.commit()
-    redis_client.delete('proxy_groups')
-    reload_xray_async()
-    return jsonify({'status': 'success'})
-
-@app.route('/api/set_expire_group/<c_segment>', methods=['POST'])
-@login_required
-def api_set_expire_group(c_segment):
-    expire_date = request.form.get('expire_date')
-    with db_pool.get_connection() as conn:
-        conn.execute('UPDATE proxy SET expire_at=? WHERE ip LIKE ?', (expire_date, c_segment + '.%'))
-        conn.commit()
-    redis_client.delete('proxy_groups')
-    return jsonify({'status': 'success'})
-
-@app.route('/api/system_status')
-@login_required
-def api_system_status():
-    # 尝试从缓存获取
-    cached = redis_client.get('system_status')
-    if cached:
-        return jsonify(pickle.loads(cached))
-    
-    cpu_percent = psutil.cpu_percent(interval=0.1)
-    memory = psutil.virtual_memory()
-    disk = psutil.disk_usage('/')
-    
-    # 获取网络流量
-    net_io = psutil.net_io_counters()
-    
-    # 获取Xray进程信息
-    xray_info = {'running': False, 'pid': None, 'memory': 0, 'connections': 0}
-    for proc in psutil.process_iter(['pid', 'name']):
-        if proc.info['name'] == 'xray':
-            xray_info['running'] = True
-            xray_info['pid'] = proc.info['pid']
-            try:
-                p = psutil.Process(proc.info['pid'])
-                xray_info['memory'] = p.memory_info().rss / 1024 / 1024  # MB
-                xray_info['connections'] = len(p.connections())
-            except:
-                pass
-            break
-    
-    result = {
-        'cpu': cpu_percent,
-        'memory': {
-            'percent': memory.percent,
-            'used': memory.used / 1024 / 1024 / 1024,  # GB
-            'total': memory.total / 1024 / 1024 / 1024  # GB
-        },
-        'disk': {
-            'percent': disk.percent,
-            'used': disk.used / 1024 / 1024 / 1024,  # GB
-            'total': disk.total / 1024 / 1024 / 1024  # GB
-        },
-        'network': {
-            'bytes_sent': net_io.bytes_sent / 1024 / 1024,  # MB
-            'bytes_recv': net_io.bytes_recv / 1024 / 1024   # MB
-        },
-        'xray': xray_info,
-        'timestamp': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    stats = {
+        'system': get_system_info(),
+        'proxies': {
+            'total': 0,
+            'active': 0,
+            'online': 0,
+            'traffic_today': 0
+        }
     }
     
-    # 缓存2秒
-    redis_client.setex('system_status', 2, pickle.dumps(result))
+    with db_pool.get_connection() as conn:
+        # 代理统计
+        stats['proxies']['total'] = conn.execute("SELECT COUNT(*) FROM proxies").fetchone()[0]
+        stats['proxies']['active'] = conn.execute("SELECT COUNT(*) FROM proxies WHERE enabled = 1").fetchone()[0]
+        
+        # 今日流量
+        today_traffic = conn.execute("""
+            SELECT SUM(traffic_used) 
+            FROM proxies 
+            WHERE date(last_used) = date('now')
+        """).fetchone()[0]
+        stats['proxies']['traffic_today'] = today_traffic or 0
     
-    return jsonify(result)
+    # 缓存5秒
+    if redis_client:
+        redis_client.setex('system_stats', 5, json.dumps(stats))
+    
+    return jsonify(stats)
+
+@app.route('/api/proxy/groups')
+@login_required
+def api_proxy_groups():
+    """获取代理组列表"""
+    with db_pool.get_connection() as conn:
+        groups = conn.execute("""
+            SELECT g.*, 
+                COUNT(p.id) as proxy_count,
+                COUNT(CASE WHEN p.enabled = 1 THEN 1 END) as active_count,
+                SUM(p.traffic_used) as total_traffic
+            FROM proxy_groups g
+            LEFT JOIN proxies p ON g.id = p.group_id
+            GROUP BY g.id
+            ORDER BY g.created_at DESC
+        """).fetchall()
+    
+    return jsonify([dict(g) for g in groups])
+
+@app.route('/api/proxy/group/<int:group_id>')
+@login_required
+def api_proxy_group_detail(group_id):
+    """获取代理组详情"""
+    with db_pool.get_connection() as conn:
+        proxies = conn.execute("""
+            SELECT * FROM proxies 
+            WHERE group_id = ?
+            ORDER BY port
+        """, (group_id,)).fetchall()
+    
+    return jsonify([dict(p) for p in proxies])
+
+@app.route('/api/proxy/add', methods=['POST'])
+@login_required
+def api_proxy_add():
+    """添加代理"""
+    data = request.get_json()
+    
+    # 验证数据
+    required_fields = ['bind_ip', 'port', 'protocol']
+    for field in required_fields:
+        if field not in data:
+            return jsonify({'error': f'Missing field: {field}'}), 400
+    
+    # 生成账号密码
+    if 'username' not in data:
+        data['username'] = f"user_{random.randint(1000, 9999)}"
+    if 'password' not in data:
+        data['password'] = generate_password()
+    
+    try:
+        with db_pool.get_connection() as conn:
+            # 检查端口是否已使用
+            existing = conn.execute(
+                "SELECT id FROM proxies WHERE bind_ip = ? AND port = ?",
+                (data['bind_ip'], data['port'])
+            ).fetchone()
+            
+            if existing:
+                return jsonify({'error': '端口已被使用'}), 400
+            
+            # 插入数据
+            conn.execute("""
+                INSERT INTO proxies (
+                    bind_ip, port, protocol, username, password,
+                    group_id, remark, traffic_limit, expire_time
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                data['bind_ip'], data['port'], data['protocol'],
+                data['username'], data['password'],
+                data.get('group_id'), data.get('remark', ''),
+                data.get('traffic_limit', 0), data.get('expire_time')
+            ))
+        
+        # 重载配置
+        task_queue.put({'type': 'reload_config'})
+        
+        return jsonify({'success': True, 'message': '代理添加成功'})
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/proxy/batch_add', methods=['POST'])
+@login_required
+def api_proxy_batch_add():
+    """批量添加代理"""
+    data = request.get_json()
+    
+    # 解析IP范围
+    ip_range = data.get('ip_range', '')
+    port_start = data.get('port_start', 10000)
+    port_end = data.get('port_end', 10100)
+    protocol = data.get('protocol', 'http')
+    username_prefix = data.get('username_prefix', 'user')
+    group_id = data.get('group_id')
+    
+    # 解析IP
+    ips = []
+    if '-' in ip_range:
+        # 格式: 192.168.1.1-192.168.1.10
+        start_ip, end_ip = ip_range.split('-')
+        start_parts = start_ip.strip().split('.')
+        end_parts = end_ip.strip().split('.')
+        
+        if len(start_parts) == 4 and len(end_parts) == 4:
+            base = '.'.join(start_parts[:3])
+            for i in range(int(start_parts[3]), int(end_parts[3]) + 1):
+                ips.append(f"{base}.{i}")
+    else:
+        # 单个IP
+        ips = [ip_range.strip()]
+    
+    # 生成端口列表
+    ports = list(range(port_start, port_end + 1))
+    
+    # 检查数量是否匹配
+    if len(ips) * len(ports) > 10000:
+        return jsonify({'error': '批量添加数量不能超过10000'}), 400
+    
+    added_count = 0
+    
+    try:
+        with db_pool.get_connection() as conn:
+            # 获取已使用的端口
+            used_ports = set()
+            for ip in ips:
+                existing = conn.execute(
+                    "SELECT port FROM proxies WHERE bind_ip = ?",
+                    (ip,)
+                ).fetchall()
+                used_ports.update(p[0] for p in existing)
+            
+            # 批量插入
+            for ip in ips:
+                for port in ports:
+                    if port in used_ports:
+                        continue
+                    
+                    username = f"{username_prefix}_{port}"
+                    password = generate_password()
+                    
+                    conn.execute("""
+                        INSERT INTO proxies (
+                            bind_ip, port, protocol, username, password,
+                            group_id, remark
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        ip, port, protocol, username, password,
+                        group_id, f"批量添加 - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                    ))
+                    
+                    added_count += 1
+        
+        # 重载配置
+        if added_count > 0:
+            task_queue.put({'type': 'reload_config'})
+        
+        return jsonify({
+            'success': True,
+            'message': f'成功添加 {added_count} 个代理',
+            'count': added_count
+        })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/proxy/update/<int:proxy_id>', methods=['POST'])
+@login_required
+def api_proxy_update(proxy_id):
+    """更新代理"""
+    data = request.get_json()
+    
+    try:
+        with db_pool.get_connection() as conn:
+            # 构建更新语句
+            update_fields = []
+            update_values = []
+            
+            for field in ['username', 'password', 'enabled', 'remark', 'traffic_limit', 'expire_time']:
+                if field in data:
+                    update_fields.append(f"{field} = ?")
+                    update_values.append(data[field])
+            
+            if update_fields:
+                update_values.append(proxy_id)
+                conn.execute(
+                    f"UPDATE proxies SET {', '.join(update_fields)} WHERE id = ?",
+                    update_values
+                )
+        
+        # 重载配置
+        task_queue.put({'type': 'reload_config'})
+        
+        return jsonify({'success': True, 'message': '更新成功'})
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/proxy/delete/<int:proxy_id>', methods=['POST'])
+@login_required
+def api_proxy_delete(proxy_id):
+    """删除代理"""
+    try:
+        with db_pool.get_connection() as conn:
+            conn.execute("DELETE FROM proxies WHERE id = ?", (proxy_id,))
+        
+        # 重载配置
+        task_queue.put({'type': 'reload_config'})
+        
+        return jsonify({'success': True, 'message': '删除成功'})
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/proxy/batch_action', methods=['POST'])
+@login_required
+def api_proxy_batch_action():
+    """批量操作"""
+    data = request.get_json()
+    action = data.get('action')
+    ids = data.get('ids', [])
+    
+    if not ids:
+        return jsonify({'error': '请选择代理'}), 400
+    
+    try:
+        with db_pool.get_connection() as conn:
+            if action == 'enable':
+                conn.execute(f"UPDATE proxies SET enabled = 1 WHERE id IN ({','.join('?' * len(ids))})", ids)
+            elif action == 'disable':
+                conn.execute(f"UPDATE proxies SET enabled = 0 WHERE id IN ({','.join('?' * len(ids))})", ids)
+            elif action == 'delete':
+                conn.execute(f"DELETE FROM proxies WHERE id IN ({','.join('?' * len(ids))})", ids)
+            else:
+                return jsonify({'error': '无效的操作'}), 400
+        
+        # 重载配置
+        task_queue.put({'type': 'reload_config'})
+        
+        return jsonify({'success': True, 'message': f'批量{action}成功'})
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/proxy/export', methods=['POST'])
+@login_required
+def api_proxy_export():
+    """导出代理"""
+    data = request.get_json()
+    format_type = data.get('format', 'txt')
+    ids = data.get('ids', [])
+    
+    with db_pool.get_connection() as conn:
+        if ids:
+            proxies = conn.execute(
+                f"SELECT * FROM proxies WHERE id IN ({','.join('?' * len(ids))})",
+                ids
+            ).fetchall()
+        else:
+            proxies = conn.execute("SELECT * FROM proxies").fetchall()
+    
+    # 生成导出内容
+    if format_type == 'txt':
+        lines = []
+        for p in proxies:
+            if p['protocol'] == 'http':
+                lines.append(f"http://{p['username']}:{p['password']}@{p['bind_ip']}:{p['port']}")
+            elif p['protocol'] == 'socks':
+                lines.append(f"socks5://{p['username']}:{p['password']}@{p['bind_ip']}:{p['port']}")
+        
+        content = '\n'.join(lines)
+        mimetype = 'text/plain'
+        filename = f"proxies_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        
+    elif format_type == 'json':
+        data = []
+        for p in proxies:
+            data.append({
+                'protocol': p['protocol'],
+                'host': p['bind_ip'],
+                'port': p['port'],
+                'username': p['username'],
+                'password': p['password']
+            })
+        
+        content = json.dumps(data, indent=2)
+        mimetype = 'application/json'
+        filename = f"proxies_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    
+    else:
+        return jsonify({'error': '不支持的格式'}), 400
+    
+    return Response(
+        content,
+        mimetype=mimetype,
+        headers={
+            'Content-Disposition': f'attachment; filename={filename}'
+        }
+    )
+
+@app.route('/api/config/reload', methods=['POST'])
+@login_required
+def api_config_reload():
+    """重载配置"""
+    success, message = xray_manager.reload_config()
+    return jsonify({'success': success, 'message': message})
 
 @app.route('/api/users')
 @login_required
 def api_users():
-    with db_pool.get_connection() as conn:
-        users = conn.execute('SELECT id,username FROM users').fetchall()
-    return jsonify([{'id': u[0], 'username': u[1]} for u in users])
-
-@app.route('/api/ip_configs')
-@login_required
-def api_ip_configs():
-    with db_pool.get_connection() as conn:
-        configs = conn.execute('SELECT id,ip_str,type,iface,created FROM ip_config ORDER BY id DESC').fetchall()
-    return jsonify([{
-        'id': c[0],
-        'ip_str': c[1],
-        'type': c[2],
-        'iface': c[3],
-        'created': c[4]
-    } for c in configs])
-
-@app.route('/batchaddproxy', methods=['POST'])
-@login_required
-def batchaddproxy():
-    iprange = request.form.get('iprange')
-    portrange = request.form.get('portrange')
-    userprefix = request.form.get('userprefix')
-    expire_days = request.form.get('expire_days', type=int)
-    traffic_limit_gb = request.form.get('traffic_limit', type=float)
-    notes = request.form.get('notes', '')
-    
-    if iprange and userprefix:
-        # 解析IP范围
-        m = re.match(r"(\d+\.\d+\.\d+\.)(\d+)-(\d+)", iprange.strip())
-        if not m:
-            return jsonify({'status': 'error', 'message': 'IP范围格式错误'})
-        ip_base = m.group(1)
-        start = int(m.group(2))
-        end = int(m.group(3))
-        ips = [f"{ip_base}{i}" for i in range(start, end+1)]
-        
-        # 如果IP数量太多，给出警告
-        if len(ips) > 1000:
-            return jsonify({'status': 'error', 'message': f'一次最多添加1000个代理，当前尝试添加{len(ips)}个'})
-        
-        with db_pool.get_connection() as conn:
-            # 获取已使用的端口
-            used_ports = set()
-            cursor = conn.execute('SELECT port FROM proxy')
-            for row in cursor:
-                used_ports.add(row[0])
-            
-            # 解析或生成端口范围
-            if portrange and portrange.strip():
-                m2 = re.match(r"(\d+)-(\d+)", portrange.strip())
-                if not m2:
-                    return jsonify({'status': 'error', 'message': '端口范围格式错误'})
-                port_start = int(m2.group(1))
-                port_end = int(m2.group(2))
-                if port_start < 1024 or port_end > 65535:
-                    return jsonify({'status': 'error', 'message': '端口范围应在1024-65535之间'})
-            else:
-                port_start = 10000
-                port_end = 65534
-            
-            # 生成可用端口列表
-            all_ports = [p for p in range(port_start, port_end+1) if p not in used_ports]
-            if len(all_ports) < len(ips):
-                return jsonify({'status': 'error', 'message': f'可用端口不足，需要{len(ips)}个端口，但只有{len(all_ports)}个可用'})
-            
-            # 随机选择端口
-            import random
-            random.shuffle(all_ports)
-            selected_ports = all_ports[:len(ips)]
-            selected_ports.sort()
-            
-            # 计算实际使用的端口范围
-            actual_port_range = f"{selected_ports[0]}-{selected_ports[-1]}"
-            
-            # 计算过期时间
-            expire_at = None
-            if expire_days and expire_days > 0:
-                expire_at = (datetime.datetime.now() + datetime.timedelta(days=expire_days)).isoformat()
-            
-            # 计算流量限制（转换为字节）
-            traffic_limit = 0
-            if traffic_limit_gb and traffic_limit_gb > 0:
-                traffic_limit = int(traffic_limit_gb * 1024 * 1024 * 1024)
-            
-            # 批量插入数据
-            batch_data = []
-            for i, ip in enumerate(ips):
-                port = selected_ports[i]
-                uname = userprefix + ''.join(random.choices(string.ascii_lowercase+string.digits, k=4))
-                pw = ''.join(random.choices(string.ascii_letters+string.digits, k=12))
-                batch_data.append((
-                    ip, port, uname, pw, 1, iprange, actual_port_range, userprefix,
-                    datetime.datetime.now().isoformat(), expire_at, 0, 0, traffic_limit, notes
-                ))
-            
-            # 批量插入
-            conn.executemany('''
-                INSERT INTO proxy 
-                (ip, port, username, password, enabled, ip_range, port_range, user_prefix,
-                 created_at, expire_at, traffic_up, traffic_down, traffic_limit, notes) 
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ''', batch_data)
-            conn.commit()
-            count = len(batch_data)
-        
-        redis_client.delete('proxy_groups')
-        # 异步重载配置，立即返回响应
-        reload_xray_async()
-        return jsonify({'status': 'success', 'message': f'批量范围添加完成，共添加{count}条代理，端口范围：{actual_port_range}，配置正在后台更新...'})
-    
-    # 处理手动批量添加
-    batch_data = request.form.get('batchproxy','').strip().splitlines()
-    
-    if len(batch_data) > 1000:
-        return jsonify({'status': 'error', 'message': f'一次最多添加1000个代理，当前尝试添加{len(batch_data)}个'})
+    """获取用户列表"""
+    if current_user.role != 'admin':
+        return jsonify({'error': '权限不足'}), 403
     
     with db_pool.get_connection() as conn:
-        count = 0
-        base_idx = conn.execute("SELECT MAX(id) FROM proxy").fetchone()[0]
-        if base_idx is None:
-            base_idx = 0
-        idx = 1
-        
-        batch_insert = []
-        for line in batch_data:
-            line = line.strip()
-            if not line or line.startswith('#'):
-                continue
-            if ',' in line:
-                parts = [x.strip() for x in line.split(',')]
-            elif ':' in line:
-                parts = [x.strip() for x in line.split(':')]
-            else:
-                parts = re.split(r'\s+', line)
-            
-            if len(parts) == 2:
-                ip, port = parts
-                username = f"user{base_idx + idx:03d}"
-                password = ''.join(random.choices(string.ascii_letters+string.digits, k=12))
-                idx += 1
-            elif len(parts) == 3:
-                ip, port, username = parts
-                password = ''.join(random.choices(string.ascii_letters+string.digits, k=12))
-            elif len(parts) >= 4:
-                ip, port, username, password = parts[:4]
-            else:
-                continue
-            
-            batch_insert.append((
-                ip, int(port), username, password, 1, ip, port, username,
-                datetime.datetime.now().isoformat(), None, 0, 0, 0, ''
-            ))
-            count += 1
-        
-        if batch_insert:
-            conn.executemany('''
-                INSERT INTO proxy 
-                (ip, port, username, password, enabled, ip_range, port_range, user_prefix,
-                 created_at, expire_at, traffic_up, traffic_down, traffic_limit, notes) 
-                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            ''', batch_insert)
-            conn.commit()
+        users = conn.execute("SELECT id, username, email, role, created_at FROM users").fetchall()
     
-    if count:
-        redis_client.delete('proxy_groups')
-        # 异步重载配置
-        reload_xray_async()
+    return jsonify([dict(u) for u in users])
+
+@app.route('/api/user/add', methods=['POST'])
+@login_required
+def api_user_add():
+    """添加用户"""
+    if current_user.role != 'admin':
+        return jsonify({'error': '权限不足'}), 403
     
-    return jsonify({'status': 'success', 'message': f'批量添加完成，共添加{count}条代理，配置正在后台更新...'})
-
-@app.route('/delproxy/<int:pid>')
-@login_required
-def delproxy(pid):
-    with db_pool.get_connection() as conn:
-        conn.execute('DELETE FROM proxy WHERE id=?', (pid,))
-        conn.commit()
-    redis_client.delete('proxy_groups')
-    reload_xray_async()
-    return jsonify({'status': 'success'})
-
-@app.route('/batchdelproxy', methods=['POST'])
-@login_required
-def batchdelproxy():
-    ids = request.form.getlist('ids')
-    with db_pool.get_connection() as conn:
-        conn.executemany('DELETE FROM proxy WHERE id=?', [(i,) for i in ids])
-        conn.commit()
-    redis_client.delete('proxy_groups')
-    reload_xray_async()
-    return jsonify({'status': 'success', 'message': f'已批量删除 {len(ids)} 条代理'})
-
-@app.route('/batch_enable', methods=['POST'])
-@login_required
-def batch_enable():
-    ids = request.form.getlist('ids[]')
-    if not ids:
-        return jsonify({'status': 'error', 'message': 'No proxies selected'}), 400
-    with db_pool.get_connection() as conn:
-        conn.executemany('UPDATE proxy SET enabled=1 WHERE id=?', [(i,) for i in ids])
-        conn.commit()
-    redis_client.delete('proxy_groups')
-    reload_xray_async()
-    return jsonify({'status': 'success'})
-
-@app.route('/batch_disable', methods=['POST'])
-@login_required
-def batch_disable():
-    ids = request.form.getlist('ids[]')
-    if not ids:
-        return jsonify({'status': 'error', 'message': 'No proxies selected'}), 400
-    with db_pool.get_connection() as conn:
-        conn.executemany('UPDATE proxy SET enabled=0 WHERE id=?', [(i,) for i in ids])
-        conn.commit()
-    redis_client.delete('proxy_groups')
-    reload_xray_async()
-    return jsonify({'status': 'success'})
-
-@app.route('/enableproxy/<int:pid>')
-@login_required
-def enableproxy(pid):
-    with db_pool.get_connection() as conn:
-        conn.execute('UPDATE proxy SET enabled=1 WHERE id=?', (pid,))
-        conn.commit()
-    redis_client.delete('proxy_groups')
-    reload_xray_async()
-    return jsonify({'status': 'success'})
-
-@app.route('/disableproxy/<int:pid>')
-@login_required
-def disableproxy(pid):
-    with db_pool.get_connection() as conn:
-        conn.execute('UPDATE proxy SET enabled=0 WHERE id=?', (pid,))
-        conn.commit()
-    redis_client.delete('proxy_groups')
-    reload_xray_async()
-    return jsonify({'status': 'success'})
-
-@app.route('/adduser', methods=['POST'])
-@login_required
-def adduser():
-    username = request.form['username']
-    password = generate_password_hash(request.form['password'])
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+    email = data.get('email', '')
+    role = data.get('role', 'user')
+    
+    if not username or not password:
+        return jsonify({'error': '用户名和密码不能为空'}), 400
+    
     try:
         with db_pool.get_connection() as conn:
-            conn.execute('INSERT INTO users (username, password) VALUES (?,?)', (username, password))
-            conn.commit()
-        return jsonify({'status': 'success', 'message': '已添加用户'})
-    except:
-        return jsonify({'status': 'error', 'message': '用户名已存在'})
-
-@app.route('/deluser/<int:uid>')
-@login_required
-def deluser(uid):
-    with db_pool.get_connection() as conn:
-        conn.execute('DELETE FROM users WHERE id=?', (uid,))
-        conn.commit()
-    return jsonify({'status': 'success'})
-
-@app.route('/export_selected', methods=['POST'])
-@login_required
-def export_selected():
-    csegs = request.form.getlist('csegs[]')
-    export_format = request.form.get('format', 'txt')
-    
-    if not csegs:
-        return jsonify({'status': 'error', 'message': '未选择C段'}), 400
-    
-    with db_pool.get_connection() as conn:
-        if export_format == 'json':
-            # JSON格式导出
-            result = []
-            for cseg in csegs:
-                rows = conn.execute('''
-                    SELECT ip, port, username, password, expire_at, traffic_limit, notes
-                    FROM proxy WHERE ip LIKE ? ORDER BY ip, port
-                ''', (cseg + '.%',)).fetchall()
-                
-                for row in rows:
-                    result.append({
-                        'proxy': f'http://{row[2]}:{row[3]}@{row[0]}:{row[1]}',
-                        'expire_at': row[4],
-                        'traffic_limit_gb': round(row[5] / 1024 / 1024 / 1024, 2) if row[5] else 0,
-                        'notes': row[6]
-                    })
+            # 检查用户名是否存在
+            existing = conn.execute(
+                "SELECT id FROM users WHERE username = ?",
+                (username,)
+            ).fetchone()
             
-            return jsonify(result)
-        else:
-            # 文本格式导出
-            output = ""
-            prefix_for_filename = None
+            if existing:
+                return jsonify({'error': '用户名已存在'}), 400
             
-            for cseg in csegs:
-                rows = conn.execute('''
-                    SELECT ip, port, username, password, user_prefix 
-                    FROM proxy WHERE ip LIKE ? ORDER BY ip, port
-                ''', (cseg + '.%',)).fetchall()
-                
-                if not prefix_for_filename and rows:
-                    for row in rows:
-                        if row[4]:
-                            prefix_for_filename = row[4]
-                            break
-                
-                for ip, port, user, pw, _ in rows:
-                    output += f"{ip}:{port}:{user}:{pw}\n"
-            
-            if not prefix_for_filename:
-                prefix_for_filename = 'proxy'
-            
-            cseg_names = []
-            for cseg in sorted(csegs):
-                cseg_names.append(cseg.replace('.', '_'))
-            
-            filename = f"{prefix_for_filename}_{'_'.join(cseg_names)}.txt"
-            
-            mem = BytesIO()
-            mem.write(output.encode('utf-8'))
-            mem.seek(0)
-            
-            return Response(
-                mem.read(), 
-                mimetype='text/plain', 
-                headers={
-                    'Content-Disposition': f'attachment; filename="{filename}"',
-                    'Content-Type': 'text/plain; charset=utf-8'
-                }
+            # 插入用户
+            conn.execute(
+                "INSERT INTO users (username, password, email, role) VALUES (?, ?, ?, ?)",
+                (username, generate_password_hash(password), email, role)
             )
-
-@app.route('/api/usage_report')
-@login_required
-def api_usage_report():
-    with db_pool.get_connection() as conn:
-        # 按C段统计使用情况
-        report = conn.execute('''
-            SELECT 
-                substr(ip, 1, instr(ip||'.', '.', 1, 3)-1) as c_segment,
-                COUNT(*) as total,
-                COUNT(CASE WHEN enabled = 1 THEN 1 END) as active,
-                COUNT(CASE WHEN last_used > datetime('now', '-1 day') THEN 1 END) as used_24h,
-                SUM(traffic_up + traffic_down) as total_traffic,
-                MIN(created_at) as first_created,
-                COUNT(CASE WHEN expire_at < datetime('now', '+7 day') THEN 1 END) as expiring_soon,
-                COUNT(CASE WHEN traffic_limit > 0 AND (traffic_up + traffic_down) > traffic_limit * 0.8 THEN 1 END) as near_limit
-            FROM proxy
-            GROUP BY c_segment
-            ORDER BY total_traffic DESC
-        ''').fetchall()
-    
-    return jsonify([{
-        'c_segment': r[0],
-        'total': r[1],
-        'active': r[2],
-        'used_24h': r[3],
-        'total_traffic_gb': round(r[4] / 1024 / 1024 / 1024, 2) if r[4] else 0,
-        'first_created': r[5],
-        'expiring_soon': r[6],
-        'near_limit': r[7]
-    } for r in report])
-
-@app.route('/add_ip_config', methods=['POST'])
-@login_required
-def add_ip_config():
-    ip_input = request.form.get('ip_input', '').strip()
-    iface = request.form.get('iface', detect_nic())
-    mode = request.form.get('mode', 'perm')
-    pattern_full = re.match(r"^(\d+\.\d+\.\d+\.)(\d+)-(\d+)$", ip_input)
-    pattern_short = re.match(r"^(\d+)-(\d+)$", ip_input)
-    
-    if pattern_full:
-        base = pattern_full.group(1)
-        start = int(pattern_full.group(2))
-        end = int(pattern_full.group(3))
-        ip_range = f"{base}{{{start}..{end}}}"
-        ip_list = [f"{base}{i}" for i in range(start, end+1)]
-    elif pattern_short:
-        base = "192.168.1."
-        start = int(pattern_short.group(1))
-        end = int(pattern_short.group(2))
-        ip_range = f"{base}{{{start}..{end}}}"
-        ip_list = [f"{base}{i}" for i in range(start, end+1)]
-    elif '{' in ip_input and '..' in ip_input:
-        ip_range = ip_input
-        match = re.match(r"(\d+\.\d+\.\d+\.?)\{(\d+)\.\.(\d+)\}", ip_input)
-        if match:
-            base = match.group(1)
-            s = int(match.group(2))
-            e = int(match.group(3))
-            ip_list = [f"{base}{i}" for i in range(s, e+1)]
-        else:
-            ip_list = []
-    else:
-        ip_range = ip_input
-        ip_list = [ip.strip() for ip in re.split(r'[,\s]+', ip_input) if ip.strip()]
-    
-    with db_pool.get_connection() as conn:
-        conn.execute('INSERT INTO ip_config (ip_str, type, iface, created) VALUES (?,?,?,datetime("now"))', (ip_range, 'range', iface))
-        conn.commit()
-    
-    # 批量添加IP
-    for i, ip in enumerate(ip_list):
-        os.system(f"ip addr add {ip}/32 dev {iface} 2>/dev/null")
-        os.system(f"ip route add {ip}/32 dev {iface} 2>/dev/null")
-    
-    # 永久添加
-    if mode == 'perm':
-        with open('/etc/network/interfaces', 'a+') as f:
-            f.write(f"\n# Xray IP配置 - {ip_range}\n")
-            for ip in ip_list:
-                f.write(f"up ip addr add {ip}/32 dev {iface} 2>/dev/null || true\n")
-                f.write(f"down ip addr del {ip}/32 dev {iface} 2>/dev/null || true\n")
-    
-    # 刷新ARP缓存
-    os.system("ip neigh flush all")
-    
-    return jsonify({'status': 'success', 'message': '已添加IP配置'})
-
-# 初始化时确保Xray运行
-def ensure_xray_running():
-    """确保Xray正在运行"""
-    try:
-        result = subprocess.run(['pgrep', 'xray'], capture_output=True)
-        if result.returncode != 0:
-            # Xray未运行，生成配置并启动
-            count = generate_xray_config()
-            subprocess.run(['systemctl', 'start', 'xray'])
-            print(f"Xray started with {count} proxies")
-            time.sleep(2)  # 等待Xray启动
-    except Exception as e:
-        print(f"Error checking Xray: {e}")
-
-# 添加手动重载配置的路由
-@app.route('/api/reload_xray', methods=['POST'])
-@login_required
-def reload_xray_manual():
-    """手动重载Xray配置"""
-    try:
-        count = generate_xray_config()
         
-        # 测试配置
-        test_result = subprocess.run(
-            [XRAY_PATH, 'test', '-config', XRAY_CONFIG],
-            capture_output=True,
-            text=True
-        )
-        
-        if test_result.returncode != 0:
-            return jsonify({
-                'status': 'error',
-                'message': f'配置文件测试失败: {test_result.stderr}'
-            })
-        
-        # 重启Xray服务
-        restart_result = subprocess.run(
-            ['systemctl', 'restart', 'xray'],
-            capture_output=True,
-            text=True
-        )
-        
-        if restart_result.returncode != 0:
-            return jsonify({
-                'status': 'error',
-                'message': f'Xray重启失败: {restart_result.stderr}'
-            })
-        
-        # 等待服务启动
-        time.sleep(2)
-        
-        # 检查服务状态
-        status_result = subprocess.run(
-            ['systemctl', 'is-active', 'xray'],
-            capture_output=True,
-            text=True
-        )
-        
-        if status_result.stdout.strip() == 'active':
-            return jsonify({
-                'status': 'success',
-                'message': f'Xray已重载，当前有{count}个代理'
-            })
-        else:
-            return jsonify({
-                'status': 'error',
-                'message': 'Xray服务未能正常启动'
-            })
-            
-    except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'message': f'重载失败: {str(e)}'
-        })
-
-# 添加查看代理配置的路由
-@app.route('/api/proxy/<int:proxy_id>/config')
-@login_required
-def get_proxy_config(proxy_id):
-    """获取单个代理的配置信息"""
-    with db_pool.get_connection() as conn:
-        proxy = conn.execute('''
-            SELECT ip, port, username, password, enabled
-            FROM proxy 
-            WHERE id = ?
-        ''', (proxy_id,)).fetchone()
-    
-    if not proxy:
-        return jsonify({'status': 'error', 'message': '代理不存在'})
-    
-    ip, port, username, password, enabled = proxy
-    
-    # 构建代理URL
-    proxy_url = f"http://{username}:{password}@{ip}:{port}"
-    
-    # 测试命令
-    test_commands = [
-        f"curl -x {proxy_url} http://httpbin.org/ip",
-        f"curl -x http://{ip}:{port} -U {username}:{password} http://httpbin.org/ip",
-        f"export http_proxy='http://{username}:{password}@{ip}:{port}' && curl http://httpbin.org/ip"
-    ]
-    
-    return jsonify({
-        'status': 'success',
-        'proxy': {
-            'id': proxy_id,
-            'ip': ip,
-            'port': port,
-            'username': username,
-            'password': password,
-            'enabled': enabled,
-            'proxy_url': proxy_url,
-            'test_commands': test_commands
-        }
-    })
-
-@app.route('/api/diagnose')
-@login_required
-def diagnose_system():
-    """系统诊断"""
-    diagnostics = {
-        'xray_service': {},
-        'config_file': {},
-        'listening_ports': [],
-        'ip_addresses': [],
-        'proxy_count': {},
-        'errors': []
-    }
-    
-    try:
-        # 1. 检查Xray服务状态
-        service_status = subprocess.run(
-            ['systemctl', 'is-active', 'xray'],
-            capture_output=True,
-            text=True
-        )
-        diagnostics['xray_service']['active'] = service_status.stdout.strip() == 'active'
-        
-        # 2. 检查配置文件
-        if os.path.exists(XRAY_CONFIG):
-            diagnostics['config_file']['exists'] = True
-            
-            # 测试配置文件
-            test_result = subprocess.run(
-                [XRAY_PATH, 'test', '-config', XRAY_CONFIG],
-                capture_output=True,
-                text=True
-            )
-            diagnostics['config_file']['valid'] = test_result.returncode == 0
-            if test_result.returncode != 0:
-                diagnostics['errors'].append(f"配置文件错误: {test_result.stderr}")
-            
-            # 读取配置
-            try:
-                with open(XRAY_CONFIG, 'r') as f:
-                    config = json.load(f)
-                    http_inbounds = [ib for ib in config.get('inbounds', []) if ib.get('protocol') == 'http']
-                    diagnostics['config_file']['http_inbounds'] = len(http_inbounds)
-            except Exception as e:
-                diagnostics['errors'].append(f"读取配置文件失败: {str(e)}")
-        else:
-            diagnostics['config_file']['exists'] = False
-            diagnostics['errors'].append("配置文件不存在")
-        
-        # 3. 检查监听端口
-        netstat_result = subprocess.run(
-            ['ss', '-tlnp'],
-            capture_output=True,
-            text=True
-        )
-        for line in netstat_result.stdout.splitlines():
-            if 'xray' in line:
-                parts = line.split()
-                if len(parts) >= 4:
-                    diagnostics['listening_ports'].append(parts[3])
-        
-        # 4. 检查IP地址
-        ip_result = subprocess.run(
-            ['ip', 'addr', 'show'],
-            capture_output=True,
-            text=True
-        )
-        for line in ip_result.stdout.splitlines():
-            if 'inet ' in line and not 'inet6' in line:
-                parts = line.strip().split()
-                if len(parts) >= 2:
-                    ip = parts[1].split('/')[0]
-                    if not ip.startswith('127.'):
-                        diagnostics['ip_addresses'].append(ip)
-        
-        # 5. 检查代理数量
-        with db_pool.get_connection() as conn:
-            total = conn.execute('SELECT COUNT(*) FROM proxy').fetchone()[0]
-            enabled = conn.execute('SELECT COUNT(*) FROM proxy WHERE enabled=1').fetchone()[0]
-            
-            diagnostics['proxy_count']['total'] = total
-            diagnostics['proxy_count']['enabled'] = enabled
-            
-            # 获取一个示例代理
-            sample = conn.execute('''
-                SELECT id, ip, port, username 
-                FROM proxy 
-                WHERE enabled=1 
-                LIMIT 1
-            ''').fetchone()
-            
-            if sample:
-                diagnostics['sample_proxy'] = {
-                    'id': sample[0],
-                    'ip': sample[1],
-                    'port': sample[2],
-                    'username': sample[3]
-                }
-        
-        # 6. 检查日志文件
-        if os.path.exists('/var/log/xray/error.log'):
-            # 获取最后10行错误日志
-            with open('/var/log/xray/error.log', 'r') as f:
-                lines = f.readlines()
-                diagnostics['recent_errors'] = lines[-10:] if lines else []
+        return jsonify({'success': True, 'message': '用户添加成功'})
         
     except Exception as e:
-        diagnostics['errors'].append(f"诊断过程错误: {str(e)}")
-    
-    return jsonify(diagnostics)
+        return jsonify({'error': str(e)}), 500
 
-# 在启动时确保Xray运行
-ensure_xray_running()
+# 错误处理
+@app.errorhandler(404)
+def not_found(e):
+    if request.path.startswith('/api/'):
+        return jsonify({'error': 'Not found'}), 404
+    return render_template('404.html'), 404
+
+@app.errorhandler(500)
+def server_error(e):
+    if request.path.startswith('/api/'):
+        return jsonify({'error': 'Internal server error'}), 500
+    return render_template('500.html'), 500
 
 if __name__ == '__main__':
-    import sys
-    from gevent.pywsgi import WSGIServer
-    port = int(sys.argv[1]) if len(sys.argv)>1 else 9999
-    
-    # 使用gevent提供更好的并发性能
-    print(f"Starting server on port {port}...")
-    http_server = WSGIServer(('0.0.0.0', port), app, log=None)
-    http_server.serve_forever()
-EOF
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
+    app.run(host='0.0.0.0', port=port, debug=False)
+PYEOF
 
-# ------------------- init_db.py (数据库初始化) -------------------
-cat > $WORKDIR/init_db.py << 'EOF'
+    # ========== init_db.py - 数据库初始化 ==========
+    cat > $WORKDIR/init_db.py << 'PYEOF'
 import sqlite3
-from werkzeug.security import generate_password_hash
 import os
+from werkzeug.security import generate_password_hash
 
-user = os.environ.get('ADMINUSER')
-passwd = os.environ.get('ADMINPASS')
+# 数据库路径
+DB_PATH = 'xray.db'
 
-db = sqlite3.connect('xray.db')
+# 管理员账号
+ADMIN_USER = os.environ.get('ADMIN_USER', 'admin')
+ADMIN_PASS = os.environ.get('ADMIN_PASS', 'admin123')
+ADMIN_EMAIL = os.environ.get('ADMIN_EMAIL', 'admin@xray.local')
 
-# 启用WAL模式和优化
-db.execute('PRAGMA journal_mode=WAL')
-db.execute('PRAGMA synchronous=NORMAL')
-db.execute('PRAGMA cache_size=10000')
-db.execute('PRAGMA temp_store=MEMORY')
+# 创建数据库连接
+conn = sqlite3.connect(DB_PATH)
+conn.execute('PRAGMA foreign_keys = ON')
 
 # 创建表
-db.execute('''CREATE TABLE IF NOT EXISTS proxy (
+conn.executescript('''
+-- 用户表
+CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ip TEXT NOT NULL,
+    username TEXT UNIQUE NOT NULL,
+    password TEXT NOT NULL,
+    email TEXT,
+    role TEXT DEFAULT 'user',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    last_login DATETIME
+);
+
+-- 代理组表
+CREATE TABLE IF NOT EXISTS proxy_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 代理表
+CREATE TABLE IF NOT EXISTS proxies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bind_ip TEXT NOT NULL,
     port INTEGER NOT NULL,
+    protocol TEXT NOT NULL DEFAULT 'http',  -- http, socks
     username TEXT NOT NULL,
     password TEXT NOT NULL,
     enabled INTEGER DEFAULT 1,
-    ip_range TEXT,
-    port_range TEXT,
-    user_prefix TEXT,
+    group_id INTEGER,
+    remark TEXT,
+    traffic_limit INTEGER DEFAULT 0,  -- 流量限制（字节）0=无限
+    traffic_used INTEGER DEFAULT 0,   -- 已用流量（字节）
+    expire_time DATETIME,             -- 过期时间
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    expire_at DATETIME,
     last_used DATETIME,
-    traffic_up INTEGER DEFAULT 0,
-    traffic_down INTEGER DEFAULT 0,
-    traffic_limit INTEGER DEFAULT 0,
-    notes TEXT,
-    UNIQUE(ip, port)
-)''')
+    FOREIGN KEY (group_id) REFERENCES proxy_groups(id) ON DELETE SET NULL,
+    UNIQUE(bind_ip, port)
+);
 
-# 创建索引以提升查询性能
-db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_ip ON proxy(ip)')
-db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_enabled ON proxy(enabled)')
-db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_port ON proxy(port)')
-db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_username ON proxy(username)')
-db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_expire ON proxy(expire_at)')
-
-db.execute('''CREATE TABLE IF NOT EXISTS users (
+-- 流量日志表
+CREATE TABLE IF NOT EXISTS traffic_logs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE NOT NULL,
-    password TEXT NOT NULL
-)''')
+    proxy_id INTEGER NOT NULL,
+    upload_bytes INTEGER DEFAULT 0,
+    download_bytes INTEGER DEFAULT 0,
+    connections INTEGER DEFAULT 0,
+    log_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (proxy_id) REFERENCES proxies(id) ON DELETE CASCADE
+);
 
-db.execute('''CREATE TABLE IF NOT EXISTS ip_config (
+-- API密钥表
+CREATE TABLE IF NOT EXISTS api_keys (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    ip_str TEXT,
-    type TEXT,
-    iface TEXT,
-    created TEXT
-)''')
-
-# 创建API密钥表
-db.execute('''CREATE TABLE IF NOT EXISTS api_keys (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
     key TEXT UNIQUE NOT NULL,
+    name TEXT,
+    user_id INTEGER NOT NULL,
+    permissions TEXT,  -- JSON格式的权限列表
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     last_used DATETIME,
-    enabled INTEGER DEFAULT 1
-)''')
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
 
-db.execute('INSERT OR IGNORE INTO users (username, password) VALUES (?,?)', (user, generate_password_hash(passwd)))
-db.commit()
+-- 操作日志表
+CREATE TABLE IF NOT EXISTS operation_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    action TEXT NOT NULL,
+    target TEXT,
+    details TEXT,
+    ip_address TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+);
 
-print("WebAdmin: "+user)
-print("Webpassword:  "+passwd)
-EOF
+-- 创建索引
+CREATE INDEX IF NOT EXISTS idx_proxies_group ON proxies(group_id);
+CREATE INDEX IF NOT EXISTS idx_proxies_enabled ON proxies(enabled);
+CREATE INDEX IF NOT EXISTS idx_proxies_port ON proxies(port);
+CREATE INDEX IF NOT EXISTS idx_proxies_expire ON proxies(expire_time);
+CREATE INDEX IF NOT EXISTS idx_traffic_logs_proxy ON traffic_logs(proxy_id);
+CREATE INDEX IF NOT EXISTS idx_traffic_logs_time ON traffic_logs(log_time);
+CREATE INDEX IF NOT EXISTS idx_operation_logs_user ON operation_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_operation_logs_time ON operation_logs(created_at);
+''')
 
-# 复制原有的HTML模板文件（使用相同的前端）
-cat > $WORKDIR/templates/login.html << 'EOF'
+# 插入默认管理员
+try:
+    conn.execute(
+        "INSERT INTO users (username, password, email, role) VALUES (?, ?, ?, ?)",
+        (ADMIN_USER, generate_password_hash(ADMIN_PASS), ADMIN_EMAIL, 'admin')
+    )
+    print(f"管理员账号创建成功:")
+    print(f"  用户名: {ADMIN_USER}")
+    print(f"  密码: {ADMIN_PASS}")
+except sqlite3.IntegrityError:
+    print("管理员账号已存在")
+
+# 插入默认代理组
+try:
+    conn.execute(
+        "INSERT INTO proxy_groups (name, description) VALUES (?, ?)",
+        ('默认组', '系统默认代理组')
+    )
+except:
+    pass
+
+conn.commit()
+conn.close()
+
+print("数据库初始化完成")
+PYEOF
+
+    # ========== templates/base.html - 基础模板 ==========
+    cat > $WORKDIR/templates/base.html << 'HTMLEOF'
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>Xray 登录</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}Xray 代理管理系统{% endblock %}</title>
+    
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Bootstrap Icons -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
+    <!-- DataTables CSS -->
+    <link href="https://cdn.datatables.net/1.13.6/css/dataTables.bootstrap5.min.css" rel="stylesheet">
+    
+    <style>
+        :root {
+            --primary-color: #4a90e2;
+            --secondary-color: #5cb85c;
+            --danger-color: #d9534f;
+            --warning-color: #f0ad4e;
+            --info-color: #5bc0de;
+            --dark-color: #2c3e50;
+            --light-color: #ecf0f1;
+        }
+        
+        body {
+            background-color: #f5f7fa;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+        
+        .navbar {
+            background: linear-gradient(135deg, var(--primary-color), #357abd);
+            box-shadow: 0 2px 4px rgba(0,0,0,.1);
+        }
+        
+        .sidebar {
+            background-color: white;
+            box-shadow: 2px 0 4px rgba(0,0,0,.05);
+            min-height: calc(100vh - 56px);
+            padding-top: 1rem;
+        }
+        
+        .sidebar .nav-link {
+            color: var(--dark-color);
+            padding: 0.75rem 1rem;
+            margin: 0.25rem 0;
+            border-radius: 0.375rem;
+            transition: all 0.3s;
+        }
+        
+        .sidebar .nav-link:hover {
+            background-color: var(--light-color);
+            color: var(--primary-color);
+            transform: translateX(5px);
+        }
+        
+        .sidebar .nav-link.active {
+            background-color: var(--primary-color);
+            color: white;
+        }
+        
+        .card {
+            border: none;
+            border-radius: 0.5rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,.08);
+            transition: all 0.3s;
+        }
+        
+        .card:hover {
+            box-shadow: 0 4px 8px rgba(0,0,0,.12);
+            transform: translateY(-2px);
+        }
+        
+        .stat-card {
+            padding: 1.5rem;
+            text-align: center;
+            background: white;
+            border-radius: 0.5rem;
+            box-shadow: 0 2px 4px rgba(0,0,0,.08);
+        }
+        
+        .stat-card .stat-icon {
+            font-size: 3rem;
+            margin-bottom: 0.5rem;
+            opacity: 0.8;
+        }
+        
+        .stat-card .stat-value {
+            font-size: 2rem;
+            font-weight: bold;
+            margin-bottom: 0.25rem;
+        }
+        
+        .stat-card .stat-label {
+            color: #6c757d;
+            font-size: 0.875rem;
+        }
+        
+        .btn-gradient {
+            background: linear-gradient(135deg, var(--primary-color), #357abd);
+            color: white;
+            border: none;
+            transition: all 0.3s;
+        }
+        
+        .btn-gradient:hover {
+            background: linear-gradient(135deg, #357abd, var(--primary-color));
+            color: white;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0,0,0,.2);
+        }
+        
+        .table-hover tbody tr:hover {
+            background-color: rgba(74, 144, 226, 0.05);
+        }
+        
+        .badge-status {
+            padding: 0.375rem 0.75rem;
+            font-weight: normal;
+        }
+        
+        .loading {
+            display: inline-block;
+            width: 1rem;
+            height: 1rem;
+            border: 2px solid #f3f3f3;
+            border-top: 2px solid var(--primary-color);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .toast-container {
+            position: fixed;
+            top: 80px;
+            right: 20px;
+            z-index: 1050;
+        }
+        
+        .progress-bar-animated {
+            animation: progress-bar-stripes 1s linear infinite;
+        }
+        
+        /* 响应式调整 */
+        @media (max-width: 768px) {
+            .sidebar {
+                position: fixed;
+                top: 56px;
+                left: -250px;
+                width: 250px;
+                z-index: 1040;
+                transition: left 0.3s;
+            }
+            
+            .sidebar.show {
+                left: 0;
+            }
+        }
+    </style>
+    
+    {% block styles %}{% endblock %}
+</head>
+<body>
+    <!-- 导航栏 -->
+    <nav class="navbar navbar-expand-lg navbar-dark">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="/">
+                <i class="bi bi-shield-check"></i> Xray Manager
+            </a>
+            
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            
+            <div class="collapse navbar-collapse" id="navbarNav">
+                <ul class="navbar-nav ms-auto">
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle" href="#" role="button" data-bs-toggle="dropdown">
+                            <i class="bi bi-person-circle"></i> {{ current_user.username }}
+                        </a>
+                        <ul class="dropdown-menu dropdown-menu-end">
+                            <li><a class="dropdown-item" href="/profile"><i class="bi bi-person"></i> 个人资料</a></li>
+                            <li><a class="dropdown-item" href="/settings"><i class="bi bi-gear"></i> 系统设置</a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item" href="/logout"><i class="bi bi-box-arrow-right"></i> 退出登录</a></li>
+                        </ul>
+                    </li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+    
+    <div class="container-fluid">
+        <div class="row">
+            <!-- 侧边栏 -->
+            <nav class="col-md-3 col-lg-2 d-md-block sidebar">
+                <div class="position-sticky">
+                    <ul class="nav flex-column">
+                        <li class="nav-item">
+                            <a class="nav-link {% if request.endpoint == 'index' %}active{% endif %}" href="/">
+                                <i class="bi bi-speedometer2"></i> 仪表盘
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link {% if 'proxy' in request.endpoint %}active{% endif %}" href="/proxies">
+                                <i class="bi bi-hdd-network"></i> 代理管理
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link {% if 'group' in request.endpoint %}active{% endif %}" href="/groups">
+                                <i class="bi bi-collection"></i> 代理组
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link {% if 'traffic' in request.endpoint %}active{% endif %}" href="/traffic">
+                                <i class="bi bi-graph-up"></i> 流量统计
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link {% if 'log' in request.endpoint %}active{% endif %}" href="/logs">
+                                <i class="bi bi-journal-text"></i> 操作日志
+                            </a>
+                        </li>
+                        {% if current_user.role == 'admin' %}
+                        <li class="nav-item">
+                            <a class="nav-link {% if 'user' in request.endpoint %}active{% endif %}" href="/users">
+                                <i class="bi bi-people"></i> 用户管理
+                            </a>
+                        </li>
+                        <li class="nav-item">
+                            <a class="nav-link {% if 'api' in request.endpoint %}active{% endif %}" href="/api-keys">
+                                <i class="bi bi-key"></i> API密钥
+                            </a>
+                        </li>
+                        {% endif %}
+                    </ul>
+                </div>
+            </nav>
+            
+            <!-- 主内容区 -->
+            <main class="col-md-9 ms-sm-auto col-lg-10 px-md-4 py-3">
+                {% with messages = get_flashed_messages(with_categories=true) %}
+                    {% if messages %}
+                        {% for category, message in messages %}
+                        <div class="alert alert-{{ 'danger' if category == 'error' else category }} alert-dismissible fade show" role="alert">
+                            {{ message }}
+                            <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                        </div>
+                        {% endfor %}
+                    {% endif %}
+                {% endwith %}
+                
+                {% block content %}{% endblock %}
+            </main>
+        </div>
+    </div>
+    
+    <!-- Toast 容器 -->
+    <div class="toast-container"></div>
+    
+    <!-- jQuery -->
+    <script src="https://code.jquery.com/jquery-3.7.0.min.js"></script>
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- DataTables JS -->
+    <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+    <script src="https://cdn.datatables.net/1.13.6/js/dataTables.bootstrap5.min.js"></script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    
+    <script>
+        // 全局函数
+        function showToast(message, type = 'success') {
+            const toast = $(`
+                <div class="toast" role="alert">
+                    <div class="toast-header">
+                        <i class="bi bi-${type === 'success' ? 'check-circle' : 'exclamation-circle'} me-2"></i>
+                        <strong class="me-auto">${type === 'success' ? '成功' : '错误'}</strong>
+                        <button type="button" class="btn-close" data-bs-dismiss="toast"></button>
+                    </div>
+                    <div class="toast-body">${message}</div>
+                </div>
+            `);
+            
+            $('.toast-container').append(toast);
+            const bsToast = new bootstrap.Toast(toast[0]);
+            bsToast.show();
+            
+            toast.on('hidden.bs.toast', function () {
+                $(this).remove();
+            });
+        }
+        
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+        
+        function copyToClipboard(text) {
+            navigator.clipboard.writeText(text).then(() => {
+                showToast('已复制到剪贴板');
+            }).catch(err => {
+                showToast('复制失败', 'error');
+            });
+        }
+        
+        // 初始化 DataTables 中文
+        $.extend(true, $.fn.dataTable.defaults, {
+            language: {
+                url: 'https://cdn.datatables.net/plug-ins/1.13.6/i18n/zh.json'
+            }
+        });
+    </script>
+    
+    {% block scripts %}{% endblock %}
+</body>
+</html>
+HTMLEOF
+
+    # ========== templates/login.html - 登录页面 ==========
+    cat > $WORKDIR/templates/login.html << 'HTMLEOF'
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>登录 - Xray 代理管理系统</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
     <style>
         body {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
@@ -1646,1983 +1638,673 @@ cat > $WORKDIR/templates/login.html << 'EOF'
             align-items: center;
             justify-content: center;
         }
-        .login-card {
-            backdrop-filter: blur(10px);
+        
+        .login-container {
             background: rgba(255, 255, 255, 0.95);
-            border: none;
-            box-shadow: 0 15px 35px rgba(0, 0, 0, 0.2);
-            animation: slideIn 0.5s ease-out;
+            padding: 2rem;
+            border-radius: 1rem;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+            width: 100%;
+            max-width: 400px;
+            animation: fadeIn 0.5s ease-out;
         }
-        @keyframes slideIn {
+        
+        @keyframes fadeIn {
             from {
                 opacity: 0;
-                transform: translateY(-30px);
+                transform: translateY(-20px);
             }
             to {
                 opacity: 1;
                 transform: translateY(0);
             }
         }
+        
+        .login-header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+        
+        .login-header h1 {
+            color: #333;
+            font-size: 1.75rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        .login-header p {
+            color: #666;
+            margin: 0;
+        }
+        
         .form-control:focus {
             border-color: #667eea;
             box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
         }
+        
         .btn-login {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             border: none;
-            transition: transform 0.2s;
+            padding: 0.75rem;
+            font-weight: 500;
+            transition: all 0.3s;
         }
+        
         .btn-login:hover {
             transform: translateY(-2px);
             box-shadow: 0 5px 15px rgba(0, 0, 0, 0.2);
         }
+        
+        .icon-box {
+            width: 80px;
+            height: 80px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 1rem;
+            font-size: 2rem;
+            color: white;
+        }
     </style>
 </head>
 <body>
-<div class="container" style="max-width:400px;">
-    <div class="card login-card">
-        <div class="card-body p-5">
-            <h3 class="mb-4 text-center">Xray 管理系统</h3>
-            <form method="post">
-                <div class="mb-3">
-                    <label class="form-label">用户名</label>
-                    <input type="text" class="form-control" name="username" autofocus required>
-                </div>
-                <div class="mb-3">
-                    <label class="form-label">密码</label>
-                    <input type="password" class="form-control" name="password" required>
-                </div>
-                <button class="btn btn-primary btn-login w-100 mt-4" type="submit">登录</button>
-            </form>
-            {% with messages = get_flashed_messages() %}
-              {% if messages %}
-                <div class="alert alert-danger mt-3 mb-0">{{ messages[0] }}</div>
-              {% endif %}
+    <div class="login-container">
+        <div class="login-header">
+            <div class="icon-box">
+                <i class="bi bi-shield-lock"></i>
+            </div>
+            <h1>Xray Manager</h1>
+            <p>企业级代理管理系统</p>
+        </div>
+        
+        <form method="post" action="/login">
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                    <div class="alert alert-{{ 'danger' if category == 'error' else category }} alert-dismissible fade show" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                    {% endfor %}
+                {% endif %}
             {% endwith %}
+            
+            <div class="mb-3">
+                <label for="username" class="form-label">用户名</label>
+                <div class="input-group">
+                    <span class="input-group-text">
+                        <i class="bi bi-person"></i>
+                    </span>
+                    <input type="text" class="form-control" id="username" name="username" required autofocus>
+                </div>
+            </div>
+            
+            <div class="mb-4">
+                <label for="password" class="form-label">密码</label>
+                <div class="input-group">
+                    <span class="input-group-text">
+                        <i class="bi bi-lock"></i>
+                    </span>
+                    <input type="password" class="form-control" id="password" name="password" required>
+                </div>
+            </div>
+            
+            <button type="submit" class="btn btn-primary btn-login w-100">
+                <i class="bi bi-box-arrow-in-right"></i> 登录
+            </button>
+        </form>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
+HTMLEOF
+
+    # ========== templates/index.html - 仪表盘页面 ==========
+    cat > $WORKDIR/templates/index.html << 'HTMLEOF'
+{% extends "base.html" %}
+
+{% block title %}仪表盘 - Xray 代理管理系统{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2>系统仪表盘</h2>
+    <button class="btn btn-gradient btn-sm" onclick="refreshStats()">
+        <i class="bi bi-arrow-clockwise"></i> 刷新
+    </button>
+</div>
+
+<!-- 统计卡片 -->
+<div class="row mb-4">
+    <div class="col-md-3 mb-3">
+        <div class="stat-card text-primary">
+            <div class="stat-icon">
+                <i class="bi bi-hdd-network"></i>
+            </div>
+            <div class="stat-value" id="total-proxies">0</div>
+            <div class="stat-label">代理总数</div>
+        </div>
+    </div>
+    
+    <div class="col-md-3 mb-3">
+        <div class="stat-card text-success">
+            <div class="stat-icon">
+                <i class="bi bi-check-circle"></i>
+            </div>
+            <div class="stat-value" id="active-proxies">0</div>
+            <div class="stat-label">活跃代理</div>
+        </div>
+    </div>
+    
+    <div class="col-md-3 mb-3">
+        <div class="stat-card text-info">
+            <div class="stat-icon">
+                <i class="bi bi-arrow-up-down"></i>
+            </div>
+            <div class="stat-value" id="traffic-today">0</div>
+            <div class="stat-label">今日流量</div>
+        </div>
+    </div>
+    
+    <div class="col-md-3 mb-3">
+        <div class="stat-card text-warning">
+            <div class="stat-icon">
+                <i class="bi bi-plug"></i>
+            </div>
+            <div class="stat-value" id="online-connections">0</div>
+            <div class="stat-label">在线连接</div>
         </div>
     </div>
 </div>
-</body>
-</html>
-EOF
 
-# 创建index.html（修改版本，适配Xray）
-cat > $WORKDIR/templates/index.html << 'EOF'
-<!DOCTYPE html>
-<html lang="zh">
-<head>
-    <meta charset="utf-8">
-    <title>Xray 代理管理面板</title>
-    <meta name="viewport" content="width=device-width,initial-scale=1">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
-    <style>
-        :root {
-            --primary-gradient: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            --success-gradient: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
-            --warning-gradient: linear-gradient(135deg, #f2994a 0%, #f2c94c 100%);
-            --danger-gradient: linear-gradient(135deg, #eb3349 0%, #f45c43 100%);
-            --info-gradient: linear-gradient(135deg, #2196f3 0%, #21cbf3 100%);
-            --card-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
-            --hover-shadow: 0 8px 25px rgba(0, 0, 0, 0.15);
-            --btn-radius: 8px;
-        }
-        
-        body {
-            background: #f5f7fa;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-        }
-        
-        .navbar {
-            background: var(--primary-gradient);
-            box-shadow: var(--card-shadow);
-        }
-        
-        .nav-tabs {
-            border: none;
-            background: white;
-            border-radius: 10px;
-            padding: 5px;
-            box-shadow: var(--card-shadow);
-            margin-bottom: 25px;
-        }
-        
-        .nav-tabs .nav-link {
-            border: none;
-            color: #666;
-            padding: 12px 24px;
-            border-radius: 8px;
-            transition: all 0.3s ease;
-            font-weight: 500;
-        }
-        
-        .nav-tabs .nav-link:hover {
-            background: #f8f9fa;
-            color: #667eea;
-        }
-        
-        .nav-tabs .nav-link.active {
-            background: var(--primary-gradient);
-            color: white;
-        }
-        
-        .card {
-            border: none;
-            border-radius: 15px;
-            box-shadow: var(--card-shadow);
-            transition: all 0.3s ease;
-            overflow: hidden;
-        }
-        
-        .card:hover {
-            transform: translateY(-5px);
-            box-shadow: var(--hover-shadow);
-        }
-        
-        .proxy-card {
-            cursor: pointer;
-            background: white;
-            border-radius: 15px;
-            padding: 25px;
-            margin-bottom: 20px;
-            position: relative;
-            overflow: hidden;
-            transition: all 0.3s ease;
-        }
-        
-        .proxy-card::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 5px;
-            background: var(--primary-gradient);
-        }
-        
-        .proxy-card:hover {
-            transform: translateX(10px);
-            box-shadow: var(--hover-shadow);
-        }
-        
-        .proxy-card.selected {
-            background: #f0f0ff;
-            border: 2px solid #667eea;
-        }
-        
-        .proxy-card-footer {
-            margin-top: 10px;
-            padding-top: 10px;
-            border-top: 1px solid #eee;
-        }
-        
-        .stat-card {
-            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-            border-radius: 15px;
-            padding: 20px;
-            text-align: center;
-            transition: all 0.3s ease;
-        }
-        
-        .stat-card:hover {
-            transform: scale(1.05);
-        }
-        
-        .stat-number {
-            font-size: 2.5rem;
-            font-weight: bold;
-            background: var(--primary-gradient);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        
-        .btn-gradient {
-            background: var(--primary-gradient);
-            color: white;
-            border: none;
-            padding: 10px 25px;
-            border-radius: var(--btn-radius);
-            transition: all 0.3s ease;
-            font-weight: 500;
-            box-shadow: 0 2px 10px rgba(102, 126, 234, 0.3);
-        }
-        
-        .btn-gradient:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
-            color: white;
-        }
-        
-        /* 统一按钮样式 */
-        .btn {
-            border-radius: var(--btn-radius);
-            transition: all 0.2s ease;
-            font-weight: 500;
-            border: none;
-            position: relative;
-            overflow: hidden;
-        }
-        
-        .btn::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: -100%;
-            width: 100%;
-            height: 100%;
-            background: rgba(255, 255, 255, 0.2);
-            transition: left 0.3s ease;
-        }
-        
-        .btn:hover::before {
-            left: 100%;
-        }
-        
-        .btn-success {
-            background: var(--success-gradient);
-            box-shadow: 0 2px 10px rgba(17, 153, 142, 0.3);
-        }
-        
-        .btn-success:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(17, 153, 142, 0.4);
-            background: var(--success-gradient);
-        }
-        
-        .btn-warning {
-            background: var(--warning-gradient);
-            box-shadow: 0 2px 10px rgba(242, 153, 74, 0.3);
-            color: white;
-        }
-        
-        .btn-warning:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(242, 153, 74, 0.4);
-            background: var(--warning-gradient);
-            color: white;
-        }
-        
-        .btn-danger {
-            background: var(--danger-gradient);
-            box-shadow: 0 2px 10px rgba(235, 51, 73, 0.3);
-        }
-        
-        .btn-danger:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(235, 51, 73, 0.4);
-            background: var(--danger-gradient);
-        }
-        
-        .btn-info {
-            background: var(--info-gradient);
-            box-shadow: 0 2px 10px rgba(33, 150, 243, 0.3);
-        }
-        
-        .btn-info:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(33, 150, 243, 0.4);
-            background: var(--info-gradient);
-        }
-        
-        .btn-primary {
-            background: var(--primary-gradient);
-            box-shadow: 0 2px 10px rgba(102, 126, 234, 0.3);
-        }
-        
-        .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
-            background: var(--primary-gradient);
-        }
-        
-        .btn-outline-secondary {
-            background: white;
-            border: 1px solid #e0e0e0;
-            color: #666;
-        }
-        
-        .btn-outline-secondary:hover {
-            background: #f8f9fa;
-            border-color: #667eea;
-            color: #667eea;
-            transform: translateY(-1px);
-        }
-        
-        .btn-sm {
-            padding: 6px 12px;
-            font-size: 0.875rem;
-        }
-        
-        .btn-group .btn {
-            border-radius: 0;
-        }
-        
-        .btn-group .btn:first-child {
-            border-radius: var(--btn-radius) 0 0 var(--btn-radius);
-        }
-        
-        .btn-group .btn:last-child {
-            border-radius: 0 var(--btn-radius) var(--btn-radius) 0;
-        }
-        
-        /* 徽章样式统一 */
-        .badge {
-            font-weight: 500;
-            padding: 5px 12px;
-            border-radius: 20px;
-            font-size: 0.85rem;
-        }
-        
-        .badge.bg-secondary {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
-        }
-        
-        .badge.bg-success {
-            background: var(--success-gradient) !important;
-        }
-        
-        .badge.bg-primary {
-            background: var(--primary-gradient) !important;
-        }
-        
-        .badge.bg-info {
-            background: var(--info-gradient) !important;
-        }
-        
-        .badge.bg-warning {
-            background: var(--warning-gradient) !important;
-            color: white;
-        }
-        
-        /* 输入框美化 */
-        .form-control {
-            border-radius: var(--btn-radius);
-            border: 1px solid #e0e0e0;
-            padding: 12px 15px;
-            transition: all 0.3s ease;
-        }
-        
-        .form-control:focus {
-            border-color: #667eea;
-            box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
-        }
-        
-        .form-control-sm {
-            padding: 6px 10px;
-            font-size: 0.875rem;
-        }
-        
-        /* 复选框美化 */
-        .form-check-input {
-            width: 1.2em;
-            height: 1.2em;
-            border-radius: 4px;
-            border: 2px solid #ddd;
-            transition: all 0.2s ease;
-        }
-        
-        .form-check-input:checked {
-            background-color: #667eea;
-            border-color: #667eea;
-        }
-        
-        .form-check-input:hover {
-            border-color: #667eea;
-            cursor: pointer;
-        }
-        
-        .form-control, .form-select {
-            border-radius: 10px;
-            border: 1px solid #e0e0e0;
-            padding: 12px 15px;
-            transition: all 0.3s ease;
-        }
-        
-        .form-control:focus, .form-select:focus {
-            border-color: #667eea;
-            box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
-        }
-        
-        .modal-content {
-            border-radius: 20px;
-            border: none;
-        }
-        
-        .modal-header {
-            background: var(--primary-gradient);
-            color: white;
-            border-radius: 20px 20px 0 0;
-            border: none;
-        }
-        
-        .badge-status {
-            padding: 8px 15px;
-            border-radius: 20px;
-            font-weight: normal;
-            font-size: 0.85rem;
-        }
-        
-        .loading-spinner {
-            display: none;
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            z-index: 9999;
-        }
-        
-        .loading-spinner.show {
-            display: block;
-        }
-        
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(20px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        
-        .animate-fade-in {
-            animation: fadeIn 0.5s ease-out;
-        }
-        
-        .toast-container {
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            z-index: 1050;
-        }
-        
-        .system-monitor {
-            background: white;
-            border-radius: 15px;
-            padding: 20px;
-            margin-bottom: 20px;
-        }
-        
-        .progress {
-            height: 10px;
-            border-radius: 5px;
-            overflow: hidden;
-        }
-        
-        .progress-bar {
-            background: var(--primary-gradient);
-            transition: width 0.6s ease;
-        }
-        
-        .dark-mode {
-            background: #1a1a2e;
-            color: #eee;
-        }
-        
-        .dark-mode .card, .dark-mode .nav-tabs {
-            background: #16213e;
-            color: #eee;
-        }
-        
-        .dark-mode .form-control, .dark-mode .form-select {
-            background: #0f3460;
-            color: #eee;
-            border-color: #2a2a3e;
-        }
-        
-        .switch-mode {
-            position: fixed;
-            bottom: 20px;
-            right: 20px;
-            z-index: 1000;
-            width: 50px;
-            height: 50px;
-            border-radius: 50%;
-            background: var(--primary-gradient);
-            color: white;
-            border: none;
-            box-shadow: var(--card-shadow);
-            transition: all 0.3s ease;
-        }
-        
-        .switch-mode:hover {
-            transform: scale(1.1);
-            box-shadow: var(--hover-shadow);
-        }
-        
-        .detail-header {
-            margin-bottom: 20px;
-            padding-bottom: 15px;
-            border-bottom: 2px solid #f0f0f0;
-        }
-        
-        .info-row {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 20px;
-            margin-top: 10px;
-        }
-        
-        .info-item {
-            display: flex;
-            align-items: center;
-            gap: 5px;
-            color: #666;
-        }
-        
-        .action-bar {
-            background: #f8f9fa;
-            padding: 15px;
-            border-radius: 10px;
-            margin-bottom: 20px;
-        }
-        
-        .proxy-row:hover {
-            background: #f8f9fa;
-        }
-        
-        .traffic-info {
-            display: inline-flex;
-            align-items: center;
-            gap: 10px;
-            font-size: 0.9rem;
-        }
-        
-        .traffic-up {
-            color: #28a745;
-        }
-        
-        .traffic-down {
-            color: #dc3545;
-        }
-        
-        .expire-badge {
-            font-size: 0.8rem;
-            padding: 4px 10px;
-        }
-        
-        .expire-soon {
-            background: var(--warning-gradient) !important;
-            color: white;
-        }
-        
-        .expired {
-            background: var(--danger-gradient) !important;
-            color: white;
-        }
-    </style>
-</head>
-<body>
-    <!-- 导航栏 -->
-    <nav class="navbar navbar-dark mb-4">
-        <div class="container-fluid">
-            <span class="navbar-brand mb-0 h1">
-                <i class="bi bi-shield-check"></i> Xray 代理管理系统
-            </span>
-            <div class="d-flex align-items-center">
-                <span class="text-white me-3" id="currentTime"></span>
-                <a href="/logout" class="btn btn-outline-light btn-sm">
-                    <i class="bi bi-box-arrow-right"></i> 退出
-                </a>
+<!-- 系统状态 -->
+<div class="row mb-4">
+    <div class="col-md-6 mb-3">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">系统资源</h5>
             </div>
-        </div>
-    </nav>
-
-    <!-- 主内容区 -->
-    <div class="container-fluid px-4">
-        <!-- 系统监控 -->
-        <div class="system-monitor animate-fade-in">
-            <h5 class="mb-3"><i class="bi bi-speedometer2"></i> 系统监控</h5>
-            <div class="row g-3">
-                <div class="col-md-3">
-                    <div class="stat-card">
-                        <div class="stat-number" id="cpuUsage">0%</div>
-                        <small>CPU 使用率</small>
-                        <div class="progress mt-2">
-                            <div class="progress-bar" id="cpuProgress" style="width: 0%"></div>
-                        </div>
+            <div class="card-body">
+                <div class="mb-3">
+                    <div class="d-flex justify-content-between mb-1">
+                        <span>CPU 使用率</span>
+                        <span id="cpu-percent">0%</span>
+                    </div>
+                    <div class="progress" style="height: 20px;">
+                        <div class="progress-bar bg-primary progress-bar-animated" id="cpu-progress" style="width: 0%"></div>
                     </div>
                 </div>
-                <div class="col-md-3">
-                    <div class="stat-card">
-                        <div class="stat-number" id="memUsage">0%</div>
-                        <small>内存使用率</small>
-                        <div class="progress mt-2">
-                            <div class="progress-bar" id="memProgress" style="width: 0%"></div>
-                        </div>
+                
+                <div class="mb-3">
+                    <div class="d-flex justify-content-between mb-1">
+                        <span>内存使用率</span>
+                        <span id="memory-percent">0%</span>
+                    </div>
+                    <div class="progress" style="height: 20px;">
+                        <div class="progress-bar bg-success progress-bar-animated" id="memory-progress" style="width: 0%"></div>
                     </div>
                 </div>
-                <div class="col-md-3">
-                    <div class="stat-card">
-                        <div class="stat-number" id="diskUsage">0%</div>
-                        <small>磁盘使用率</small>
-                        <div class="progress mt-2">
-                            <div class="progress-bar" id="diskProgress" style="width: 0%"></div>
-                        </div>
+                
+                <div>
+                    <div class="d-flex justify-content-between mb-1">
+                        <span>磁盘使用率</span>
+                        <span id="disk-percent">0%</span>
                     </div>
-                </div>
-                <div class="col-md-3">
-                    <div class="stat-card">
-                        <div class="stat-number" id="proxyStatus">
-                            <i class="bi bi-circle-fill text-danger"></i>
-                        </div>
-                        <small>Xray 状态</small>
-                        <div class="mt-1">
-                            <small id="proxyInfo">未运行</small>
-                        </div>
+                    <div class="progress" style="height: 20px;">
+                        <div class="progress-bar bg-warning progress-bar-animated" id="disk-progress" style="width: 0%"></div>
                     </div>
                 </div>
             </div>
         </div>
-
-        <!-- 标签页 -->
-        <ul class="nav nav-tabs" id="mainTabs" role="tablist">
-            <li class="nav-item" role="presentation">
-                <button class="nav-link active" id="proxy-tab" data-bs-toggle="tab" data-bs-target="#proxy-pane">
-                    <i class="bi bi-hdd-network"></i> 代理管理
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="report-tab" data-bs-toggle="tab" data-bs-target="#report-pane">
-                    <i class="bi bi-graph-up"></i> 使用报表
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="user-tab" data-bs-toggle="tab" data-bs-target="#user-pane">
-                    <i class="bi bi-people"></i> 用户管理
-                </button>
-            </li>
-            <li class="nav-item" role="presentation">
-                <button class="nav-link" id="ip-tab" data-bs-toggle="tab" data-bs-target="#ip-pane">
-                    <i class="bi bi-diagram-3"></i> IP管理
-                </button>
-            </li>
-        </ul>
-
-        <!-- 标签内容 -->
-        <div class="tab-content">
-            <!-- 代理管理 -->
-            <div class="tab-pane fade show active animate-fade-in" id="proxy-pane" role="tabpanel">
+    </div>
+    
+    <div class="col-md-6 mb-3">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">Xray 状态</h5>
+            </div>
+            <div class="card-body">
                 <div class="row">
-                    <div class="col-lg-4">
-                        <div class="card mb-3">
-                            <div class="card-body">
-                                <h5 class="card-title"><i class="bi bi-plus-circle"></i> 批量添加代理</h5>
-                                <form id="batchAddForm">
-                                    <div class="mb-3">
-                                        <label class="form-label">IP范围</label>
-                                        <input type="text" class="form-control" name="iprange" placeholder="192.168.1.2-254" required>
-                                    </div>
-                                    <div class="mb-3">
-                                        <label class="form-label">端口范围（可选）</label>
-                                        <input type="text" class="form-control" name="portrange" placeholder="20000-30000">
-                                    </div>
-                                    <div class="mb-3">
-                                        <label class="form-label">用户名前缀</label>
-                                        <input type="text" class="form-control" name="userprefix" placeholder="user" required>
-                                    </div>
-                                    <div class="mb-3">
-                                        <label class="form-label">有效期（天）</label>
-                                        <input type="number" class="form-control" name="expire_days" placeholder="0表示永久">
-                                    </div>
-                                    <div class="mb-3">
-                                        <label class="form-label">流量限制（GB）</label>
-                                        <input type="number" class="form-control" name="traffic_limit" step="0.1" placeholder="0表示无限">
-                                    </div>
-                                    <div class="mb-3">
-                                        <label class="form-label">备注</label>
-                                        <input type="text" class="form-control" name="notes" placeholder="可选">
-                                    </div>
-                                    <button type="submit" class="btn btn-gradient w-100">
-                                        <i class="bi bi-cloud-upload"></i> 批量添加
-                                    </button>
-                                </form>
-                            </div>
-                        </div>
-
-                        <div class="card">
-                            <div class="card-body">
-                                <h5 class="card-title"><i class="bi bi-file-text"></i> 手动批量添加</h5>
-                                <form id="manualBatchForm">
-                                    <div class="mb-3">
-                                        <textarea name="batchproxy" class="form-control" rows="6" 
-                                                  placeholder="每行一个：ip,端口 或 ip:端口"></textarea>
-                                    </div>
-                                    <button type="submit" class="btn btn-gradient w-100">
-                                        <i class="bi bi-upload"></i> 添加
-                                    </button>
-                                </form>
-                            </div>
+                    <div class="col-6 mb-3">
+                        <div class="d-flex align-items-center">
+                            <i class="bi bi-circle-fill me-2" id="xray-status-icon" style="color: #dc3545;"></i>
+                            <span>运行状态: <strong id="xray-status">未运行</strong></span>
                         </div>
                     </div>
-
-                    <div class="col-lg-8">
-                        <div class="card">
-                            <div class="card-body">
-                                <div class="d-flex justify-content-between align-items-center mb-3">
-                                    <h5 class="card-title mb-0">
-                                        <i class="bi bi-list-ul"></i> 代理组列表
-                                    </h5>
-                                    <div>
-                                        <button class="btn btn-sm btn-outline-primary" id="refreshGroups">
-                                            <i class="bi bi-arrow-clockwise"></i> 刷新
-                                        </button>
-                                        <button class="btn btn-sm btn-outline-success" id="exportGroups">
-                                            <i class="bi bi-download"></i> 导出选中
-                                        </button>
-                                    </div>
-                                </div>
-                                
-                                <div id="proxyGroups" class="overflow-auto" style="max-height: 600px;">
-                                    <!-- 代理组卡片将在这里动态生成 -->
-                                </div>
-                            </div>
+                    <div class="col-6 mb-3">
+                        <div class="d-flex align-items-center">
+                            <i class="bi bi-cpu me-2"></i>
+                            <span>进程 PID: <strong id="xray-pid">-</strong></span>
+                        </div>
+                    </div>
+                    <div class="col-6 mb-3">
+                        <div class="d-flex align-items-center">
+                            <i class="bi bi-memory me-2"></i>
+                            <span>内存占用: <strong id="xray-memory">-</strong></span>
+                        </div>
+                    </div>
+                    <div class="col-6 mb-3">
+                        <div class="d-flex align-items-center">
+                            <i class="bi bi-diagram-3 me-2"></i>
+                            <span>连接数: <strong id="xray-connections">-</strong></span>
                         </div>
                     </div>
                 </div>
-            </div>
-
-            <!-- 使用报表 -->
-            <div class="tab-pane fade" id="report-pane" role="tabpanel">
-                <div class="card animate-fade-in">
-                    <div class="card-body">
-                        <h5 class="card-title"><i class="bi bi-graph-up"></i> 使用情况报表</h5>
-                        <div id="usageReport">
-                            <!-- 报表内容将在这里动态生成 -->
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- 用户管理 -->
-            <div class="tab-pane fade" id="user-pane" role="tabpanel">
-                <div class="card animate-fade-in">
-                    <div class="card-body">
-                        <h5 class="card-title"><i class="bi bi-person-plus"></i> Web用户管理</h5>
-                        <form id="addUserForm" class="row g-3 mb-4">
-                            <div class="col-md-5">
-                                <input type="text" name="username" class="form-control" placeholder="用户名" required>
-                            </div>
-                            <div class="col-md-5">
-                                <input type="password" name="password" class="form-control" placeholder="密码" required>
-                            </div>
-                            <div class="col-md-2">
-                                <button type="submit" class="btn btn-gradient w-100">添加</button>
-                            </div>
-                        </form>
-                        <div id="usersList">
-                            <!-- 用户列表将在这里动态生成 -->
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- IP管理 -->
-            <div class="tab-pane fade" id="ip-pane" role="tabpanel">
-                <div class="card animate-fade-in">
-                    <div class="card-body">
-                        <h5 class="card-title"><i class="bi bi-diagram-3"></i> IP批量管理</h5>
-                        <form id="addIpForm" class="row g-3 mb-4">
-                            <div class="col-md-2">
-                                <input type="text" name="iface" class="form-control" placeholder="网卡" value="eth0">
-                            </div>
-                            <div class="col-md-5">
-                                <input type="text" name="ip_input" class="form-control" 
-                                       placeholder="192.168.1.2-254 或 192.168.1.2,192.168.1.3" required>
-                            </div>
-                            <div class="col-md-3">
-                                <select name="mode" class="form-select">
-                                    <option value="perm">永久</option>
-                                    <option value="temp">临时</option>
-                                </select>
-                            </div>
-                            <div class="col-md-2">
-                                <button type="submit" class="btn btn-gradient w-100">添加</button>
-                            </div>
-                        </form>
-                        <div id="ipConfigsList">
-                            <!-- IP配置列表将在这里动态生成 -->
-                        </div>
-                    </div>
+                
+                <div class="mt-3">
+                    <button class="btn btn-primary btn-sm me-2" onclick="reloadXray()">
+                        <i class="bi bi-arrow-clockwise"></i> 重载配置
+                    </button>
+                    <button class="btn btn-success btn-sm me-2" onclick="startXray()">
+                        <i class="bi bi-play-circle"></i> 启动
+                    </button>
+                    <button class="btn btn-danger btn-sm" onclick="stopXray()">
+                        <i class="bi bi-stop-circle"></i> 停止
+                    </button>
                 </div>
             </div>
         </div>
     </div>
+</div>
 
-    <!-- 代理详情模态框 -->
-    <div class="modal fade" id="proxyDetailModal" tabindex="-1">
-        <div class="modal-dialog modal-xl">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title">代理详情</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-                </div>
-                <div class="modal-body">
-                    <div id="proxyDetailContent">
-                        <!-- 代理详情将在这里动态生成 -->
-                    </div>
-                </div>
+<!-- 流量图表 -->
+<div class="row">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0">流量趋势（最近24小时）</h5>
+            </div>
+            <div class="card-body">
+                <canvas id="trafficChart" height="100"></canvas>
             </div>
         </div>
     </div>
+</div>
+{% endblock %}
 
-    <!-- 设置过期时间模态框 -->
-    <div class="modal fade" id="setExpireModal" tabindex="-1">
-        <div class="modal-dialog">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title">设置过期时间</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
-                </div>
-                <div class="modal-body">
-                    <form id="setExpireForm">
-                        <input type="hidden" id="expireSegment" name="segment">
-                        <div class="mb-3">
-                            <label class="form-label">过期时间</label>
-                            <input type="datetime-local" class="form-control" name="expire_date" required>
-                        </div>
-                        <button type="submit" class="btn btn-primary">确定</button>
-                    </form>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Toast 通知容器 -->
-    <div class="toast-container"></div>
-
-    <!-- 加载动画 -->
-    <div class="loading-spinner">
-        <div class="spinner-border text-primary" style="width: 3rem; height: 3rem;">
-            <span class="visually-hidden">Loading...</span>
-        </div>
-    </div>
-
-    <!-- 深色模式切换 -->
-    <button class="switch-mode" id="darkModeToggle">
-        <i class="bi bi-moon-fill"></i>
-    </button>
-
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-    <script>
-        // 全局变量
-        let selectedGroups = new Set();
-        let selectedProxies = new Set();
-
-        // 工具函数
-        function showLoading() {
-            document.querySelector('.loading-spinner').classList.add('show');
-        }
-
-        function hideLoading() {
-            document.querySelector('.loading-spinner').classList.remove('show');
-        }
-
-        function showToast(message, type = 'success') {
-            const toast = document.createElement('div');
-            toast.className = `toast align-items-center text-white bg-${type} border-0`;
-            toast.innerHTML = `
-                <div class="d-flex">
-                    <div class="toast-body">${message}</div>
-                    <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
-                </div>
-            `;
-            document.querySelector('.toast-container').appendChild(toast);
-            const bsToast = new bootstrap.Toast(toast);
-            bsToast.show();
-            toast.addEventListener('hidden.bs.toast', () => toast.remove());
-        }
-
-        function formatBytes(bytes) {
-            if (bytes === 0) return '0 B';
-            const k = 1024;
-            const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-            const i = Math.floor(Math.log(bytes) / Math.log(k));
-            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-        }
-
-        function formatDateTime(dateStr) {
-            if (!dateStr) return '永久';
-            const date = new Date(dateStr);
-            const now = new Date();
-            const diff = date - now;
+{% block scripts %}
+<script>
+    let trafficChart = null;
+    
+    // 刷新统计数据
+    function refreshStats() {
+        $.get('/api/stats', function(data) {
+            // 更新代理统计
+            $('#total-proxies').text(data.proxies.total);
+            $('#active-proxies').text(data.proxies.active);
+            $('#traffic-today').text(formatBytes(data.proxies.traffic_today));
+            $('#online-connections').text(data.proxies.online || 0);
             
-            if (diff < 0) return '<span class="text-danger">已过期</span>';
-            if (diff < 7 * 24 * 60 * 60 * 1000) {
-                const days = Math.floor(diff / (24 * 60 * 60 * 1000));
-                return `<span class="text-warning">${days}天后过期</span>`;
-            }
+            // 更新系统资源
+            const cpu = data.system.cpu_percent;
+            const memory = data.system.memory.percent;
+            const disk = data.system.disk.percent;
             
-            return date.toLocaleString('zh-CN');
-        }
-
-        // 时间更新
-        function updateTime() {
-            const now = new Date();
-            document.getElementById('currentTime').textContent = 
-                now.toLocaleString('zh-CN', { hour12: false });
-        }
-        setInterval(updateTime, 1000);
-        updateTime();
-
-        // 系统监控
-        function updateSystemStatus() {
-            fetch('/api/system_status')
-                .then(res => res.json())
-                .then(data => {
-                    // CPU
-                    document.getElementById('cpuUsage').textContent = data.cpu.toFixed(1) + '%';
-                    document.getElementById('cpuProgress').style.width = data.cpu + '%';
-                    
-                    // 内存
-                    document.getElementById('memUsage').textContent = data.memory.percent.toFixed(1) + '%';
-                    document.getElementById('memProgress').style.width = data.memory.percent + '%';
-                    
-                    // 磁盘
-                    document.getElementById('diskUsage').textContent = data.disk.percent.toFixed(1) + '%';
-                    document.getElementById('diskProgress').style.width = data.disk.percent + '%';
-                    
-                    // Xray状态
-                    const statusIcon = document.getElementById('proxyStatus');
-                    const statusInfo = document.getElementById('proxyInfo');
-                    if (data.xray.running) {
-                        statusIcon.innerHTML = '<i class="bi bi-circle-fill text-success"></i>';
-                        statusInfo.textContent = `PID: ${data.xray.pid} | 连接: ${data.xray.connections}`;
-                    } else {
-                        statusIcon.innerHTML = '<i class="bi bi-circle-fill text-danger"></i>';
-                        statusInfo.textContent = '未运行';
-                    }
-                });
-        }
-        setInterval(updateSystemStatus, 5000);
-        updateSystemStatus();
-
-        // 加载代理组
-        function loadProxyGroups() {
-            const currentSelected = new Set(selectedGroups);
+            $('#cpu-percent').text(cpu.toFixed(1) + '%');
+            $('#cpu-progress').css('width', cpu + '%');
             
-            showLoading();
-            fetch('/api/proxy_groups')
-                .then(res => res.json())
-                .then(groups => {
-                    const container = document.getElementById('proxyGroups');
-                    container.innerHTML = '';
-                    
-                    const existingSegments = new Set(groups.map(g => g.c_segment));
-                    
-                    currentSelected.forEach(cseg => {
-                        if (!existingSegments.has(cseg)) {
-                            selectedGroups.delete(cseg);
-                        }
-                    });
-                    
-                    groups.forEach(group => {
-                        const card = document.createElement('div');
-                        card.className = 'proxy-card';
-                        
-                        if (selectedGroups.has(group.c_segment)) {
-                            card.classList.add('selected');
-                        }
-                        
-                        // 过期提示
-                        let expireInfo = '';
-                        if (group.expiring_soon > 0) {
-                            expireInfo = `<span class="badge expire-badge expire-soon">
-                                <i class="bi bi-exclamation-triangle"></i> ${group.expiring_soon} 个即将过期
-                            </span>`;
-                        }
-                        
-                        card.innerHTML = `
-                            <div class="row align-items-center">
-                                <div class="col-md-7">
-                                    <h6 class="mb-2 d-flex align-items-center">
-                                        <input type="checkbox" class="form-check-input me-2" 
-                                               data-group="${group.c_segment}" onclick="event.stopPropagation();">
-                                        <i class="bi bi-hdd-network text-primary me-2"></i>
-                                        <strong>${group.c_segment}.x</strong>
-                                        ${expireInfo}
-                                    </h6>
-                                    <div class="d-flex flex-wrap gap-2 mb-2">
-                                        <span class="badge rounded-pill bg-primary">
-                                            <i class="bi bi-layers"></i> ${group.total} 个
-                                        </span>
-                                        <span class="badge rounded-pill bg-success">
-                                            <i class="bi bi-check-circle"></i> ${group.enabled} 启用
-                                        </span>
-                                        <span class="badge rounded-pill bg-info">
-                                            <i class="bi bi-arrow-down-up"></i> ${group.traffic} MB
-                                        </span>
-                                    </div>
-                                    <small class="text-muted d-block">
-                                        ${group.ip_range ? `<i class="bi bi-diagram-3"></i> ${group.ip_range}` : ''}
-                                        ${group.port_range ? `<i class="bi bi-ethernet"></i> ${group.port_range}` : ''}
-                                        ${group.user_prefix ? `<i class="bi bi-person"></i> ${group.user_prefix}` : ''}
-                                    </small>
-                                    <div class="proxy-card-footer">
-                                        <small class="text-muted">
-                                            ${group.created_at ? `<i class="bi bi-calendar"></i> 创建: ${new Date(group.created_at).toLocaleDateString()}` : ''}
-                                        </small>
-                                    </div>
-                                </div>
-                                <div class="col-md-5 text-end">
-                                    <div class="btn-toolbar justify-content-end" role="toolbar">
-                                        <div class="btn-group btn-group-sm me-2" role="group">
-                                            <button class="btn btn-primary" 
-                                                    onclick="event.stopPropagation(); viewProxyGroup('${group.c_segment}')"
-                                                    title="查看详情">
-                                                <i class="bi bi-eye"></i> 查看
-                                            </button>
-                                            <button class="btn btn-warning" 
-                                                    onclick="event.stopPropagation(); showSetExpireModal('${group.c_segment}')"
-                                                    title="设置过期">
-                                                <i class="bi bi-clock"></i> 过期
-                                            </button>
-                                        </div>
-                                        <div class="btn-group btn-group-sm" role="group">
-                                            <button class="btn btn-success" 
-                                                    onclick="event.stopPropagation(); toggleGroup('${group.c_segment}', 'enable')"
-                                                    title="启用全部">
-                                                <i class="bi bi-play-circle"></i> 启用
-                                            </button>
-                                            <button class="btn btn-warning" 
-                                                    onclick="event.stopPropagation(); toggleGroup('${group.c_segment}', 'disable')"
-                                                    title="禁用全部">
-                                                <i class="bi bi-pause-circle"></i> 禁用
-                                            </button>
-                                            <button class="btn btn-danger" 
-                                                    onclick="event.stopPropagation(); deleteGroup('${group.c_segment}')"
-                                                    title="删除整组">
-                                                <i class="bi bi-trash"></i> 删除
-                                            </button>
-                                        </div>
-                                    </div>
-                                </div>
-                            </div>
-                        `;
-                        
-                        // 点击卡片切换选中状态
-                        card.addEventListener('click', (e) => {
-                            if (e.target.closest('button') || e.target.closest('input')) {
-                                return;
-                            }
-                            
-                            const checkbox = card.querySelector('input[type="checkbox"]');
-                            checkbox.checked = !checkbox.checked;
-                            
-                            if (checkbox.checked) {
-                                selectedGroups.add(group.c_segment);
-                                card.classList.add('selected');
-                            } else {
-                                selectedGroups.delete(group.c_segment);
-                                card.classList.remove('selected');
-                            }
-                        });
-                        
-                        // 复选框事件
-                        const checkbox = card.querySelector('input[type="checkbox"]');
-                        
-                        if (selectedGroups.has(group.c_segment)) {
-                            checkbox.checked = true;
-                        }
-                        
-                        checkbox.addEventListener('change', (e) => {
-                            e.stopPropagation();
-                            if (e.target.checked) {
-                                selectedGroups.add(group.c_segment);
-                                card.classList.add('selected');
-                            } else {
-                                selectedGroups.delete(group.c_segment);
-                                card.classList.remove('selected');
-                            }
-                        });
-                        
-                        container.appendChild(card);
-                    });
-                    hideLoading();
-                })
-                .catch(err => {
-                    hideLoading();
-                    showToast('加载失败: ' + err.message, 'danger');
-                });
-        }
-
-        // 查看代理组详情
-        function viewProxyGroup(cSegment) {
-            selectedProxies.clear();
+            $('#memory-percent').text(memory.toFixed(1) + '%');
+            $('#memory-progress').css('width', memory + '%');
             
-            showLoading();
-            fetch(`/api/proxy_group/${cSegment}`)
-                .then(res => res.json())
-                .then(proxies => {
-                    const content = document.getElementById('proxyDetailContent');
-                    const firstProxy = proxies[0] || {};
-                    
-                    let html = `
-                        <div class="detail-header">
-                            <h5>${cSegment}.x 段代理详情</h5>
-                            <div class="info-row">
-                                ${firstProxy.ip_range ? `<span class="info-item"><i class="bi bi-diagram-3"></i> IP范围: <strong>${firstProxy.ip_range}</strong></span>` : ''}
-                                ${firstProxy.port_range ? `<span class="info-item"><i class="bi bi-ethernet"></i> 端口范围: <strong>${firstProxy.port_range}</strong></span>` : ''}
-                                ${firstProxy.user_prefix ? `<span class="info-item"><i class="bi bi-person"></i> 用户前缀: <strong>${firstProxy.user_prefix}</strong></span>` : ''}
-                                <span class="info-item"><i class="bi bi-list"></i> 代理总数: <strong>${proxies.length}</strong></span>
-                            </div>
-                        </div>
-                        
-                        <div class="action-bar">
-                            <div class="d-flex align-items-center justify-content-between">
-                                <div class="d-flex align-items-center gap-3">
-                                    <input type="checkbox" class="form-check-input" id="selectAllCheck">
-                                    <label for="selectAllCheck" class="mb-0">全选</label>
-                                    <span class="text-muted">已选择 <span id="selectedCount">0</span> 项</span>
-                                </div>
-                                <div class="d-flex gap-2">
-                                    <button class="btn btn-sm btn-success" onclick="batchEnableProxies()">
-                                        <i class="bi bi-check-circle-fill"></i> 启用
-                                    </button>
-                                    <button class="btn btn-sm btn-warning" onclick="batchDisableProxies()">
-                                        <i class="bi bi-pause-circle-fill"></i> 禁用
-                                    </button>
-                                    <button class="btn btn-sm btn-danger" onclick="batchDeleteProxies()">
-                                        <i class="bi bi-trash-fill"></i> 删除
-                                    </button>
-                                    <button class="btn btn-sm btn-info" onclick="exportSelectedProxies()">
-                                        <i class="bi bi-download"></i> 导出
-                                    </button>
-                                    <input type="text" class="form-control form-control-sm" style="width:200px; border-radius: 8px;"
-                                           placeholder="搜索..." onkeyup="filterProxyTable(this.value)">
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <div style="overflow-x: auto;">
-                            <table class="table table-sm" style="width: 100%; min-width: 1200px;">
-                                <thead style="background: #343a40; color: white;">
-                                    <tr>
-                                        <th style="width: 40px; text-align: center;">选</th>
-                                        <th style="width: 60px;">ID</th>
-                                        <th style="width: 120px;">IP地址</th>
-                                        <th style="width: 80px; text-align: center;">端口</th>
-                                        <th style="width: 120px;">用户名</th>
-                                        <th style="width: 200px;">密码</th>
-                                        <th style="width: 150px; text-align: center;">流量</th>
-                                        <th style="width: 120px; text-align: center;">过期时间</th>
-                                        <th style="width: 70px; text-align: center;">状态</th>
-                                        <th style="width: 100px; text-align: center;">操作</th>
-                                    </tr>
-                                </thead>
-                                <tbody>`;
-                    
-                    proxies.forEach((proxy, index) => {
-                        const rowClass = index % 2 === 0 ? 'table-light' : '';
-                        const trafficPercent = proxy.traffic_limit > 0 ? 
-                            ((proxy.traffic_total / proxy.traffic_limit) * 100).toFixed(1) : 0;
-                        
-                        html += `
-                            <tr class="proxy-row ${rowClass}">
-                                <td style="text-align: center; padding: 8px 4px;">
-                                    <input type="checkbox" class="form-check-input proxy-check" 
-                                           data-id="${proxy.id}" onchange="updateSelectedCount()">
-                                </td>
-                                <td style="padding: 8px 4px;">
-                                    <small class="text-muted">#${proxy.id}</small>
-                                </td>
-                                <td style="padding: 8px 4px;">
-                                    <span class="font-monospace" style="font-size: 0.9rem;">${proxy.ip}</span>
-                                </td>
-                                <td style="padding: 8px 4px; text-align: center;">
-                                    <span class="badge bg-info" style="font-family: monospace;">${proxy.port}</span>
-                                </td>
-                                <td style="padding: 8px 4px;">
-                                    <code style="color: #d63384; font-size: 0.9rem;">${proxy.username}</code>
-                                </td>
-                                <td style="padding: 8px 4px;">
-                                    <div style="display: flex; align-items: center; gap: 4px;">
-                                        <input type="text" class="form-control form-control-sm" 
-                                               value="${proxy.password}" readonly 
-                                               style="font-family: monospace; font-size: 0.85rem; background: #f8f9fa; border-radius: 6px;">
-                                        <button class="btn btn-sm btn-outline-secondary" 
-                                                style="padding: 4px 10px; border-radius: 6px;"
-                                                onclick="copyPassword('${proxy.password.replace(/'/g, "\\'")}', ${proxy.id})"
-                                                title="复制密码">
-                                            <i class="bi bi-clipboard" style="font-size: 0.9rem;"></i>
-                                        </button>
-                                    </div>
-                                </td>
-                                <td style="padding: 8px 4px;">
-                                    <div class="traffic-info">
-                                        <span class="traffic-up" title="上传">
-                                            <i class="bi bi-arrow-up"></i> ${formatBytes(proxy.traffic_up)}
-                                        </span>
-                                        <span class="traffic-down" title="下载">
-                                            <i class="bi bi-arrow-down"></i> ${formatBytes(proxy.traffic_down)}
-                                        </span>
-                                    </div>
-                                    ${proxy.traffic_limit > 0 ? `
-                                        <div class="progress mt-1" style="height: 5px;">
-                                            <div class="progress-bar ${trafficPercent > 80 ? 'bg-warning' : ''}" 
-                                                 style="width: ${trafficPercent}%"></div>
-                                        </div>
-                                        <small class="text-muted">${trafficPercent}% / ${formatBytes(proxy.traffic_limit)}</small>
-                                    ` : ''}
-                                </td>
-                                <td style="padding: 8px 4px; text-align: center;">
-                                    <small>${formatDateTime(proxy.expire_at)}</small>
-                                </td>
-                                <td style="text-align: center; padding: 8px 4px;">
-                                    ${proxy.enabled ? 
-                                        '<span class="badge bg-success" style="font-size: 0.8rem;"><i class="bi bi-check-circle-fill me-1"></i>启用</span>' : 
-                                        '<span class="badge bg-secondary" style="font-size: 0.8rem;"><i class="bi bi-x-circle-fill me-1"></i>禁用</span>'}
-                                </td>
-                                <td style="text-align: center; padding: 8px 4px;">
-                                    <button class="btn btn-sm ${proxy.enabled ? 'btn-warning' : 'btn-success'}" 
-                                            style="padding: 4px 10px; margin-right: 4px; border-radius: 6px;"
-                                            onclick="toggleProxy(${proxy.id}, ${!proxy.enabled})"
-                                            title="${proxy.enabled ? '禁用' : '启用'}">
-                                        <i class="bi bi-${proxy.enabled ? 'pause-circle' : 'play-circle'}-fill" style="font-size: 0.9rem;"></i>
-                                    </button>
-                                    <button class="btn btn-sm btn-danger" 
-                                            style="padding: 4px 10px; border-radius: 6px;"
-                                            onclick="deleteProxy(${proxy.id})"
-                                            title="删除">
-                                        <i class="bi bi-trash-fill" style="font-size: 0.9rem;"></i>
-                                    </button>
-                                </td>
-                            </tr>`;
-                    });
-                    
-                    html += `
-                                </tbody>
-                            </table>
-                        </div>
-                    `;
-                    
-                    content.innerHTML = html;
-                    
-                    // 绑定事件
-                    document.getElementById('selectAllCheck').addEventListener('change', (e) => {
-                        document.querySelectorAll('.proxy-check').forEach(cb => {
-                            cb.checked = e.target.checked;
-                            const id = cb.getAttribute('data-id');
-                            if (e.target.checked) {
-                                selectedProxies.add(id);
-                            } else {
-                                selectedProxies.delete(id);
-                            }
-                        });
-                        updateSelectedCount();
-                    });
-                    
-                    updateSelectedCount();
-                    
-                    hideLoading();
-                    const modal = new bootstrap.Modal(document.getElementById('proxyDetailModal'));
-                    
-                    document.getElementById('proxyDetailModal').addEventListener('hidden.bs.modal', function () {
-                        selectedProxies.clear();
-                        updateSelectedCount();
-                    }, { once: true });
-                    
-                    modal.show();
-                })
-                .catch(err => {
-                    hideLoading();
-                    showToast('加载失败: ' + err.message, 'danger');
-                });
-        }
-
-        // 更新选中数量
-        function updateSelectedCount() {
-            const count = document.querySelectorAll('.proxy-check:checked').length;
-            const countElement = document.getElementById('selectedCount');
-            if (countElement) {
-                countElement.textContent = count;
-            }
-        }
-
-        // 过滤代理表格
-        function filterProxyTable(value) {
-            const rows = document.querySelectorAll('.proxy-row');
-            const searchTerm = value.toLowerCase();
-            rows.forEach(row => {
-                const text = row.textContent.toLowerCase();
-                row.style.display = text.includes(searchTerm) ? '' : 'none';
-            });
-        }
-
-        // 复制密码
-        function copyPassword(password, id) {
-            navigator.clipboard.writeText(password).then(() => {
-                showToast('密码已复制到剪贴板');
-            });
-        }
-
-        // 代理组操作
-        function deleteGroup(cSegment) {
-            if (!confirm(`确定要删除 ${cSegment}.x 段的所有代理吗？`)) return;
+            $('#disk-percent').text(disk.toFixed(1) + '%');
+            $('#disk-progress').css('width', disk + '%');
             
-            showLoading();
-            fetch(`/api/delete_group/${cSegment}`, { method: 'POST' })
-                .then(res => res.json())
-                .then(data => {
-                    hideLoading();
-                    showToast(`已删除 ${cSegment}.x 段代理组`);
-                    selectedGroups.delete(cSegment);
-                    loadProxyGroups();
-                })
-                .catch(err => {
-                    hideLoading();
-                    showToast('删除失败: ' + err.message, 'danger');
-                });
-        }
-
-        function toggleGroup(cSegment, action) {
-            showLoading();
-            fetch(`/api/toggle_group/${cSegment}/${action}`, { method: 'POST' })
-                .then(res => res.json())
-                .then(data => {
-                    hideLoading();
-                    showToast(`已${action === 'enable' ? '启用' : '禁用'} ${cSegment}.x 段代理组`);
-                    loadProxyGroups();
-                })
-                .catch(err => {
-                    hideLoading();
-                    showToast('操作失败: ' + err.message, 'danger');
-                });
-        }
-
-        // 显示设置过期时间模态框
-        function showSetExpireModal(cSegment) {
-            document.getElementById('expireSegment').value = cSegment;
-            const modal = new bootstrap.Modal(document.getElementById('setExpireModal'));
-            modal.show();
-        }
-
-        // 设置过期时间表单提交
-        document.getElementById('setExpireForm').addEventListener('submit', (e) => {
-            e.preventDefault();
-            const formData = new FormData(e.target);
-            const cSegment = formData.get('segment');
-            
-            showLoading();
-            fetch(`/api/set_expire_group/${cSegment}`, { method: 'POST', body: formData })
-                .then(res => res.json())
-                .then(data => {
-                    hideLoading();
-                    showToast(`已设置 ${cSegment}.x 段过期时间`);
-                    bootstrap.Modal.getInstance(document.getElementById('setExpireModal')).hide();
-                    loadProxyGroups();
-                })
-                .catch(err => {
-                    hideLoading();
-                    showToast('设置失败: ' + err.message, 'danger');
-                });
-        });
-
-        // 单个代理操作
-        function toggleProxy(id, enable) {
-            const action = enable ? 'enableproxy' : 'disableproxy';
-            fetch(`/${action}/${id}`)
-                .then(res => res.json())
-                .then(data => {
-                    showToast(`代理已${enable ? '启用' : '禁用'}`);
-                    const modal = bootstrap.Modal.getInstance(document.getElementById('proxyDetailModal'));
-                    if (modal) {
-                        const detailHeader = document.querySelector('.detail-header h5');
-                        if (detailHeader) {
-                            const cSegment = detailHeader.textContent.split('.')[0].trim();
-                            viewProxyGroup(cSegment);
-                        }
-                    }
-                })
-                .catch(err => {
-                    showToast('操作失败: ' + err.message, 'danger');
-                });
-        }
-
-        function deleteProxy(id) {
-            if (!confirm('确定要删除此代理吗？')) return;
-            
-            fetch(`/delproxy/${id}`)
-                .then(res => res.json())
-                .then(data => {
-                    showToast('代理已删除');
-                    const modal = bootstrap.Modal.getInstance(document.getElementById('proxyDetailModal'));
-                    if (modal) {
-                        const detailHeader = document.querySelector('.detail-header h5');
-                        if (detailHeader) {
-                            const cSegment = detailHeader.textContent.split('.')[0].trim();
-                            viewProxyGroup(cSegment);
-                        }
-                    }
-                    loadProxyGroups();
-                })
-                .catch(err => {
-                    showToast('删除失败: ' + err.message, 'danger');
-                });
-        }
-
-        // 批量操作函数
-        function batchEnableProxies() {
-            if (selectedProxies.size === 0) {
-                showToast('请先选择代理', 'warning');
-                return;
-            }
-            
-            const formData = new FormData();
-            selectedProxies.forEach(id => formData.append('ids[]', id));
-            
-            fetch('/batch_enable', { method: 'POST', body: formData })
-                .then(res => res.json())
-                .then(data => {
-                    showToast('批量启用成功');
-                    selectedProxies.clear();
-                    updateSelectedCount();
-                    const cSegment = document.querySelector('.detail-header h5').textContent.split('.')[0];
-                    viewProxyGroup(cSegment);
-                });
-        }
-
-        function batchDisableProxies() {
-            if (selectedProxies.size === 0) {
-                showToast('请先选择代理', 'warning');
-                return;
-            }
-            
-            const formData = new FormData();
-            selectedProxies.forEach(id => formData.append('ids[]', id));
-            
-            fetch('/batch_disable', { method: 'POST', body: formData })
-                .then(res => res.json())
-                .then(data => {
-                    showToast('批量禁用成功');
-                    selectedProxies.clear();
-                    updateSelectedCount();
-                    const cSegment = document.querySelector('.detail-header h5').textContent.split('.')[0];
-                    viewProxyGroup(cSegment);
-                });
-        }
-
-        function batchDeleteProxies() {
-            if (selectedProxies.size === 0) {
-                showToast('请先选择代理', 'warning');
-                return;
-            }
-            
-            if (!confirm(`确定要删除选中的 ${selectedProxies.size} 个代理吗？`)) return;
-            
-            const formData = new FormData();
-            selectedProxies.forEach(id => formData.append('ids', id));
-            
-            fetch('/batchdelproxy', { method: 'POST', body: formData })
-                .then(res => res.json())
-                .then(data => {
-                    showToast('批量删除成功');
-                    selectedProxies.clear();
-                    updateSelectedCount();
-                    bootstrap.Modal.getInstance(document.getElementById('proxyDetailModal')).hide();
-                    loadProxyGroups();
-                });
-        }
-
-        function exportSelectedProxies() {
-            if (selectedProxies.size === 0) {
-                showToast('请先选择代理', 'warning');
-                return;
-            }
-            
-            const formData = new FormData();
-            selectedProxies.forEach(id => formData.append('ids[]', id));
-            
-            fetch('/export_selected_proxy', { method: 'POST', body: formData })
-                .then(res => res.blob())
-                .then(blob => {
-                    const a = document.createElement('a');
-                    a.href = URL.createObjectURL(blob);
-                    a.download = 'proxy_export.txt';
-                    a.click();
-                    URL.revokeObjectURL(a.href);
-                    showToast('导出成功');
-                    selectedProxies.clear();
-                    updateSelectedCount();
-                    const selectAllCheck = document.getElementById('selectAllCheck');
-                    if (selectAllCheck) selectAllCheck.checked = false;
-                });
-        }
-
-        // 导出选中的代理组
-        document.getElementById('exportGroups').addEventListener('click', () => {
-            if (selectedGroups.size === 0) {
-                                    showToast('请先选择代理组', 'warning');
-                return;
-            }
-            
-            const formData = new FormData();
-            selectedGroups.forEach(cseg => formData.append('csegs[]', cseg));
-            
-            showLoading();
-            fetch('/export_selected', { method: 'POST', body: formData })
-                .then(res => {
-                    if (!res.ok) throw new Error('Export failed');
-                    
-                    const contentDisposition = res.headers.get('Content-Disposition');
-                    let filename = 'proxy_export.txt';
-                    if (contentDisposition) {
-                        const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
-                        if (filenameMatch && filenameMatch[1]) {
-                            filename = filenameMatch[1].replace(/['"]/g, '');
-                        }
-                    }
-                    
-                    return res.blob().then(blob => ({ blob, filename }));
-                })
-                .then(({ blob, filename }) => {
-                    hideLoading();
-                    const a = document.createElement('a');
-                    a.href = URL.createObjectURL(blob);
-                    a.download = filename;
-                    a.click();
-                    URL.revokeObjectURL(a.href);
-                    showToast(`导出成功: ${filename}`);
-                    
-                    selectedGroups.clear();
-                    document.querySelectorAll('.proxy-card input[type="checkbox"]').forEach(cb => {
-                        cb.checked = false;
-                    });
-                    document.querySelectorAll('.proxy-card.selected').forEach(card => {
-                        card.classList.remove('selected');
-                    });
-                })
-                .catch(err => {
-                    hideLoading();
-                    showToast('导出失败: ' + err.message, 'danger');
-                });
-        });
-
-        // 表单提交
-        document.getElementById('batchAddForm').addEventListener('submit', (e) => {
-            e.preventDefault();
-            const formData = new FormData(e.target);
-            
-            showLoading();
-            fetch('/batchaddproxy', { method: 'POST', body: formData })
-                .then(res => res.json())
-                .then(data => {
-                    hideLoading();
-                    if (data.status === 'success') {
-                        showToast(data.message);
-                        e.target.reset();
-                        loadProxyGroups();
-                    } else {
-                        showToast(data.message, 'danger');
-                    }
-                });
-        });
-
-        document.getElementById('manualBatchForm').addEventListener('submit', (e) => {
-            e.preventDefault();
-            const formData = new FormData(e.target);
-            
-            showLoading();
-            fetch('/batchaddproxy', { method: 'POST', body: formData })
-                .then(res => res.json())
-                .then(data => {
-                    hideLoading();
-                    if (data.status === 'success') {
-                        showToast(data.message);
-                        e.target.reset();
-                        loadProxyGroups();
-                    } else {
-                        showToast(data.message, 'danger');
-                    }
-                });
-        });
-
-        // 使用报表
-        function loadUsageReport() {
-            fetch('/api/usage_report')
-                .then(res => res.json())
-                .then(reports => {
-                    const container = document.getElementById('usageReport');
-                    let html = `
-                        <div class="table-responsive">
-                            <table class="table table-hover">
-                                <thead>
-                                    <tr>
-                                        <th>C段</th>
-                                        <th>总数</th>
-                                        <th>活跃</th>
-                                        <th>24小时使用</th>
-                                        <th>总流量</th>
-                                        <th>即将过期</th>
-                                        <th>接近限制</th>
-                                        <th>创建时间</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                    `;
-                    
-                    reports.forEach(report => {
-                        const usageRate = report.total > 0 ? (report.used_24h / report.total * 100).toFixed(1) : 0;
-                        html += `
-                            <tr>
-                                <td><strong>${report.c_segment}.x</strong></td>
-                                <td>${report.total}</td>
-                                <td>
-                                    <span class="badge bg-success">${report.active}</span>
-                                </td>
-                                <td>
-                                    <div class="progress" style="width: 100px;">
-                                        <div class="progress-bar ${usageRate > 50 ? 'bg-success' : 'bg-warning'}" 
-                                             style="width: ${usageRate}%"></div>
-                                    </div>
-                                    <small>${report.used_24h} (${usageRate}%)</small>
-                                </td>
-                                <td>${report.total_traffic_gb} GB</td>
-                                <td>
-                                    ${report.expiring_soon > 0 ? 
-                                        `<span class="badge bg-warning">${report.expiring_soon}</span>` : 
-                                        '<span class="text-muted">-</span>'}
-                                </td>
-                                <td>
-                                    ${report.near_limit > 0 ? 
-                                        `<span class="badge bg-danger">${report.near_limit}</span>` : 
-                                        '<span class="text-muted">-</span>'}
-                                </td>
-                                <td>
-                                    ${report.first_created ? 
-                                        new Date(report.first_created).toLocaleDateString() : 
-                                        '<span class="text-muted">-</span>'}
-                                </td>
-                            </tr>
-                        `;
-                    });
-                    
-                    html += '</tbody></table></div>';
-                    container.innerHTML = html;
-                });
-        }
-
-        // 用户管理
-        function loadUsers() {
-            fetch('/api/users')
-                .then(res => res.json())
-                .then(users => {
-                    const container = document.getElementById('usersList');
-                    container.innerHTML = `
-                        <div class="table-responsive">
-                            <table class="table">
-                                <thead>
-                                    <tr>
-                                        <th>ID</th>
-                                        <th>用户名</th>
-                                        <th>操作</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                    `;
-                    
-                    users.forEach(user => {
-                        container.innerHTML += `
-                            <tr>
-                                <td>${user.id}</td>
-                                <td>${user.username}</td>
-                                <td>
-                                    ${user.username !== 'admin' ? 
-                                        `<button class="btn btn-sm btn-danger" onclick="deleteUser(${user.id})">
-                                            <i class="bi bi-trash"></i> 删除
-                                        </button>` : 
-                                        '<span class="text-muted">系统用户</span>'}
-                                </td>
-                            </tr>
-                        `;
-                    });
-                    
-                    container.innerHTML += '</tbody></table></div>';
-                });
-        }
-
-        document.getElementById('addUserForm').addEventListener('submit', (e) => {
-            e.preventDefault();
-            const formData = new FormData(e.target);
-            
-            fetch('/adduser', { method: 'POST', body: formData })
-                .then(res => res.json())
-                .then(data => {
-                    if (data.status === 'success') {
-                        showToast(data.message);
-                        e.target.reset();
-                        loadUsers();
-                    } else {
-                        showToast(data.message, 'danger');
-                    }
-                });
-        });
-
-        function deleteUser(id) {
-            if (!confirm('确定要删除此用户吗？')) return;
-            
-            fetch(`/deluser/${id}`)
-                .then(res => res.json())
-                .then(data => {
-                    showToast('用户已删除');
-                    loadUsers();
-                });
-        }
-
-        // IP配置管理
-        function loadIpConfigs() {
-            fetch('/api/ip_configs')
-                .then(res => res.json())
-                .then(configs => {
-                    const container = document.getElementById('ipConfigsList');
-                    container.innerHTML = `
-                        <div class="table-responsive">
-                            <table class="table">
-                                <thead>
-                                    <tr>
-                                        <th>ID</th>
-                                        <th>IP配置</th>
-                                        <th>类型</th>
-                                        <th>网卡</th>
-                                        <th>创建时间</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                    `;
-                    
-                    configs.forEach(config => {
-                        container.innerHTML += `
-                            <tr>
-                                <td>${config.id}</td>
-                                <td><code>${config.ip_str}</code></td>
-                                <td>${config.type}</td>
-                                <td>${config.iface}</td>
-                                <td>${config.created}</td>
-                            </tr>
-                        `;
-                    });
-                    
-                    container.innerHTML += '</tbody></table></div>';
-                });
-        }
-
-        document.getElementById('addIpForm').addEventListener('submit', (e) => {
-            e.preventDefault();
-            const formData = new FormData(e.target);
-            
-            showLoading();
-            fetch('/add_ip_config', { method: 'POST', body: formData })
-                .then(res => res.json())
-                .then(data => {
-                    hideLoading();
-                    if (data.status === 'success') {
-                        showToast(data.message);
-                        e.target.reset();
-                        loadIpConfigs();
-                    } else {
-                        showToast(data.message, 'danger');
-                    }
-                });
-        });
-
-        // 深色模式
-        document.getElementById('darkModeToggle').addEventListener('click', () => {
-            document.body.classList.toggle('dark-mode');
-            const icon = document.querySelector('#darkModeToggle i');
-            if (document.body.classList.contains('dark-mode')) {
-                icon.className = 'bi bi-sun-fill';
-                localStorage.setItem('darkMode', 'true');
+            // 更新 Xray 状态
+            if (data.system.xray.running) {
+                $('#xray-status').text('运行中');
+                $('#xray-status-icon').css('color', '#28a745');
+                $('#xray-pid').text(data.system.xray.pid || '-');
+                $('#xray-memory').text(formatBytes(data.system.xray.memory || 0));
+                $('#xray-connections').text(data.system.xray.connections || 0);
             } else {
-                icon.className = 'bi bi-moon-fill';
-                localStorage.setItem('darkMode', 'false');
+                $('#xray-status').text('未运行');
+                $('#xray-status-icon').css('color', '#dc3545');
+                $('#xray-pid').text('-');
+                $('#xray-memory').text('-');
+                $('#xray-connections').text('-');
             }
         });
-
-        // 标签页切换事件
-        document.getElementById('report-tab').addEventListener('shown.bs.tab', loadUsageReport);
-        document.getElementById('user-tab').addEventListener('shown.bs.tab', loadUsers);
-        document.getElementById('ip-tab').addEventListener('shown.bs.tab', loadIpConfigs);
-
-        // 刷新按钮
-        document.getElementById('refreshGroups').addEventListener('click', loadProxyGroups);
-
-        // 初始化
-        window.addEventListener('DOMContentLoaded', () => {
-            // 恢复深色模式设置
-            if (localStorage.getItem('darkMode') === 'true') {
-                document.body.classList.add('dark-mode');
-                document.querySelector('#darkModeToggle i').className = 'bi bi-sun-fill';
+    }
+    
+    // 重载 Xray 配置
+    function reloadXray() {
+        $.post('/api/config/reload', function(data) {
+            if (data.success) {
+                showToast(data.message);
+                setTimeout(refreshStats, 1000);
+            } else {
+                showToast(data.message, 'error');
             }
-            
-            // 清空全局选择集合
-            selectedGroups.clear();
-            selectedProxies.clear();
-            
-            // 加载初始数据
-            loadProxyGroups();
         });
-    </script>
-</body>
-</html>
-EOF
+    }
+    
+    // 启动 Xray
+    function startXray() {
+        $.post('/api/xray/start', function(data) {
+            showToast(data.message);
+            setTimeout(refreshStats, 1000);
+        });
+    }
+    
+    // 停止 Xray
+    function stopXray() {
+        if (confirm('确定要停止 Xray 服务吗？这将中断所有代理连接。')) {
+            $.post('/api/xray/stop', function(data) {
+                showToast(data.message);
+                setTimeout(refreshStats, 1000);
+            });
+        }
+    }
+    
+    // 初始化流量图表
+    function initTrafficChart() {
+        const ctx = document.getElementById('trafficChart').getContext('2d');
+        trafficChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: '上传流量',
+                    data: [],
+                    borderColor: 'rgb(75, 192, 192)',
+                    backgroundColor: 'rgba(75, 192, 192, 0.1)',
+                    tension: 0.4
+                }, {
+                    label: '下载流量',
+                    data: [],
+                    borderColor: 'rgb(255, 99, 132)',
+                    backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                    tension: 0.4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        ticks: {
+                            callback: function(value) {
+                                return formatBytes(value);
+                            }
+                        }
+                    }
+                },
+                plugins: {
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return context.dataset.label + ': ' + formatBytes(context.parsed.y);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    
+    // 页面加载完成后执行
+    $(document).ready(function() {
+        initTrafficChart();
+        refreshStats();
+        
+        // 每5秒刷新一次
+        setInterval(refreshStats, 5000);
+    });
+</script>
+{% endblock %}
+HTMLEOF
 
-# ------------------- Xray systemd 服务 -------------------
-cat > /etc/systemd/system/xray.service <<EOF
+    # ========== 创建 systemd 服务 ==========
+    cat > /etc/systemd/system/xray.service << 'EOF'
 [Unit]
 Description=Xray Service
-After=network.target nss-lookup.target
+After=network.target
 
 [Service]
 Type=simple
 User=root
-ExecStart=$XRAY_PATH run -config $XRAY_CONFIG
+ExecStart=/usr/local/bin/xray run -c /usr/local/etc/xray/config.json
 Restart=on-failure
-RestartSec=10s
-LimitNOFILE=3000000
+RestartSec=5
+LimitNOFILE=1000000
+LimitNPROC=1000000
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-cat > /etc/systemd/system/xray-web.service <<EOF
+    cat > /etc/systemd/system/xray-manager.service << 'EOF'
 [Unit]
-Description=Xray Web管理后台
-After=network.target redis-server.service
+Description=Xray Manager Web Service
+After=network.target redis.service
 
 [Service]
 Type=simple
-WorkingDirectory=$WORKDIR
-ExecStart=$WORKDIR/venv/bin/python3 $WORKDIR/xray_manage.py $PORT $API_PORT
-Restart=always
 User=root
-Environment="PYTHONUNBUFFERED=1"
-LimitNOFILE=3000000
-LimitNPROC=3000000
+WorkingDirectory=/opt/xray-manager
+Environment="PATH=/opt/xray-manager/venv/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=/opt/xray-manager/venv/bin/gunicorn --workers 4 --threads 2 --bind 0.0.0.0:8080 app:app
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=1000000
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# 初始化数据库
-cd $WORKDIR
-export ADMINUSER
-export ADMINPASS
-$WORKDIR/venv/bin/python3 init_db.py
-
-# 创建日志目录
-mkdir -p $XRAY_LOG_DIR
-touch $XRAY_LOG_DIR/access.log
-touch $XRAY_LOG_DIR/error.log
-chmod 666 $XRAY_LOG_DIR/*.log
-
-# 生成初始Xray配置（支持多IP监听）
-cat > $XRAY_CONFIG <<EOF
-{
-  "log": {
-    "loglevel": "warning",
-    "access": "$XRAY_LOG_DIR/access.log",
-    "error": "$XRAY_LOG_DIR/error.log"
-  },
-  "api": {
-    "tag": "api",
-    "services": ["HandlerService", "StatsService"]
-  },
-  "stats": {},
-  "policy": {
-    "levels": {
-      "0": {
-        "statsUserUplink": true,
-        "statsUserDownlink": true,
-        "handshake": 4,
-        "connIdle": 300
-      }
-    },
-    "system": {
-      "statsInboundUplink": true,
-      "statsInboundDownlink": true
-    }
-  },
-  "inbounds": [
-    {
-      "tag": "api",
-      "protocol": "dokodemo-door",
-      "listen": "127.0.0.1",
-      "port": $API_PORT,
-      "settings": {
-        "address": "127.0.0.1"
-      }
-    }
-  ],
-  "outbounds": [
-    {
-      "protocol": "freedom",
-      "tag": "direct",
-      "settings": {}
-    }
-  ],
-  "routing": {
-    "domainStrategy": "AsIs",
-    "rules": [
-      {
-        "type": "field",
-        "inboundTag": ["api"],
-        "outboundTag": "api"
-      }
-    ]
-  }
+    # 创建日志轮转配置
+    cat > /etc/logrotate.d/xray << 'EOF'
+/var/log/xray/*.log {
+    daily
+    rotate 7
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 root root
+    sharedscripts
+    postrotate
+        systemctl reload xray > /dev/null 2>&1 || true
+    endscript
 }
 EOF
 
-# 保存登录凭据
-cat > $CREDS_FILE <<EOF
-Web管理地址: http://$(get_local_ip):${PORT}
-管理员用户名: $ADMINUSER
-管理员密码: $ADMINPASS
-API端口: $API_PORT
-安装时间: $(date)
+    print_success "Web应用创建完成"
+}
+
+function initialize_system() {
+    print_info "初始化系统..."
+    
+    cd $WORKDIR
+    
+    # 设置环境变量
+    export ADMIN_USER="${ADMIN_USER:-admin}"
+    export ADMIN_PASS="${ADMIN_PASS:-$(openssl rand -base64 12)}"
+    
+    # 初始化数据库
+    source venv/bin/activate
+    python init_db.py
+    deactivate
+    
+    # 创建初始配置
+    cat > $XRAY_CONFIG_PATH << 'EOF'
+{
+  "log": {
+    "access": "/var/log/xray/access.log",
+    "error": "/var/log/xray/error.log",
+    "loglevel": "warning"
+  },
+  "inbounds": [],
+  "outbounds": [
+    {
+      "protocol": "freedom",
+      "settings": {}
+    }
+  ]
+}
 EOF
-chmod 600 $CREDS_FILE
+    
+    # 保存凭据
+    cat > $CREDS_FILE << EOF
+========================================
+Xray 代理管理系统安装成功！
+========================================
+访问地址: http://$(get_local_ip):8080
+管理员账号: $ADMIN_USER
+管理员密码: $ADMIN_PASS
+安装时间: $(date)
+========================================
+EOF
+    
+    chmod 600 $CREDS_FILE
+    
+    # 重载 systemd
+    systemctl daemon-reload
+    
+    # 启动服务
+    systemctl enable xray
+    systemctl enable xray-manager
+    systemctl start xray
+    systemctl start xray-manager
+    
+    print_success "系统初始化完成"
+}
 
-systemctl daemon-reload
-systemctl enable xray
-systemctl enable xray-web
+function setup_nginx() {
+    print_info "配置 Nginx（可选）..."
+    
+    read -p "是否配置 Nginx 反向代理？[y/N]: " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        return
+    fi
+    
+    read -p "请输入域名（例如: proxy.example.com）: " DOMAIN
+    
+    cat > /etc/nginx/sites-available/xray-manager << EOF
+server {
+    listen 80;
+    server_name $DOMAIN;
+    
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        
+        # WebSocket 支持
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+EOF
+    
+    ln -sf /etc/nginx/sites-available/xray-manager /etc/nginx/sites-enabled/
+    nginx -t && systemctl reload nginx
+    
+    print_success "Nginx 配置完成"
+    
+    read -p "是否配置 SSL 证书？[y/N]: " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+        certbot --nginx -d $DOMAIN
+    fi
+}
 
-# 先停止旧服务
-systemctl stop xray 2>/dev/null || true
-systemctl stop xray-web 2>/dev/null || true
+function uninstall_system() {
+    print_warning "开始卸载 Xray 管理系统..."
+    
+    # 停止服务
+    systemctl stop xray-manager 2>/dev/null || true
+    systemctl stop xray 2>/dev/null || true
+    
+    # 禁用服务
+    systemctl disable xray-manager 2>/dev/null || true
+    systemctl disable xray 2>/dev/null || true
+    
+    # 删除服务文件
+    rm -f /etc/systemd/system/xray.service
+    rm -f /etc/systemd/system/xray-manager.service
+    
+    # 删除文件
+    rm -rf $WORKDIR
+    rm -rf /usr/local/etc/xray
+    rm -rf $XRAY_LOG_PATH
+    rm -f $XRAY_PATH
+    rm -f /usr/local/share/xray/*.dat
+    
+    # 删除日志轮转配置
+    rm -f /etc/logrotate.d/xray
+    
+    # 删除 Nginx 配置
+    rm -f /etc/nginx/sites-available/xray-manager
+    rm -f /etc/nginx/sites-enabled/xray-manager
+    
+    systemctl daemon-reload
+    
+    print_success "卸载完成"
+}
 
-# 杀死所有xray进程
-pkill -9 xray 2>/dev/null || true
-sleep 2
+# 主函数
+function main() {
+    case "$1" in
+        "uninstall")
+            uninstall_system
+            exit 0
+            ;;
+        "show")
+            show_credentials
+            exit 0
+            ;;
+        "update")
+            print_info "更新功能开发中..."
+            exit 0
+            ;;
+    esac
+    
+    print_info "开始安装 Xray 代理管理系统..."
+    
+    # 检查系统
+    check_system
+    
+    # 优化系统
+    optimize_system
+    
+    # 安装依赖
+    install_dependencies
+    
+    # 安装 Xray
+    install_xray
+    
+    # 创建目录
+    setup_directories
+    
+    # 配置 Python 环境
+    setup_python_env
+    
+    # 创建 Web 应用
+    create_webapp
+    
+    # 初始化系统
+    initialize_system
+    
+    # 配置 Nginx（可选）
+    setup_nginx
+    
+    # 显示安装信息
+    echo
+    cat $CREDS_FILE
+    echo
+    print_success "安装完成！"
+    print_info "使用以下命令管理系统："
+    print_info "  查看登录信息: $0 show"
+    print_info "  卸载系统: $0 uninstall"
+    print_info "  更新系统: $0 update"
+}
 
-# 启动服务
-systemctl start xray
-sleep 2
-systemctl start xray-web
-
-# 验证Xray是否运行
-sleep 3
-if pgrep xray > /dev/null; then
-    echo -e "\033[32mXray 已成功启动\033[0m"
-else
-    echo -e "\033[31m警告: Xray 未能启动，尝试手动启动...\033[0m"
-    $XRAY_PATH run -config $XRAY_CONFIG &
-fi
-
-echo -e "\n========= 部署完成！========="
-MYIP=$(get_local_ip)
-echo -e "浏览器访问：\n  \033[36mhttp://$MYIP:${PORT}\033[0m"
-echo "Web管理用户名: $ADMINUSER"
-echo "Web管理密码:  $ADMINPASS"
-echo -e "\n功能说明："
-echo "1. 基于 Xray 的高性能代理管理系统"
-echo "2. 支持过期时间和流量限制管理"
-echo "3. 实时流量统计和使用报表"
-echo "4. 支持百万级并发连接"
-echo "5. 自动备份每天凌晨2点执行"
-echo -e "\n新增功能："
-echo "- 代理过期时间设置"
-echo "- 流量限制和统计"
-echo "- 使用情况报表"
-echo "- 批量设置过期时间"
-echo -e "\n常用命令："
-echo "查看登录信息: bash $0 show"
-echo "卸载系统: bash $0 uninstall"
-echo "重新安装: bash $0 reinstall"
-echo "查看Xray日志: tail -f $XRAY_LOG_DIR/access.log"
-echo "查看系统状态: systemctl status xray xray-web"
+# 执行主函数
+main "$@"
