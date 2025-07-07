@@ -1,12 +1,11 @@
 #!/bin/bash
 set -e
 
-WORKDIR=/opt/squid-web
-SQUID_PATH=/usr/sbin/squid
-SQUID_CONFIG_PATH=/etc/squid/squid.conf
-SQUID_PASSWORD_FILE=/etc/squid/passwords
-LOGFILE=/var/log/squid/access.log
-CREDS_FILE=/opt/squid-web/.credentials
+WORKDIR=/opt/3proxy-web
+THREEPROXY_PATH=/usr/local/bin/3proxy
+PROXYCFG_PATH=/usr/local/etc/3proxy/3proxy.cfg
+LOGFILE=/usr/local/etc/3proxy/3proxy.log
+CREDS_FILE=/opt/3proxy-web/.credentials
 
 function get_local_ip() {
     local pubip lanip
@@ -21,7 +20,7 @@ function get_local_ip() {
 
 function show_credentials() {
     if [ -f "$CREDS_FILE" ]; then
-        echo -e "\n========= Squid Web管理系统登录信息 ========="
+        echo -e "\n========= 3proxy Web管理系统登录信息 ========="
         cat "$CREDS_FILE"
         echo -e "============================================\n"
     else
@@ -33,7 +32,7 @@ function optimize_system() {
     echo -e "\n========= 系统性能优化 =========\n"
     
     # 检查是否已经优化过
-    if grep -q "# Squid 性能优化" /etc/sysctl.conf 2>/dev/null; then
+    if grep -q "# 3proxy 性能优化" /etc/sysctl.conf 2>/dev/null; then
         echo -e "\033[33m系统已经优化过，跳过...\033[0m"
         return
     fi
@@ -41,7 +40,7 @@ function optimize_system() {
     # 优化内核参数 - 支持大规模代理
     cat >> /etc/sysctl.conf <<EOF
 
-# Squid 性能优化 - 支持万级并发
+# 3proxy 性能优化 - 支持万级并发
 # 基础网络优化
 net.ipv4.ip_forward = 1
 net.ipv4.conf.all.forwarding = 1
@@ -89,6 +88,13 @@ net.core.default_qdisc = fq
 net.ipv4.tcp_fastopen = 3
 net.ipv4.tcp_mtu_probing = 1
 
+# 防止 ICMP 攻击
+net.ipv4.icmp_echo_ignore_all = 0
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+net.ipv4.icmp_ignore_bogus_error_responses = 1
+net.ipv4.icmp_ratelimit = 100
+net.ipv4.icmp_ratemask = 88089
+
 # 文件句柄
 fs.file-max = 4000000
 fs.nr_open = 4000000
@@ -115,10 +121,10 @@ EOF
     modprobe nf_conntrack >/dev/null 2>&1
     
     # 优化文件描述符限制
-    if ! grep -q "# Squid limits" /etc/security/limits.conf 2>/dev/null; then
+    if ! grep -q "# 3proxy limits" /etc/security/limits.conf 2>/dev/null; then
         cat >> /etc/security/limits.conf <<EOF
 
-# Squid limits
+# 3proxy limits
 * soft nofile 2000000
 * hard nofile 2000000
 * soft nproc 2000000
@@ -127,8 +133,6 @@ root soft nofile 2000000
 root hard nofile 2000000
 root soft nproc 2000000
 root hard nproc 2000000
-proxy soft nofile 2000000
-proxy hard nofile 2000000
 EOF
     fi
     
@@ -138,23 +142,61 @@ EOF
         sed -i 's/^#DefaultLimitNPROC=.*/DefaultLimitNPROC=2000000/' /etc/systemd/system.conf
     fi
     
+    # 创建优化脚本（保留但不在systemd中使用）
+    cat > /usr/local/bin/3proxy-optimize.sh <<'EOF'
+#!/bin/bash
+# 运行时优化
+ulimit -n 2000000
+ulimit -u 2000000
+
+# 清理 TIME_WAIT 连接
+echo 1 > /proc/sys/net/ipv4/tcp_tw_reuse 2>/dev/null || true
+
+# 优化网络缓冲区
+echo 67108864 > /proc/sys/net/core/rmem_max 2>/dev/null || true
+echo 67108864 > /proc/sys/net/core/wmem_max 2>/dev/null || true
+
+# 增加连接跟踪表大小
+echo 2000000 > /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || true
+
+# 禁用反向路径过滤（如果需要）
+for i in /proc/sys/net/ipv4/conf/*/rp_filter; do
+    echo 0 > $i 2>/dev/null || true
+done
+
+# 启动 3proxy
+/usr/local/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
+EOF
+    
+    chmod +x /usr/local/bin/3proxy-optimize.sh
+    
+    # 更新 3proxy 配置以支持更多连接
+    sed -i 's/maxconn 2000/maxconn 200000/g' $PROXYCFG_PATH 2>/dev/null || true
+    sed -i 's/maxconn 10000/maxconn 200000/g' $PROXYCFG_PATH 2>/dev/null || true
+    
     echo -e "\033[32m系统优化完成！支持万级代理并发\033[0m"
+    echo -e "\033[33m注意：如果代理数量超过5000，建议：\033[0m"
+    echo -e "1. 使用更高配置的服务器（至少8核16G内存）"
+    echo -e "2. 考虑使用多台服务器分布式部署"
+    echo -e "3. 定期监控系统资源使用情况"
 }
 
 function setup_backup() {
     echo -e "\n========= 设置自动备份 =========\n"
     
+    # 确保工作目录和备份目录存在
+    mkdir -p $WORKDIR
     mkdir -p $WORKDIR/backups
     
     # 创建备份脚本
     cat > $WORKDIR/backup.sh <<'EOF'
 #!/bin/bash
-BACKUP_DIR="/opt/squid-web/backups"
-DB_FILE="/opt/squid-web/squid.db"
-CONFIG_FILE="/etc/squid/squid.conf"
-PASSWORD_FILE="/etc/squid/passwords"
+BACKUP_DIR="/opt/3proxy-web/backups"
+DB_FILE="/opt/3proxy-web/3proxy.db"
+CONFIG_FILE="/usr/local/etc/3proxy/3proxy.cfg"
 DATE=$(date +%Y%m%d_%H%M%S)
 
+# 确保备份目录存在
 mkdir -p "$BACKUP_DIR"
 
 # 检查文件是否存在
@@ -169,7 +211,7 @@ cd "$BACKUP_DIR"
 find "$BACKUP_DIR" -name "backup_*.tar.gz" -mtime +7 -delete 2>/dev/null || true
 
 # 创建新备份
-tar -czf "backup_$DATE.tar.gz" "$DB_FILE" "$CONFIG_FILE" "$PASSWORD_FILE" 2>/dev/null || true
+tar -czf "backup_$DATE.tar.gz" "$DB_FILE" "$CONFIG_FILE" 2>/dev/null || true
 
 echo "Backup completed: backup_$DATE.tar.gz"
 EOF
@@ -177,32 +219,38 @@ EOF
     chmod +x $WORKDIR/backup.sh
     
     # 设置定时备份
-    echo "0 2 * * * root $WORKDIR/backup.sh > /dev/null 2>&1" > /etc/cron.d/squid-backup
+    echo "0 2 * * * root $WORKDIR/backup.sh > /dev/null 2>&1" > /etc/cron.d/3proxy-backup
     
     echo -e "\033[32m自动备份已设置（每天凌晨2点）\033[0m"
 }
 
-function uninstall_squid_web() {
-    systemctl stop squid-web 2>/dev/null || true
-    systemctl stop squid 2>/dev/null || true
-    systemctl disable squid-web 2>/dev/null || true
-    systemctl disable squid 2>/dev/null || true
+function uninstall_3proxy_web() {
+    systemctl stop 3proxy-web 2>/dev/null || true
+    systemctl stop 3proxy-autostart 2>/dev/null || true
+    systemctl stop 3proxy-worker 2>/dev/null || true
+    systemctl disable 3proxy-web 2>/dev/null || true
+    systemctl disable 3proxy-autostart 2>/dev/null || true
+    systemctl disable 3proxy-worker 2>/dev/null || true
     rm -rf $WORKDIR
-    rm -f /etc/systemd/system/squid-web.service
-    rm -f /etc/cron.d/squid-logrotate
-    rm -f /etc/cron.d/squid-backup
+    rm -f /etc/systemd/system/3proxy-web.service
+    rm -f /etc/systemd/system/3proxy-autostart.service
+    rm -f /etc/systemd/system/3proxy-worker.service
+    rm -f /usr/local/bin/3proxy
+    rm -rf /usr/local/etc/3proxy
+    rm -f /etc/cron.d/3proxy-logrotate
+    rm -f /etc/cron.d/3proxy-backup
     systemctl daemon-reload
-    echo -e "\033[31mSquid Web管理及全部相关内容已卸载。\033[0m"
+    echo -e "\033[31m3proxy Web管理及全部相关内容已卸载。\033[0m"
 }
 
 # 处理命令行参数
 case "$1" in
     "uninstall")
-        uninstall_squid_web
+        uninstall_3proxy_web
         exit 0
         ;;
     "reinstall")
-        uninstall_squid_web
+        uninstall_3proxy_web
         echo -e "\033[32m正在重新安装...\033[0m"
         ;;
     "show")
@@ -215,7 +263,7 @@ PORT=$((RANDOM%55534+10000))
 ADMINUSER="admin$RANDOM"
 ADMINPASS=$(tr -dc A-Za-z0-9 </dev/urandom | head -c 16)
 
-echo -e "\n========= 1. 自动安装 Squid =========\n"
+echo -e "\n========= 1. 自动安装 3proxy =========\n"
 
 # 检测系统版本
 if [ -f /etc/debian_version ]; then
@@ -224,118 +272,46 @@ if [ -f /etc/debian_version ]; then
 fi
 
 apt update
-apt install -y squid apache2-utils gcc make git wget python3 python3-pip python3-venv sqlite3 cron redis-server
+apt install -y gcc make git wget python3 python3-pip python3-venv sqlite3 cron redis-server
 
 # 启动Redis
 systemctl enable redis-server
 systemctl start redis-server
 
-# 备份原始Squid配置
-if [ -f "$SQUID_CONFIG_PATH" ] && [ ! -f "$SQUID_CONFIG_PATH.original" ]; then
-    cp $SQUID_CONFIG_PATH $SQUID_CONFIG_PATH.original
+if [ ! -f "$THREEPROXY_PATH" ]; then
+    cd /tmp
+    rm -rf 3proxy
+    git clone --depth=1 https://github.com/z3APA3A/3proxy.git
+    cd 3proxy
+    make -f Makefile.Linux
+    mkdir -p /usr/local/bin /usr/local/etc/3proxy
+    cp bin/3proxy /usr/local/bin/3proxy
+    chmod +x /usr/local/bin/3proxy
 fi
 
-# 创建基础Squid配置
-cat > $SQUID_CONFIG_PATH <<'EOF'
-# Squid 企业级配置
-# 基础设置
-visible_hostname proxy-server
-
-# 监听默认端口
-http_port 3128
-
-# 性能优化
-cache_mem 2048 MB
-maximum_object_size_in_memory 512 KB
-memory_pools on
-memory_pools_limit 2048 MB
-
-# 文件描述符
-max_filedescriptors 2000000
-
-# DNS优化
-dns_v4_first on
-positive_dns_ttl 6 hours
-negative_dns_ttl 1 minute
-dns_nameservers 8.8.8.8 1.1.1.1
-
-# 缓存设置（可选）
-cache_dir ufs /var/spool/squid 10000 16 256
-maximum_object_size 100 MB
-cache_swap_low 90
-cache_swap_high 95
-
-# 日志
-access_log /var/log/squid/access.log squid
-cache_log /var/log/squid/cache.log
-cache_store_log none
-
-# 核心转储
-coredump_dir /var/spool/squid
-
-# 刷新模式
-refresh_pattern ^ftp:           1440    20%     10080
-refresh_pattern ^gopher:        1440    0%      1440
-refresh_pattern -i (/cgi-bin/|\?) 0     0%      0
-refresh_pattern .               0       20%     4320
-
-# ACL定义
-acl SSL_ports port 443
-acl Safe_ports port 80          # http
-acl Safe_ports port 21          # ftp
-acl Safe_ports port 443         # https
-acl Safe_ports port 70          # gopher
-acl Safe_ports port 210         # wais
-acl Safe_ports port 1025-65535  # unregistered ports
-acl Safe_ports port 280         # http-mgmt
-acl Safe_ports port 488         # gss-http
-acl Safe_ports port 591         # filemaker
-acl Safe_ports port 777         # multiling http
-acl CONNECT method CONNECT
-
-# 安全限制
-http_access deny !Safe_ports
-http_access deny CONNECT !SSL_ports
-
-# 认证配置
-auth_param basic program /usr/lib/squid/basic_ncsa_auth /etc/squid/passwords
-auth_param basic children 100 startup=10 idle=5
-auth_param basic realm Squid proxy-caching web server
-auth_param basic credentialsttl 2 hours
-
-# 需要认证
-acl authenticated proxy_auth REQUIRED
-http_access allow authenticated
-http_access deny all
-
-# 转发设置
-forwarded_for off
-request_header_access X-Forwarded-For deny all
-request_header_access Via deny all
-request_header_access Cache-Control deny all
-
-# 性能调优
-workers 4
-
-# 关闭不需要的功能
-shutdown_lifetime 3 seconds
+if [ ! -f "$PROXYCFG_PATH" ]; then
+cat > $PROXYCFG_PATH <<EOF
+daemon
+maxconn 200000
+nserver 8.8.8.8
+nserver 1.1.1.1
+nserver 8.8.4.4
+nscache 65536
+nscache6 65536
+stacksize 6291456
+timeouts 1 5 30 60 180 1800 15 60
+auth none
+proxy -p3128
+log $LOGFILE D
+rotate 30
+archiver gz /usr/bin/gzip %F
 EOF
-
-# 创建密码文件
-touch $SQUID_PASSWORD_FILE
-chmod 644 $SQUID_PASSWORD_FILE
-chown proxy:proxy $SQUID_PASSWORD_FILE
-
-# 创建Squid目录
-mkdir -p /var/spool/squid
-mkdir -p /var/log/squid
-chown -R proxy:proxy /var/spool/squid
-chown -R proxy:proxy /var/log/squid
-
-# 检查并初始化Squid缓存目录
-if [ ! -f /var/spool/squid/swap.state ]; then
-    squid -z 2>/dev/null || true
 fi
+
+# 日志轮转
+cat > /etc/cron.d/3proxy-logrotate <<EOF
+0 3 */3 * * root [ -f "$LOGFILE" ] && > "$LOGFILE"
+EOF
 
 # 执行系统优化
 optimize_system
@@ -344,7 +320,7 @@ echo -e "\n========= 2. 部署 Python Web 管理环境 =========\n"
 mkdir -p $WORKDIR/templates $WORKDIR/static $WORKDIR/backups
 cd $WORKDIR
 
-# 设置自动备份
+# 设置自动备份（在创建目录之后）
 setup_backup
 
 python3 -m venv venv
@@ -352,535 +328,10 @@ source venv/bin/activate
 
 # 兼容Debian 11和12的pip安装
 if [ "$DEBIAN_VERSION" == "11" ]; then
-    pip install flask flask_login flask_wtf wtforms Werkzeug psutil redis celery gevent gunicorn passlib
+    pip install flask flask_login flask_wtf wtforms Werkzeug psutil redis celery gevent gunicorn
 else
-    pip install flask flask_login flask_wtf wtforms Werkzeug psutil redis celery gevent gunicorn passlib --break-system-packages
-fi
-
-# ------------------- manage.py (主后端 - Squid版本) -------------------
-cat > $WORKDIR/manage.py << 'EOF'
-import os, sqlite3, random, string, re, collections, json, psutil, datetime
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, Response
-from flask_login import LoginManager, login_user, login_required, logout_user, UserMixin
-from werkzeug.security import generate_password_hash, check_password_hash
-from io import BytesIO
-import threading
-import queue
-import time
-import subprocess
-from contextlib import contextmanager
-import redis
-import pickle
-from passlib.hash import sha256_crypt
-
-DB = 'squid.db'
-SECRET = 'changeme_this_is_secret'
-import sys
-PORT = int(sys.argv[1]) if len(sys.argv)>1 else 9999
-SQUID_CONFIG_PATH = '/etc/squid/squid.conf'
-SQUID_PASSWORD_FILE = '/etc/squid/passwords'
-LOGFILE = '/var/log/squid/access.log'
-INTERFACES_FILE = '/etc/network/interfaces'
-
-app = Flask(__name__, template_folder='templates', static_folder='static')
-app.secret_key = SECRET
-login_manager = LoginManager(app)
-login_manager.login_view = 'login'
-
-# 数据库连接池
-class DatabasePool:
-    def __init__(self, db_path, pool_size=20):
-        self.db_path = db_path
-        self.pool = queue.Queue(maxsize=pool_size)
-        for _ in range(pool_size):
-            conn = sqlite3.connect(db_path, check_same_thread=False)
-            conn.execute('PRAGMA journal_mode=WAL')
-            conn.execute('PRAGMA synchronous=NORMAL')
-            conn.execute('PRAGMA cache_size=10000')
-            conn.execute('PRAGMA temp_store=MEMORY')
-            self.pool.put(conn)
-    
-    @contextmanager
-    def get_connection(self):
-        conn = self.pool.get()
-        try:
-            yield conn
-        finally:
-            self.pool.put(conn)
-
-# 初始化数据库池
-db_pool = DatabasePool(DB)
-
-# Redis连接
-redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=False)
-
-# 任务队列
-task_queue = queue.Queue(maxsize=1000)
-
-def get_db():
-    """兼容旧代码的数据库获取函数"""
-    return sqlite3.connect(DB)
-
-def detect_nic():
-    for nic in os.listdir('/sys/class/net'):
-        if nic.startswith('e') or nic.startswith('en') or nic.startswith('eth'):
-            return nic
-    return 'eth0'
-
-class User(UserMixin):
-    def __init__(self, id, username, password):
-        self.id = id
-        self.username = username
-        self.password_hash = password
-    def check_password(self, password):
-        return check_password_hash(self.password_hash, password)
-
-@login_manager.user_loader
-def load_user(user_id):
-    with db_pool.get_connection() as conn:
-        cur = conn.execute("SELECT id,username,password FROM users WHERE id=?", (user_id,))
-        row = cur.fetchone()
-        if row:
-            return User(row[0], row[1], row[2])
-    return None
-
-def reload_squid_async():
-    """异步重载Squid配置"""
-    task_queue.put(('reload', None))
-
-def reload_squid():
-    """同步重载Squid配置"""
-    generate_squid_config()
-    generate_squid_passwords()
-    
-    # 测试配置文件是否有效
-    result = os.system('squid -k parse 2>/dev/null')
-    if result != 0:
-        print("Squid configuration error, using fallback config")
-        # 使用备份配置
-        os.system('cp /etc/squid/squid.conf.template /etc/squid/squid.conf 2>/dev/null')
-    
-    # Squid使用 -k reconfigure 进行平滑重载
-    result = os.system('squid -k reconfigure 2>/dev/null')
-    if result != 0:
-        # 如果重载失败，尝试重启
-        os.system('systemctl restart squid')
-    
-    # 等待 Squid 启动
-    time.sleep(2)
-
-def generate_squid_config():
-    """生成Squid配置文件"""
-    with db_pool.get_connection() as conn:
-        # 获取所有启用的代理
-        cursor = conn.execute('SELECT DISTINCT ip, port FROM proxy WHERE enabled=1 ORDER BY ip, port')
-        
-        # 读取原始配置模板
-        base_config = """# Squid 企业级配置
-# 基础设置
-visible_hostname proxy-server
-
-# 性能优化
-cache_mem 2048 MB
-maximum_object_size_in_memory 512 KB
-memory_pools on
-memory_pools_limit 2048 MB
-
-# 文件描述符
-max_filedescriptors 2000000
-
-# DNS优化
-dns_v4_first on
-positive_dns_ttl 6 hours
-negative_dns_ttl 1 minute
-dns_nameservers 8.8.8.8 1.1.1.1
-
-# 缓存设置（可选）
-cache_dir ufs /var/spool/squid 10000 16 256
-maximum_object_size 100 MB
-cache_swap_low 90
-cache_swap_high 95
-
-# 日志
-access_log /var/log/squid/access.log squid
-cache_log /var/log/squid/cache.log
-cache_store_log none
-
-# 核心转储
-coredump_dir /var/spool/squid
-
-# 刷新模式
-refresh_pattern ^ftp:           1440    20%     10080
-refresh_pattern ^gopher:        1440    0%      1440
-refresh_pattern -i (/cgi-bin/|\?) 0     0%      0
-refresh_pattern .               0       20%     4320
-
-# ACL定义
-acl SSL_ports port 443
-acl Safe_ports port 80          # http
-acl Safe_ports port 21          # ftp
-acl Safe_ports port 443         # https
-acl Safe_ports port 70          # gopher
-acl Safe_ports port 210         # wais
-acl Safe_ports port 1025-65535  # unregistered ports
-acl Safe_ports port 280         # http-mgmt
-acl Safe_ports port 488         # gss-http
-acl Safe_ports port 591         # filemaker
-acl Safe_ports port 777         # multiling http
-acl CONNECT method CONNECT
-
-# 安全限制
-http_access deny !Safe_ports
-http_access deny CONNECT !SSL_ports
-
-# 认证配置
-auth_param basic program /usr/lib/squid/basic_ncsa_auth /etc/squid/passwords
-auth_param basic children 100 startup=10 idle=5
-auth_param basic realm Squid proxy-caching web server
-auth_param basic credentialsttl 2 hours
-
-# 性能调优
-workers 4
-shutdown_lifetime 3 seconds
-
-"""
-        
-        # 添加监听端口配置
-        port_configs = []
-        proxies = []
-        
-        for ip, port in cursor:
-            port_configs.append(f"http_port {ip}:{port} name=port{port}")
-            proxies.append((ip, port))
-        
-        # 如果没有代理，添加默认端口
-        if not port_configs:
-            port_configs.append("http_port 3128")
-        
-        # 生成ACL和访问控制规则
-        acl_configs = []
-        access_configs = []
-        
-        # 获取所有用户和对应的代理
-        cursor2 = conn.execute('''
-            SELECT DISTINCT username, ip, port 
-            FROM proxy 
-            WHERE enabled=1 
-            ORDER BY username, ip, port
-        ''')
-        
-        user_proxies = {}
-        for username, ip, port in cursor2:
-            if username not in user_proxies:
-                user_proxies[username] = []
-            user_proxies[username].append((ip, port))
-        
-        # 为每个用户生成ACL
-        for username, proxy_list in user_proxies.items():
-            # 用户认证ACL
-            acl_configs.append(f"acl {username}_user proxy_auth {username}")
-            
-            # 为该用户的每个代理创建规则
-            for ip, port in proxy_list:
-                port_acl = f"port{port}"
-                acl_configs.append(f"acl {port_acl} myportname port{port}")
-                access_configs.append(f"http_access allow {username}_user {port_acl}")
-                access_configs.append(f"tcp_outgoing_address {ip} {username}_user {port_acl}")
-        
-        # 如果没有用户配置，允许所有认证用户
-        if not access_configs:
-            access_configs.append("acl authenticated proxy_auth REQUIRED")
-            access_configs.append("http_access allow authenticated")
-        
-        # 最后拒绝所有
-        access_configs.append("http_access deny all")
-        
-        # 组合最终配置
-        final_config = base_config + "\n# 监听端口\n" + "\n".join(port_configs) + "\n"
-        
-        if acl_configs:
-            final_config += "\n# 动态生成的ACL\n" + "\n".join(acl_configs) + "\n"
-        
-        final_config += "\n# 访问控制规则\n" + "\n".join(access_configs) + "\n"
-        
-        # 写入配置文件
-        with open(SQUID_CONFIG_PATH, 'w') as f:
-            f.write(final_config)
-        
-        # 备份原始配置
-        if not os.path.exists(SQUID_CONFIG_PATH + '.template'):
-            with open(SQUID_CONFIG_PATH + '.template', 'w') as f:
-                f.write(base_config)
-
-def generate_squid_passwords():
-    """生成Squid密码文件"""
-    with db_pool.get_connection() as conn:
-        cursor = conn.execute('SELECT DISTINCT username, password FROM proxy WHERE enabled=1')
-        
-        # 使用 htpasswd 命令生成密码文件
-        # 先清空密码文件
-        open(SQUID_PASSWORD_FILE, 'w').close()
-        
-        for username, password in cursor:
-            # 使用 htpasswd 命令添加用户
-            # -b: 批处理模式，从命令行获取密码
-            # -c: 创建新文件（只在第一个用户时使用）
-            cmd = f"htpasswd -b {SQUID_PASSWORD_FILE} {username} {password}"
-            os.system(cmd + " 2>/dev/null")
-        
-        # 设置权限 - 必须让 Squid (proxy用户) 能读取
-        os.chmod(SQUID_PASSWORD_FILE, 0o644)
-        os.system(f'chown proxy:proxy {SQUID_PASSWORD_FILE}')
-
-# 后台任务处理线程
-def task_worker():
-    """后台任务处理器"""
-    while True:
-        try:
-            task_type, data = task_queue.get(timeout=1)
-            if task_type == 'reload':
-                generate_squid_config()
-                generate_squid_passwords()
-                os.system('squid -k reconfigure 2>/dev/null || systemctl restart squid')
-            task_queue.task_done()
-        except queue.Empty:
-            continue
-        except Exception as e:
-            print(f"Task worker error: {e}")
-
-# 启动后台任务线程
-worker_thread = threading.Thread(target=task_worker, daemon=True)
-worker_thread.start()
-
-# 初始启动Squid（如果还没启动）
-def ensure_squid_running():
-    """确保Squid正在运行"""
-    try:
-        # 检查Squid是否运行
-        result = subprocess.run(['pgrep', 'squid'], capture_output=True)
-        if result.returncode != 0:
-            # Squid未运行，启动它
-            os.system('systemctl start squid')
-            print("Squid started")
-    except Exception as e:
-        print(f"Error checking squid: {e}")
-
-# 在启动时确保Squid运行
-ensure_squid_running()
-
-@app.route('/login', methods=['GET','POST'])
-def login():
-    if request.method == 'POST':
-        with db_pool.get_connection() as conn:
-            cur = conn.execute('SELECT id,username,password FROM users WHERE username=?', (request.form['username'],))
-            row = cur.fetchone()
-            if row and check_password_hash(row[2], request.form['password']):
-                user = User(row[0], row[1], row[2])
-                login_user(user)
-                return redirect('/')
-        flash('登录失败')
-    return render_template('login.html')
-
-@app.route('/logout')
-@login_required
-def logout():
-    logout_user()
-    return redirect(url_for('login'))
-
-@app.route('/', methods=['GET', 'POST'])
-@login_required
-def index():
-    return render_template('index.html')
-
-@app.route('/api/proxy_groups')
-@login_required
-def api_proxy_groups():
-    # 尝试从缓存获取
-    cached = redis_client.get('proxy_groups')
-    if cached:
-        return jsonify(pickle.loads(cached))
-    
-    with db_pool.get_connection() as conn:
-        proxies = conn.execute('SELECT id,ip,port,username,password,enabled,ip_range,port_range,user_prefix FROM proxy ORDER BY ip').fetchall()
-    
-    groups = collections.defaultdict(list)
-    for p in proxies:
-        c_seg = '.'.join(p[1].split('.')[:3])
-        groups[c_seg].append({
-            'id': p[0],
-            'ip': p[1],
-            'port': p[2],
-            'username': p[3],
-            'password': p[4],
-            'enabled': p[5],
-            'ip_range': p[6],
-            'port_range': p[7],
-            'user_prefix': p[8]
-        })
-    
-    # 获取流量统计
-    traffic_stats = get_traffic_stats()
-    
-    result = []
-    for c_seg, proxies in groups.items():
-        enabled_count = sum(1 for p in proxies if p['enabled'])
-        
-        # 计算实际的IP范围和端口范围
-        ips = [p['ip'] for p in proxies]
-        ports = sorted([p['port'] for p in proxies])
-        
-        # IP范围
-        if ips:
-            ip_nums = sorted([int(ip.split('.')[-1]) for ip in ips])
-            if len(ip_nums) > 1 and ip_nums[-1] - ip_nums[0] == len(ip_nums) - 1:
-                actual_ip_range = f"{c_seg}.{ip_nums[0]}-{ip_nums[-1]}"
-            else:
-                actual_ip_range = f"{c_seg}.x ({len(ip_nums)} IPs)"
-        else:
-            actual_ip_range = proxies[0]['ip_range'] if proxies else ''
-        
-        # 端口范围
-        if ports:
-            if len(ports) == 1:
-                actual_port_range = str(ports[0])
-            else:
-                actual_port_range = f"{ports[0]}-{ports[-1]}"
-        else:
-            actual_port_range = proxies[0]['port_range'] if proxies else ''
-        
-        result.append({
-            'c_segment': c_seg,
-            'total': len(proxies),
-            'enabled': enabled_count,
-            'traffic': traffic_stats.get(c_seg, 0),
-            'ip_range': actual_ip_range,
-            'port_range': actual_port_range,
-            'user_prefix': proxies[0]['user_prefix'] if proxies else ''
-        })
-    
-    sorted_result = sorted(result, key=lambda x: x['c_segment'])
-    # 缓存5秒
-    redis_client.setex('proxy_groups', 5, pickle.dumps(sorted_result))
-    
-    return jsonify(sorted_result)
-
-@app.route('/api/proxy_group/<c_segment>')
-@login_required
-def api_proxy_group_detail(c_segment):
-    with db_pool.get_connection() as conn:
-        proxies = conn.execute('SELECT id,ip,port,username,password,enabled,ip_range,port_range,user_prefix FROM proxy WHERE ip LIKE ? ORDER BY ip,port', 
-                            (c_segment + '.%',)).fetchall()
-    
-    result = []
-    for p in proxies:
-        result.append({
-            'id': p[0],
-            'ip': p[1],
-            'port': p[2],
-            'username': p[3],
-            'password': p[4],
-            'enabled': p[5],
-            'ip_range': p[6],
-            'port_range': p[7],
-            'user_prefix': p[8]
-        })
-    
-    return jsonify(result)
-
-@app.route('/api/delete_group/<c_segment>', methods=['POST'])
-@login_required
-def api_delete_group(c_segment):
-    with db_pool.get_connection() as conn:
-        conn.execute('DELETE FROM proxy WHERE ip LIKE ?', (c_segment + '.%',))
-        conn.commit()
-    redis_client.delete('proxy_groups')
-    reload_squid_async()
-    return jsonify({'status': 'success'})
-
-@app.route('/api/toggle_group/<c_segment>/<action>', methods=['POST'])
-@login_required
-def api_toggle_group(c_segment, action):
-    enabled = 1 if action == 'enable' else 0
-    with db_pool.get_connection() as conn:
-        conn.execute('UPDATE proxy SET enabled=? WHERE ip LIKE ?', (enabled, c_segment + '.%'))
-        conn.commit()
-    redis_client.delete('proxy_groups')
-    reload_squid_async()
-    return jsonify({'status': 'success'})
-
-@app.route('/api/system_status')
-@login_required
-def api_system_status():
-    # 尝试从缓存获取
-    cached = redis_client.get('system_status')
-    if cached:
-        return jsonify(pickle.loads(cached))
-    
-    cpu_percent = psutil.cpu_percent(interval=0.1)
-    memory = psutil.virtual_memory()
-    disk = psutil.disk_usage('/')
-    
-    # 获取网络流量
-    net_io = psutil.net_io_counters()
-    
-    # 获取Squid进程信息
-    proxy_info = {'running': False, 'pid': None, 'memory': 0, 'connections': 0}
-    squid_found = False
-    
-    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-        try:
-            # Squid 可能显示为 squid 或 (squid-1)
-            if 'squid' in proc.info['name'].lower():
-                if not squid_found:  # 只统计主进程
-                    proxy_info['running'] = True
-                    proxy_info['pid'] = proc.info['pid']
-                    squid_found = True
-                    try:
-                        p = psutil.Process(proc.info['pid'])
-                        proxy_info['memory'] = p.memory_info().rss / 1024 / 1024  # MB
-                        # 统计所有 squid 相关进程的连接数
-                        connections = 0
-                        for squid_proc in psutil.process_iter(['name']):
-                            if 'squid' in squid_proc.info['name'].lower():
-                                try:
-                                    sp = psutil.Process(squid_proc.pid)
-                                    connections += len(sp.connections(kind='inet'))
-                                except:
-                                    pass
-                        proxy_info['connections'] = connections
-                    except Exception as e:
-                        print(f"Error getting process info: {e}")
-        except:
-            pass
-    
-    result = {
-        'cpu': cpu_percent,
-        'memory': {
-            'percent': memory.percent,
-            'used': memory.used / 1024 / 1024 / 1024,  # GB
-            'total': memory.total / 1024 / 1024 / 1024  # GB
-        },
-        'disk': {
-            'percent': disk.percent,
-            'used': disk.used / 1024 / 1024 / 1024,  # GB
-            'total': disk.total / 1024 / 1024 / 1024  # GB
-        },
-        'network': {
-            'bytes_sent': net_io.bytes_sent / 1024 / 1024,  # MB
-            'bytes_recv': net_io.bytes_recv / 1024 / 1024   # MB
-        },
-        'proxy': proxy_info,
-        'timestamp': datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    }
-    
-    # 缓存2秒
-    redis_client.setex('system_status', 2, pickle.dumps(result))
-    
-    return jsonify(result)
-
-def get_traffic_stats():
-    """优化的流量统计函数"""
-    stats = collections.defaultdict(int)
+    pip install flask flask_login flask_wtf wtforms Werkzeug psutil redis celery gevent gunicorn --break-system-packages
+fi)
     if not os.path.exists(LOGFILE):
         return stats
     
@@ -897,13 +348,12 @@ def get_traffic_stats():
             for line in f:
                 try:
                     line = line.decode('utf-8', errors='ignore')
-                    # Squid日志格式：timestamp elapsed client action/code bytes method URL user
                     parts = line.split()
-                    if len(parts) >= 5:
-                        client_ip = parts[2].split(':')[0]
-                        bytes_transferred = int(parts[4])
-                        cseg = '.'.join(client_ip.split('.')[:3])
-                        stats[cseg] += bytes_transferred
+                    if len(parts) > 7:
+                        srcip = parts[2]
+                        bytes_sent = int(parts[-2])
+                        cseg = '.'.join(srcip.split('.')[:3])
+                        stats[cseg] += bytes_sent
                 except:
                     pass
     except:
@@ -939,14 +389,16 @@ def addproxy():
     username = request.form['username']
     password = request.form['password'] or ''.join(random.choices(string.ascii_letters+string.digits, k=12))
     user_prefix = request.form.get('userprefix','')
+    expire_at = request.form.get('expire_at')
     
     with db_pool.get_connection() as conn:
-        conn.execute('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix) VALUES (?,?,?,?,1,?,?,?)', 
-            (ip, port, username, password, ip, port, user_prefix))
+        conn.execute('''INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix, expire_at) 
+                       VALUES (?,?,?,?,1,?,?,?,?)''', 
+            (ip, port, username, password, ip, port, user_prefix, expire_at))
         conn.commit()
     
     redis_client.delete('proxy_groups')
-    reload_squid_async()
+    reload_3proxy_async()
     return jsonify({'status': 'success', 'message': '已添加代理'})
 
 @app.route('/batchaddproxy', methods=['POST'])
@@ -955,6 +407,7 @@ def batchaddproxy():
     iprange = request.form.get('iprange')
     portrange = request.form.get('portrange')
     userprefix = request.form.get('userprefix')
+    expire_at = request.form.get('expire_at')
     
     if iprange and userprefix:
         # 解析IP范围
@@ -1000,22 +453,22 @@ def batchaddproxy():
             # 计算实际使用的端口范围
             actual_port_range = f"{selected_ports[0]}-{selected_ports[-1]}"
             
-            # 批量插入数据
+            # 批量插入数据 - 使用多线程优化
             batch_data = []
             for i, ip in enumerate(ips):
                 port = selected_ports[i]
                 uname = userprefix + ''.join(random.choices(string.ascii_lowercase+string.digits, k=4))
                 pw = ''.join(random.choices(string.ascii_letters+string.digits, k=12))
-                batch_data.append((ip, port, uname, pw, 1, iprange, actual_port_range, userprefix))
+                batch_data.append((ip, port, uname, pw, 1, iprange, actual_port_range, userprefix, expire_at))
             
             # 批量插入
-            conn.executemany('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix) VALUES (?,?,?,?,?,?,?,?)', 
-                           batch_data)
+            conn.executemany('''INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix, expire_at) 
+                              VALUES (?,?,?,?,?,?,?,?,?)''', batch_data)
             conn.commit()
             count = len(batch_data)
         
         redis_client.delete('proxy_groups')
-        reload_squid_async()
+        reload_3proxy_async()
         return jsonify({'status': 'success', 'message': f'批量范围添加完成，共添加{count}条代理，端口范围：{actual_port_range}'})
     
     # 处理手动批量添加
@@ -1053,17 +506,17 @@ def batchaddproxy():
             else:
                 continue
             
-            batch_insert.append((ip, int(port), username, password, 1, ip, port, username))
+            batch_insert.append((ip, int(port), username, password, 1, ip, port, username, expire_at))
             count += 1
         
         if batch_insert:
-            conn.executemany('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix) VALUES (?,?,?,?,?,?,?,?)',
-                           batch_insert)
+            conn.executemany('''INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix, expire_at) 
+                              VALUES (?,?,?,?,?,?,?,?,?)''', batch_insert)
             conn.commit()
     
     if count:
         redis_client.delete('proxy_groups')
-        reload_squid_async()
+        reload_3proxy_async()
     
     return jsonify({'status': 'success', 'message': f'批量添加完成，共添加{count}条代理'})
 
@@ -1074,7 +527,7 @@ def delproxy(pid):
         conn.execute('DELETE FROM proxy WHERE id=?', (pid,))
         conn.commit()
     redis_client.delete('proxy_groups')
-    reload_squid_async()
+    reload_3proxy_async()
     return jsonify({'status': 'success'})
 
 @app.route('/batchdelproxy', methods=['POST'])
@@ -1085,7 +538,7 @@ def batchdelproxy():
         conn.executemany('DELETE FROM proxy WHERE id=?', [(i,) for i in ids])
         conn.commit()
     redis_client.delete('proxy_groups')
-    reload_squid_async()
+    reload_3proxy_async()
     return jsonify({'status': 'success', 'message': f'已批量删除 {len(ids)} 条代理'})
 
 @app.route('/batch_enable', methods=['POST'])
@@ -1098,7 +551,7 @@ def batch_enable():
         conn.executemany('UPDATE proxy SET enabled=1 WHERE id=?', [(i,) for i in ids])
         conn.commit()
     redis_client.delete('proxy_groups')
-    reload_squid_async()
+    reload_3proxy_async()
     return jsonify({'status': 'success'})
 
 @app.route('/batch_disable', methods=['POST'])
@@ -1111,7 +564,7 @@ def batch_disable():
         conn.executemany('UPDATE proxy SET enabled=0 WHERE id=?', [(i,) for i in ids])
         conn.commit()
     redis_client.delete('proxy_groups')
-    reload_squid_async()
+    reload_3proxy_async()
     return jsonify({'status': 'success'})
 
 @app.route('/enableproxy/<int:pid>')
@@ -1121,7 +574,7 @@ def enableproxy(pid):
         conn.execute('UPDATE proxy SET enabled=1 WHERE id=?', (pid,))
         conn.commit()
     redis_client.delete('proxy_groups')
-    reload_squid_async()
+    reload_3proxy_async()
     return jsonify({'status': 'success'})
 
 @app.route('/disableproxy/<int:pid>')
@@ -1131,7 +584,7 @@ def disableproxy(pid):
         conn.execute('UPDATE proxy SET enabled=0 WHERE id=?', (pid,))
         conn.commit()
     redis_client.delete('proxy_groups')
-    reload_squid_async()
+    reload_3proxy_async()
     return jsonify({'status': 'success'})
 
 @app.route('/adduser', methods=['POST'])
@@ -1225,81 +678,473 @@ def export_selected_proxy():
 @app.route('/add_ip_config', methods=['POST'])
 @login_required
 def add_ip_config():
-    try:
-        ip_input = request.form.get('ip_input', '').strip()
-        iface = request.form.get('iface', detect_nic())
-        mode = request.form.get('mode', 'perm')
-        pattern_full = re.match(r"^(\d+\.\d+\.\d+\.)(\d+)-(\d+)$", ip_input)
-        pattern_short = re.match(r"^(\d+)-(\d+)$", ip_input)
-        
-        if pattern_full:
-            base = pattern_full.group(1)
-            start = int(pattern_full.group(2))
-            end = int(pattern_full.group(3))
-            ip_range = f"{base}{{{start}..{end}}}"
-            ip_list = [f"{base}{i}" for i in range(start, end+1)]
-        elif pattern_short:
-            base = "192.168.1."
-            start = int(pattern_short.group(1))
-            end = int(pattern_short.group(2))
-            ip_range = f"{base}{{{start}..{end}}}"
-            ip_list = [f"{base}{i}" for i in range(start, end+1)]
-        elif '{' in ip_input and '..' in ip_input:
-            ip_range = ip_input
-            match = re.match(r"(\d+\.\d+\.\d+\.?)\{(\d+)\.\.(\d+)\}", ip_input)
-            if match:
-                base = match.group(1)
-                s = int(match.group(2))
-                e = int(match.group(3))
-                ip_list = [f"{base}{i}" for i in range(s, e+1)]
-            else:
-                ip_list = []
+    ip_input = request.form.get('ip_input', '').strip()
+    iface = request.form.get('iface', detect_nic())
+    mode = request.form.get('mode', 'perm')
+    pattern_full = re.match(r"^(\d+\.\d+\.\d+\.)(\d+)-(\d+)$", ip_input)
+    pattern_short = re.match(r"^(\d+)-(\d+)$", ip_input)
+    
+    if pattern_full:
+        base = pattern_full.group(1)
+        start = int(pattern_full.group(2))
+        end = int(pattern_full.group(3))
+        ip_range = f"{base}{{{start}..{end}}}"
+        ip_list = [f"{base}{i}" for i in range(start, end+1)]
+    elif pattern_short:
+        base = "192.168.1."
+        start = int(pattern_short.group(1))
+        end = int(pattern_short.group(2))
+        ip_range = f"{base}{{{start}..{end}}}"
+        ip_list = [f"{base}{i}" for i in range(start, end+1)]
+    elif '{' in ip_input and '..' in ip_input:
+        ip_range = ip_input
+        match = re.match(r"(\d+\.\d+\.\d+\.?)\{(\d+)\.\.(\d+)\}", ip_input)
+        if match:
+            base = match.group(1)
+            s = int(match.group(2))
+            e = int(match.group(3))
+            ip_list = [f"{base}{i}" for i in range(s, e+1)]
         else:
-            ip_range = ip_input
-            ip_list = [ip.strip() for ip in re.split(r'[,\s]+', ip_input) if ip.strip()]
+            ip_list = []
+    else:
+        ip_range = ip_input
+        ip_list = [ip.strip() for ip in re.split(r'[,\s]+', ip_input) if ip.strip()]
+    
+    with db_pool.get_connection() as conn:
+        conn.execute('INSERT INTO ip_config (ip_str, type, iface, created) VALUES (?,?,?,datetime("now"))', (ip_range, 'range', iface))
+        conn.commit()
+    
+    # 批量添加IP - 使用多线程
+    def add_ip(ip):
+        os.system(f"ip addr add {ip}/32 dev {iface} 2>/dev/null")
+        os.system(f"ip route add {ip}/32 dev {iface} 2>/dev/null")
+    
+    # 使用线程池并行添加IP
+    with ThreadPoolExecutor(max_workers=min(32, CPU_COUNT * 2)) as executor:
+        executor.map(add_ip, ip_list)
+    
+    # 永久添加
+    if mode == 'perm':
+        with open(INTERFACES_FILE, 'a+') as f:
+            f.write(f"\n# 3proxy IP配置 - {ip_range}\n")
+            for ip in ip_list:
+                f.write(f"up ip addr add {ip}/32 dev {iface} 2>/dev/null || true\n")
+                f.write(f"down ip addr del {ip}/32 dev {iface} 2>/dev/null || true\n")
+    
+    # 刷新ARP缓存
+    os.system("ip neigh flush all")
+    
+    return jsonify({'status': 'success', 'message': '已添加IP配置'})
+
+if __name__ == '__main__':
+    import sys
+    from gevent.pywsgi import WSGIServer
+    from gevent import monkey
+    monkey.patch_all()
+    
+    port = int(sys.argv[1]) if len(sys.argv)>1 else 9999
+    
+    # 使用gevent提供更好的并发性能
+    print(f"Starting server on port {port} with {CPU_COUNT} CPU cores...")
+    http_server = WSGIServer(('0.0.0.0', port), app, log=None)
+    http_server.serve_forever()
+EOF)
+    if not os.path.exists(LOGFILE):
+        return stats
+    
+    try:
+        # 只读取最后10MB的日志
+        file_size = os.path.getsize(LOGFILE)
+        read_size = min(file_size, 10 * 1024 * 1024)
         
-        with db_pool.get_connection() as conn:
-            conn.execute('INSERT INTO ip_config (ip_str, type, iface, created) VALUES (?,?,?,datetime("now"))', (ip_range, 'range', iface))
-            conn.commit()
-        
-        # 批量添加IP - 优化命令执行
-        success_count = 0
-        for ip in ip_list:
-            # 检查IP是否已存在
-            result = os.system(f"ip addr show dev {iface} | grep -q ' {ip}/'")
-            if result != 0:  # IP不存在，添加它
-                # 添加IP地址
-                if os.system(f"ip addr add {ip}/32 dev {iface} 2>/dev/null") == 0:
-                    success_count += 1
-                # 添加路由
-                os.system(f"ip route add {ip}/32 dev {iface} 2>/dev/null")
-        
-        # 永久添加
-        if mode == 'perm' and success_count > 0:
-            with open(INTERFACES_FILE, 'a+') as f:
-                f.write(f"\n# Squid IP配置 - {ip_range}\n")
-                for ip in ip_list:
-                    f.write(f"up ip addr add {ip}/32 dev {iface} 2>/dev/null || true\n")
-                    f.write(f"down ip addr del {ip}/32 dev {iface} 2>/dev/null || true\n")
-        
-        # 刷新网络设置
-        os.system(f"ip link set {iface} up")
-        
-        # 重载Squid配置（如果有代理使用这些IP）
-        with db_pool.get_connection() as conn:
-            affected = conn.execute('SELECT COUNT(*) FROM proxy WHERE ip IN ({})'.format(
-                ','.join(['?'] * len(ip_list))
-            ), ip_list).fetchone()[0]
+        with open(LOGFILE, 'rb') as f:
+            if file_size > read_size:
+                f.seek(file_size - read_size)
+                f.readline()  # 跳过可能不完整的行
             
-            if affected > 0:
-                reload_squid_async()
+            for line in f:
+                try:
+                    line = line.decode('utf-8', errors='ignore')
+                    parts = line.split()
+                    if len(parts) > 7:
+                        srcip = parts[2]
+                        bytes_sent = int(parts[-2])
+                        cseg = '.'.join(srcip.split('.')[:3])
+                        stats[cseg] += bytes_sent
+                except:
+                    pass
+    except:
+        pass
+    
+    return {k: round(v/1024/1024, 2) for k, v in stats.items()}
+
+@app.route('/api/users')
+@login_required
+def api_users():
+    with db_pool.get_connection() as conn:
+        users = conn.execute('SELECT id,username FROM users').fetchall()
+    return jsonify([{'id': u[0], 'username': u[1]} for u in users])
+
+@app.route('/api/ip_configs')
+@login_required
+def api_ip_configs():
+    with db_pool.get_connection() as conn:
+        configs = conn.execute('SELECT id,ip_str,type,iface,created FROM ip_config ORDER BY id DESC').fetchall()
+    return jsonify([{
+        'id': c[0],
+        'ip_str': c[1],
+        'type': c[2],
+        'iface': c[3],
+        'created': c[4]
+    } for c in configs])
+
+@app.route('/addproxy', methods=['POST'])
+@login_required
+def addproxy():
+    ip = request.form['ip']
+    port = int(request.form['port'])
+    username = request.form['username']
+    password = request.form['password'] or ''.join(random.choices(string.ascii_letters+string.digits, k=12))
+    user_prefix = request.form.get('userprefix','')
+    
+    with db_pool.get_connection() as conn:
+        conn.execute('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix) VALUES (?,?,?,?,1,?,?,?)', 
+            (ip, port, username, password, ip, port, user_prefix))
+        conn.commit()
+    
+    redis_client.delete('proxy_groups')
+    reload_3proxy_async()
+    return jsonify({'status': 'success', 'message': '已添加代理'})
+
+@app.route('/batchaddproxy', methods=['POST'])
+@login_required
+def batchaddproxy():
+    iprange = request.form.get('iprange')
+    portrange = request.form.get('portrange')
+    userprefix = request.form.get('userprefix')
+    
+    if iprange and userprefix:
+        # 解析IP范围
+        m = re.match(r"(\d+\.\d+\.\d+\.)(\d+)-(\d+)", iprange.strip())
+        if not m:
+            return jsonify({'status': 'error', 'message': 'IP范围格式错误'})
+        ip_base = m.group(1)
+        start = int(m.group(2))
+        end = int(m.group(3))
+        ips = [f"{ip_base}{i}" for i in range(start, end+1)]
         
-        return jsonify({
-            'status': 'success', 
-            'message': f'已添加IP配置，成功添加 {success_count}/{len(ip_list)} 个IP'
-        })
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)})
+        with db_pool.get_connection() as conn:
+            # 获取已使用的端口
+            used_ports = set()
+            cursor = conn.execute('SELECT port FROM proxy')
+            for row in cursor:
+                used_ports.add(row[0])
+            
+            # 解析或生成端口范围
+            if portrange and portrange.strip():
+                m2 = re.match(r"(\d+)-(\d+)", portrange.strip())
+                if not m2:
+                    return jsonify({'status': 'error', 'message': '端口范围格式错误'})
+                port_start = int(m2.group(1))
+                port_end = int(m2.group(2))
+                if port_start < 1024 or port_end > 65535:
+                    return jsonify({'status': 'error', 'message': '端口范围应在1024-65535之间'})
+            else:
+                port_start = 5000
+                port_end = 65534
+            
+            # 生成可用端口列表
+            all_ports = [p for p in range(port_start, port_end+1) if p not in used_ports]
+            if len(all_ports) < len(ips):
+                return jsonify({'status': 'error', 'message': f'可用端口不足，需要{len(ips)}个端口，但只有{len(all_ports)}个可用'})
+            
+            # 随机选择端口
+            import random
+            random.shuffle(all_ports)
+            selected_ports = all_ports[:len(ips)]
+            selected_ports.sort()
+            
+            # 计算实际使用的端口范围
+            actual_port_range = f"{selected_ports[0]}-{selected_ports[-1]}"
+            
+            # 批量插入数据
+            batch_data = []
+            for i, ip in enumerate(ips):
+                port = selected_ports[i]
+                uname = userprefix + ''.join(random.choices(string.ascii_lowercase+string.digits, k=4))
+                pw = ''.join(random.choices(string.ascii_letters+string.digits, k=12))
+                batch_data.append((ip, port, uname, pw, 1, iprange, actual_port_range, userprefix))
+            
+            # 批量插入
+            conn.executemany('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix) VALUES (?,?,?,?,?,?,?,?)', 
+                           batch_data)
+            conn.commit()
+            count = len(batch_data)
+        
+        redis_client.delete('proxy_groups')
+        reload_3proxy_async()
+        return jsonify({'status': 'success', 'message': f'批量范围添加完成，共添加{count}条代理，端口范围：{actual_port_range}'})
+    
+    # 处理手动批量添加
+    batch_data = request.form.get('batchproxy','').strip().splitlines()
+    
+    with db_pool.get_connection() as conn:
+        count = 0
+        base_idx = conn.execute("SELECT MAX(id) FROM proxy").fetchone()[0]
+        if base_idx is None:
+            base_idx = 0
+        idx = 1
+        
+        batch_insert = []
+        for line in batch_data:
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            if ',' in line:
+                parts = [x.strip() for x in line.split(',')]
+            elif ':' in line:
+                parts = [x.strip() for x in line.split(':')]
+            else:
+                parts = re.split(r'\s+', line)
+            
+            if len(parts) == 2:
+                ip, port = parts
+                username = f"user{base_idx + idx:03d}"
+                password = ''.join(random.choices(string.ascii_letters+string.digits, k=12))
+                idx += 1
+            elif len(parts) == 3:
+                ip, port, username = parts
+                password = ''.join(random.choices(string.ascii_letters+string.digits, k=12))
+            elif len(parts) >= 4:
+                ip, port, username, password = parts[:4]
+            else:
+                continue
+            
+            batch_insert.append((ip, int(port), username, password, 1, ip, port, username))
+            count += 1
+        
+        if batch_insert:
+            conn.executemany('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix) VALUES (?,?,?,?,?,?,?,?)',
+                           batch_insert)
+            conn.commit()
+    
+    if count:
+        redis_client.delete('proxy_groups')
+        reload_3proxy_async()
+    
+    return jsonify({'status': 'success', 'message': f'批量添加完成，共添加{count}条代理'})
+
+@app.route('/delproxy/<int:pid>')
+@login_required
+def delproxy(pid):
+    with db_pool.get_connection() as conn:
+        conn.execute('DELETE FROM proxy WHERE id=?', (pid,))
+        conn.commit()
+    redis_client.delete('proxy_groups')
+    reload_3proxy_async()
+    return jsonify({'status': 'success'})
+
+@app.route('/batchdelproxy', methods=['POST'])
+@login_required
+def batchdelproxy():
+    ids = request.form.getlist('ids')
+    with db_pool.get_connection() as conn:
+        conn.executemany('DELETE FROM proxy WHERE id=?', [(i,) for i in ids])
+        conn.commit()
+    redis_client.delete('proxy_groups')
+    reload_3proxy_async()
+    return jsonify({'status': 'success', 'message': f'已批量删除 {len(ids)} 条代理'})
+
+@app.route('/batch_enable', methods=['POST'])
+@login_required
+def batch_enable():
+    ids = request.form.getlist('ids[]')
+    if not ids:
+        return jsonify({'status': 'error', 'message': 'No proxies selected'}), 400
+    with db_pool.get_connection() as conn:
+        conn.executemany('UPDATE proxy SET enabled=1 WHERE id=?', [(i,) for i in ids])
+        conn.commit()
+    redis_client.delete('proxy_groups')
+    reload_3proxy_async()
+    return jsonify({'status': 'success'})
+
+@app.route('/batch_disable', methods=['POST'])
+@login_required
+def batch_disable():
+    ids = request.form.getlist('ids[]')
+    if not ids:
+        return jsonify({'status': 'error', 'message': 'No proxies selected'}), 400
+    with db_pool.get_connection() as conn:
+        conn.executemany('UPDATE proxy SET enabled=0 WHERE id=?', [(i,) for i in ids])
+        conn.commit()
+    redis_client.delete('proxy_groups')
+    reload_3proxy_async()
+    return jsonify({'status': 'success'})
+
+@app.route('/enableproxy/<int:pid>')
+@login_required
+def enableproxy(pid):
+    with db_pool.get_connection() as conn:
+        conn.execute('UPDATE proxy SET enabled=1 WHERE id=?', (pid,))
+        conn.commit()
+    redis_client.delete('proxy_groups')
+    reload_3proxy_async()
+    return jsonify({'status': 'success'})
+
+@app.route('/disableproxy/<int:pid>')
+@login_required
+def disableproxy(pid):
+    with db_pool.get_connection() as conn:
+        conn.execute('UPDATE proxy SET enabled=0 WHERE id=?', (pid,))
+        conn.commit()
+    redis_client.delete('proxy_groups')
+    reload_3proxy_async()
+    return jsonify({'status': 'success'})
+
+@app.route('/adduser', methods=['POST'])
+@login_required
+def adduser():
+    username = request.form['username']
+    password = generate_password_hash(request.form['password'])
+    try:
+        with db_pool.get_connection() as conn:
+            conn.execute('INSERT INTO users (username, password) VALUES (?,?)', (username, password))
+            conn.commit()
+        return jsonify({'status': 'success', 'message': '已添加用户'})
+    except:
+        return jsonify({'status': 'error', 'message': '用户名已存在'})
+
+@app.route('/deluser/<int:uid>')
+@login_required
+def deluser(uid):
+    with db_pool.get_connection() as conn:
+        conn.execute('DELETE FROM users WHERE id=?', (uid,))
+        conn.commit()
+    return jsonify({'status': 'success'})
+
+@app.route('/export_selected', methods=['POST'])
+@login_required
+def export_selected():
+    csegs = request.form.getlist('csegs[]')
+    if not csegs:
+        return jsonify({'status': 'error', 'message': '未选择C段'}), 400
+    
+    with db_pool.get_connection() as conn:
+        output = ""
+        prefix_for_filename = None
+        
+        for cseg in csegs:
+            rows = conn.execute("SELECT ip,port,username,password,user_prefix FROM proxy WHERE ip LIKE ? ORDER BY ip,port", 
+                             (cseg + '.%',)).fetchall()
+            
+            if not prefix_for_filename and rows:
+                for row in rows:
+                    if row[4]:
+                        prefix_for_filename = row[4]
+                        break
+            
+            for ip, port, user, pw, _ in rows:
+                output += f"{ip}:{port}:{user}:{pw}\n"
+    
+    if not prefix_for_filename:
+        prefix_for_filename = 'proxy'
+    
+    cseg_names = []
+    for cseg in sorted(csegs):
+        cseg_names.append(cseg.replace('.', '_'))
+    
+    filename = f"{prefix_for_filename}_{'_'.join(cseg_names)}.txt"
+    
+    mem = BytesIO()
+    mem.write(output.encode('utf-8'))
+    mem.seek(0)
+    
+    return Response(
+        mem.read(), 
+        mimetype='text/plain', 
+        headers={
+            'Content-Disposition': f'attachment; filename="{filename}"',
+            'Content-Type': 'text/plain; charset=utf-8'
+        }
+    )
+
+@app.route('/export_selected_proxy', methods=['POST'])
+@login_required
+def export_selected_proxy():
+    ids = request.form.getlist('ids[]')
+    if not ids:
+        return jsonify({'status': 'error', 'message': 'No proxies selected'}), 400
+    
+    with db_pool.get_connection() as conn:
+        placeholders = ','.join('?' * len(ids))
+        rows = conn.execute(f'SELECT ip, port, username, password FROM proxy WHERE id IN ({placeholders})', ids).fetchall()
+    
+    output = ''
+    for ip, port, user, pw in rows:
+        output += f"{ip}:{port}:{user}:{pw}\n"
+    
+    mem = BytesIO()
+    mem.write(output.encode('utf-8'))
+    mem.seek(0)
+    filename = "proxy_export.txt"
+    return Response(mem.read(), mimetype='text/plain', headers={'Content-Disposition': f'attachment; filename={filename}'})
+
+@app.route('/add_ip_config', methods=['POST'])
+@login_required
+def add_ip_config():
+    ip_input = request.form.get('ip_input', '').strip()
+    iface = request.form.get('iface', detect_nic())
+    mode = request.form.get('mode', 'perm')
+    pattern_full = re.match(r"^(\d+\.\d+\.\d+\.)(\d+)-(\d+)$", ip_input)
+    pattern_short = re.match(r"^(\d+)-(\d+)$", ip_input)
+    
+    if pattern_full:
+        base = pattern_full.group(1)
+        start = int(pattern_full.group(2))
+        end = int(pattern_full.group(3))
+        ip_range = f"{base}{{{start}..{end}}}"
+        ip_list = [f"{base}{i}" for i in range(start, end+1)]
+    elif pattern_short:
+        base = "192.168.1."
+        start = int(pattern_short.group(1))
+        end = int(pattern_short.group(2))
+        ip_range = f"{base}{{{start}..{end}}}"
+        ip_list = [f"{base}{i}" for i in range(start, end+1)]
+    elif '{' in ip_input and '..' in ip_input:
+        ip_range = ip_input
+        match = re.match(r"(\d+\.\d+\.\d+\.?)\{(\d+)\.\.(\d+)\}", ip_input)
+        if match:
+            base = match.group(1)
+            s = int(match.group(2))
+            e = int(match.group(3))
+            ip_list = [f"{base}{i}" for i in range(s, e+1)]
+        else:
+            ip_list = []
+    else:
+        ip_range = ip_input
+        ip_list = [ip.strip() for ip in re.split(r'[,\s]+', ip_input) if ip.strip()]
+    
+    with db_pool.get_connection() as conn:
+        conn.execute('INSERT INTO ip_config (ip_str, type, iface, created) VALUES (?,?,?,datetime("now"))', (ip_range, 'range', iface))
+        conn.commit()
+    
+    # 批量添加IP
+    for i, ip in enumerate(ip_list):
+        os.system(f"ip addr add {ip}/32 dev {iface} 2>/dev/null")
+        os.system(f"ip route add {ip}/32 dev {iface} 2>/dev/null")
+    
+    # 永久添加
+    if mode == 'perm':
+        with open(INTERFACES_FILE, 'a+') as f:
+            f.write(f"\n# 3proxy IP配置 - {ip_range}\n")
+            for ip in ip_list:
+                f.write(f"up ip addr add {ip}/32 dev {iface} 2>/dev/null || true\n")
+                f.write(f"down ip addr del {ip}/32 dev {iface} 2>/dev/null || true\n")
+    
+    # 刷新ARP缓存
+    os.system("ip neigh flush all")
+    
+    return jsonify({'status': 'success', 'message': '已添加IP配置'})
 
 if __name__ == '__main__':
     import sys
@@ -1312,7 +1157,7 @@ if __name__ == '__main__':
     http_server.serve_forever()
 EOF
 
-# --------- init_db.py（DB初始化） ---------
+# --------- init_db.py（DB初始化 - 优化版） ---------
 cat > $WORKDIR/init_db.py << 'EOF'
 import sqlite3
 from werkzeug.security import generate_password_hash
@@ -1321,7 +1166,7 @@ import os
 user = os.environ.get('ADMINUSER')
 passwd = os.environ.get('ADMINPASS')
 
-db = sqlite3.connect('squid.db')
+db = sqlite3.connect('3proxy.db')
 
 # 启用WAL模式和优化
 db.execute('PRAGMA journal_mode=WAL')
@@ -1329,17 +1174,47 @@ db.execute('PRAGMA synchronous=NORMAL')
 db.execute('PRAGMA cache_size=10000')
 db.execute('PRAGMA temp_store=MEMORY')
 
-# 创建表
+# 创建表 - 添加时间字段
 db.execute('''CREATE TABLE IF NOT EXISTS proxy (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ip TEXT, port INTEGER, username TEXT, password TEXT, enabled INTEGER DEFAULT 1,
-    ip_range TEXT, port_range TEXT, user_prefix TEXT
+    ip_range TEXT, port_range TEXT, user_prefix TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    expire_at DATETIME,
+    last_used DATETIME,
+    traffic_used INTEGER DEFAULT 0,
+    notes TEXT
 )''')
+
+# 为已存在的表添加新字段（如果需要）
+try:
+    db.execute('ALTER TABLE proxy ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP')
+except:
+    pass
+try:
+    db.execute('ALTER TABLE proxy ADD COLUMN expire_at DATETIME')
+except:
+    pass
+try:
+    db.execute('ALTER TABLE proxy ADD COLUMN last_used DATETIME')
+except:
+    pass
+try:
+    db.execute('ALTER TABLE proxy ADD COLUMN traffic_used INTEGER DEFAULT 0')
+except:
+    pass
+try:
+    db.execute('ALTER TABLE proxy ADD COLUMN notes TEXT')
+except:
+    pass
 
 # 创建索引以提升查询性能
 db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_ip ON proxy(ip)')
 db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_enabled ON proxy(enabled)')
 db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_port ON proxy(port)')
+db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_user_prefix ON proxy(user_prefix)')
+db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_created_at ON proxy(created_at)')
+db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_expire_at ON proxy(expire_at)')
 
 db.execute('''CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1358,13 +1233,70 @@ print("WebAdmin: "+user)
 print("Webpassword:  "+passwd)
 EOF
 
-# 复制原有的HTML模板文件（与3proxy版本相同）
+# --------- config_gen.py（3proxy配置生成） ---------
+cat > $WORKDIR/config_gen.py << 'EOF'
+import sqlite3
+
+# 连接数据库
+db = sqlite3.connect('3proxy.db')
+db.execute('PRAGMA journal_mode=WAL')
+
+# 获取所有启用的代理
+cursor = db.execute('SELECT ip, port, username, password FROM proxy WHERE enabled=1')
+
+# 基础配置
+cfg = [
+    "daemon",
+    "maxconn 200000",
+    "nserver 8.8.8.8",
+    "nserver 1.1.1.1",
+    "nserver 8.8.4.4",
+    "nscache 65536",
+    "nscache6 65536",
+    "stacksize 6291456",
+    "timeouts 1 5 30 60 180 1800 15 60",
+    "log /usr/local/etc/3proxy/3proxy.log D",
+    "rotate 30",
+    "archiver gz /usr/bin/gzip %F",
+    "auth strong"
+]
+
+# 收集用户和代理配置
+users_dict = {}
+proxy_configs = []
+
+for ip, port, user, pw in cursor:
+    if (user, pw) not in users_dict:
+        users_dict[(user, pw)] = True
+    proxy_configs.append((ip, port, user))
+
+# 批量添加用户（每批1000个）
+users_list = [f"{user}:CL:{pw}" for user, pw in users_dict.keys()]
+for i in range(0, len(users_list), 1000):
+    batch = users_list[i:i+1000]
+    cfg.append(f"users {' '.join(batch)}")
+
+# 添加代理配置
+for ip, port, user in proxy_configs:
+    cfg.append(f"auth strong")
+    cfg.append(f"allow {user}")
+    cfg.append(f"proxy -n -a -p{port} -i{ip} -e{ip}")
+
+# 写入配置文件
+with open("/usr/local/etc/3proxy/3proxy.cfg", "w") as f:
+    f.write('\n'.join(cfg))
+
+db.close()
+print(f"Generated config with {len(proxy_configs)} proxies")
+EOF
+
+# 复制原有的HTML模板文件
 cat > $WORKDIR/templates/login.html << 'EOF'
 <!DOCTYPE html>
 <html lang="zh">
 <head>
     <meta charset="UTF-8">
-    <title>Squid 登录</title>
+    <title>3proxy 登录</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
         body {
@@ -1410,7 +1342,7 @@ cat > $WORKDIR/templates/login.html << 'EOF'
 <div class="container" style="max-width:400px;">
     <div class="card login-card">
         <div class="card-body p-5">
-            <h3 class="mb-4 text-center">Squid 管理系统</h3>
+            <h3 class="mb-4 text-center">3proxy 管理系统</h3>
             <form method="post">
                 <div class="mb-3">
                     <label class="form-label">用户名</label>
@@ -1434,13 +1366,13 @@ cat > $WORKDIR/templates/login.html << 'EOF'
 </html>
 EOF
 
-# 复制index.html（与3proxy版本相同，只需要改标题）
+# 复制index.html（与原版相同）
 cat > $WORKDIR/templates/index.html << 'EOF'
 <!DOCTYPE html>
 <html lang="zh">
 <head>
     <meta charset="utf-8">
-    <title>Squid 管理面板</title>
+    <title>3proxy 管理面板</title>
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.0/font/bootstrap-icons.css" rel="stylesheet">
@@ -1863,7 +1795,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
     <nav class="navbar navbar-dark mb-4">
         <div class="container-fluid">
             <span class="navbar-brand mb-0 h1">
-                <i class="bi bi-shield-check"></i> Squid 管理系统
+                <i class="bi bi-shield-check"></i> 3proxy 管理系统
             </span>
             <div class="d-flex align-items-center">
                 <span class="text-white me-3" id="currentTime"></span>
@@ -1880,16 +1812,16 @@ cat > $WORKDIR/templates/index.html << 'EOF'
         <div class="system-monitor animate-fade-in">
             <h5 class="mb-3"><i class="bi bi-speedometer2"></i> 系统监控</h5>
             <div class="row g-3">
-                <div class="col-md-3">
+                <div class="col-md-2">
                     <div class="stat-card">
                         <div class="stat-number" id="cpuUsage">0%</div>
-                        <small>CPU 使用率</small>
+                        <small>CPU 使用率 (<span id="cpuCores">0</span>核)</small>
                         <div class="progress mt-2">
                             <div class="progress-bar" id="cpuProgress" style="width: 0%"></div>
                         </div>
                     </div>
                 </div>
-                <div class="col-md-3">
+                <div class="col-md-2">
                     <div class="stat-card">
                         <div class="stat-number" id="memUsage">0%</div>
                         <small>内存使用率</small>
@@ -1898,7 +1830,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                         </div>
                     </div>
                 </div>
-                <div class="col-md-3">
+                <div class="col-md-2">
                     <div class="stat-card">
                         <div class="stat-number" id="diskUsage">0%</div>
                         <small>磁盘使用率</small>
@@ -1912,9 +1844,18 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                         <div class="stat-number" id="proxyStatus">
                             <i class="bi bi-circle-fill text-danger"></i>
                         </div>
-                        <small>Squid 状态</small>
+                        <small>3proxy 状态</small>
                         <div class="mt-1">
                             <small id="proxyInfo">未运行</small>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="stat-card">
+                        <div class="stat-number text-warning" id="expiringCount">0</div>
+                        <small><i class="bi bi-exclamation-triangle"></i> 即将过期的代理</small>
+                        <div class="mt-1">
+                            <small class="text-muted">7天内过期</small>
                         </div>
                     </div>
                 </div>
@@ -1956,11 +1897,15 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                     </div>
                                     <div class="mb-3">
                                         <label class="form-label">端口范围</label>
-                                        <input type="text" class="form-control" name="portrange" placeholder="20000-30000">
+                                        <input type="text" class="form-control" name="portrange" placeholder="20000-30000 (留空自动分配)">
                                     </div>
                                     <div class="mb-3">
                                         <label class="form-label">用户名前缀</label>
                                         <input type="text" class="form-control" name="userprefix" placeholder="user">
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">过期时间 <small class="text-muted">(可选)</small></label>
+                                        <input type="datetime-local" class="form-control" name="expire_at">
                                     </div>
                                     <button type="submit" class="btn btn-gradient w-100">
                                         <i class="bi bi-cloud-upload"></i> 批量添加
@@ -1971,15 +1916,20 @@ cat > $WORKDIR/templates/index.html << 'EOF'
 
                         <div class="card">
                             <div class="card-body">
-                                <h5 class="card-title"><i class="bi bi-file-text"></i> 手动批量添加</h5>
-                                <form id="manualBatchForm">
+                                <h5 class="card-title"><i class="bi bi-search"></i> 搜索代理组</h5>
+                                <form id="searchForm">
                                     <div class="mb-3">
-                                        <textarea name="batchproxy" class="form-control" rows="6" 
-                                                  placeholder="每行一个：ip,端口 或 ip:端口"></textarea>
+                                        <input type="text" class="form-control" id="searchPrefix" 
+                                               placeholder="输入用户名前缀搜索...">
                                     </div>
-                                    <button type="submit" class="btn btn-gradient w-100">
-                                        <i class="bi bi-upload"></i> 添加
-                                    </button>
+                                    <div class="btn-group w-100" role="group">
+                                        <button type="submit" class="btn btn-info">
+                                            <i class="bi bi-search"></i> 搜索
+                                        </button>
+                                        <button type="button" class="btn btn-secondary" onclick="clearSearch()">
+                                            <i class="bi bi-x-circle"></i> 清除
+                                        </button>
+                                    </div>
                                 </form>
                             </div>
                         </div>
@@ -2137,7 +2087,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
         setInterval(updateTime, 1000);
         updateTime();
 
-        // 系统监控 - 注意这里检查的是squid而不是3proxy
+        // 系统监控
         function updateSystemStatus() {
             fetch('/api/system_status')
                 .then(res => res.json())
@@ -2145,6 +2095,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     // CPU
                     document.getElementById('cpuUsage').textContent = data.cpu.toFixed(1) + '%';
                     document.getElementById('cpuProgress').style.width = data.cpu + '%';
+                    document.getElementById('cpuCores').textContent = data.cpu_cores || '0';
                     
                     // 内存
                     document.getElementById('memUsage').textContent = data.memory.percent.toFixed(1) + '%';
@@ -2154,7 +2105,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     document.getElementById('diskUsage').textContent = data.disk.percent.toFixed(1) + '%';
                     document.getElementById('diskProgress').style.width = data.disk.percent + '%';
                     
-                    // Squid状态
+                    // 3proxy状态
                     const statusIcon = document.getElementById('proxyStatus');
                     const statusInfo = document.getElementById('proxyInfo');
                     if (data.proxy.running) {
@@ -2164,22 +2115,38 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                         statusIcon.innerHTML = '<i class="bi bi-circle-fill text-danger"></i>';
                         statusInfo.textContent = '未运行';
                     }
+                    
+                    // 即将过期的代理数
+                    document.getElementById('expiringCount').textContent = data.expiring_proxies || '0';
                 });
         }
         setInterval(updateSystemStatus, 5000);
         updateSystemStatus();
 
         // 加载代理组
-        function loadProxyGroups() {
+        function loadProxyGroups(searchPrefix = '') {
             // 加载前先验证选中的组是否还存在
             const currentSelected = new Set(selectedGroups);
             
             showLoading();
-            fetch('/api/proxy_groups')
+            
+            const url = searchPrefix ? `/api/proxy_groups?search=${encodeURIComponent(searchPrefix)}` : '/api/proxy_groups';
+            
+            fetch(url)
                 .then(res => res.json())
                 .then(groups => {
                     const container = document.getElementById('proxyGroups');
                     container.innerHTML = '';
+                    
+                    if (groups.length === 0 && searchPrefix) {
+                        container.innerHTML = `
+                            <div class="alert alert-info">
+                                <i class="bi bi-info-circle"></i> 没有找到用户名前缀为 "${searchPrefix}" 的代理组
+                            </div>
+                        `;
+                        hideLoading();
+                        return;
+                    }
                     
                     // 获取当前存在的C段列表
                     const existingSegments = new Set(groups.map(g => g.c_segment));
@@ -2199,6 +2166,18 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                         if (selectedGroups.has(group.c_segment)) {
                             card.classList.add('selected');
                         }
+                        
+                        // 格式化时间
+                        const createdDate = group.created_at ? new Date(group.created_at).toLocaleDateString('zh-CN') : '未知';
+                        
+                        // 过期提示
+                        let expireWarning = '';
+                        if (group.expiring_soon > 0) {
+                            expireWarning = `<span class="badge bg-warning text-dark ms-2">
+                                <i class="bi bi-exclamation-triangle"></i> ${group.expiring_soon} 个即将过期
+                            </span>`;
+                        }
+                        
                         card.innerHTML = `
                             <div class="row align-items-center">
                                 <div class="col-md-7">
@@ -2207,6 +2186,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                                data-group="${group.c_segment}" onclick="event.stopPropagation();">
                                         <i class="bi bi-hdd-network text-primary me-2"></i>
                                         <strong>${group.c_segment}.x</strong>
+                                        ${expireWarning}
                                     </h6>
                                     <div class="d-flex flex-wrap gap-2 mb-2">
                                         <span class="badge rounded-pill bg-primary">
@@ -2223,6 +2203,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                         ${group.ip_range ? `<i class="bi bi-diagram-3"></i> ${group.ip_range}` : ''}
                                         ${group.port_range ? `<i class="bi bi-ethernet"></i> ${group.port_range}` : ''}
                                         ${group.user_prefix ? `<i class="bi bi-person"></i> ${group.user_prefix}` : ''}
+                                        <i class="bi bi-calendar ms-2"></i> 创建于: ${createdDate}
                                     </small>
                                 </div>
                                 <div class="col-md-5 text-end">
@@ -2242,6 +2223,11 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                                     onclick="event.stopPropagation(); toggleGroup('${group.c_segment}', 'disable')"
                                                     title="禁用全部">
                                                 <i class="bi bi-pause-circle"></i> 禁用
+                                            </button>
+                                            <button class="btn btn-info" 
+                                                    onclick="event.stopPropagation(); setGroupExpire('${group.c_segment}')"
+                                                    title="设置过期时间">
+                                                <i class="bi bi-clock"></i> 时间
                                             </button>
                                             <button class="btn btn-danger" 
                                                     onclick="event.stopPropagation(); deleteGroup('${group.c_segment}')"
@@ -2711,24 +2697,12 @@ cat > $WORKDIR/templates/index.html << 'EOF'
             e.preventDefault();
             const formData = new FormData(e.target);
             
-            showLoading();
-            fetch('/batchaddproxy', { method: 'POST', body: formData })
-                .then(res => res.json())
-                .then(data => {
-                    hideLoading();
-                    if (data.status === 'success') {
-                        showToast(data.message);
-                        e.target.reset();
-                        loadProxyGroups();
-                    } else {
-                        showToast(data.message, 'danger');
-                    }
-                });
-        });
-
-        document.getElementById('manualBatchForm').addEventListener('submit', (e) => {
-            e.preventDefault();
-            const formData = new FormData(e.target);
+            // 转换datetime-local为后端格式
+            const expireInput = formData.get('expire_at');
+            if (expireInput) {
+                const date = new Date(expireInput);
+                formData.set('expire_at', date.toISOString().slice(0, 19).replace('T', ' '));
+            }
             
             showLoading();
             fetch('/batchaddproxy', { method: 'POST', body: formData })
@@ -2744,6 +2718,90 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     }
                 });
         });
+
+        // 搜索表单
+        document.getElementById('searchForm').addEventListener('submit', (e) => {
+            e.preventDefault();
+            const searchPrefix = document.getElementById('searchPrefix').value.trim();
+            loadProxyGroups(searchPrefix);
+        });
+
+        function clearSearch() {
+            document.getElementById('searchPrefix').value = '';
+            loadProxyGroups();
+        }
+
+        // 设置代理组过期时间
+        function setGroupExpire(cSegment) {
+            const modal = document.createElement('div');
+            modal.innerHTML = `
+                <div class="modal fade" tabindex="-1">
+                    <div class="modal-dialog">
+                        <div class="modal-content">
+                            <div class="modal-header">
+                                <h5 class="modal-title">设置 ${cSegment}.x 段过期时间</h5>
+                                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                            </div>
+                            <div class="modal-body">
+                                <div class="mb-3">
+                                    <label class="form-label">过期时间</label>
+                                    <input type="datetime-local" class="form-control" id="expireDateTime">
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">快速设置</label>
+                                    <div class="btn-group w-100" role="group">
+                                        <button type="button" class="btn btn-outline-secondary" onclick="setExpireQuick(1)">1天后</button>
+                                        <button type="button" class="btn btn-outline-secondary" onclick="setExpireQuick(7)">7天后</button>
+                                        <button type="button" class="btn btn-outline-secondary" onclick="setExpireQuick(30)">30天后</button>
+                                        <button type="button" class="btn btn-outline-secondary" onclick="setExpireQuick(90)">90天后</button>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="modal-footer">
+                                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                                <button type="button" class="btn btn-primary" onclick="confirmSetExpire('${cSegment}')">确定</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            const bsModal = new bootstrap.Modal(modal.querySelector('.modal'));
+            bsModal.show();
+            
+            // 模态框关闭后移除DOM
+            modal.querySelector('.modal').addEventListener('hidden.bs.modal', () => {
+                modal.remove();
+            });
+        }
+
+        function setExpireQuick(days) {
+            const date = new Date();
+            date.setDate(date.getDate() + days);
+            document.getElementById('expireDateTime').value = date.toISOString().slice(0, 16);
+        }
+
+        function confirmSetExpire(cSegment) {
+            const expireValue = document.getElementById('expireDateTime').value;
+            if (!expireValue) {
+                showToast('请选择过期时间', 'warning');
+                return;
+            }
+            
+            const formData = new FormData();
+            const date = new Date(expireValue);
+            formData.append('expire_date', date.toISOString().slice(0, 19).replace('T', ' '));
+            
+            fetch(`/api/set_expire/${cSegment}`, { method: 'POST', body: formData })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        showToast(`已设置 ${cSegment}.x 段过期时间`);
+                        bootstrap.Modal.getInstance(document.querySelector('.modal')).hide();
+                        loadProxyGroups();
+                    }
+                });
+        }
 
         // 用户管理
         function loadUsers() {
@@ -2903,37 +2961,16 @@ cat > $WORKDIR/templates/index.html << 'EOF'
             // 加载初始数据
             loadProxyGroups();
         });
-        
-        // 复制密码功能
-        function copyPassword(password, id) {
-            const tempInput = document.createElement('input');
-            tempInput.style = 'position: absolute; left: -9999px';
-            tempInput.value = password;
-            document.body.appendChild(tempInput);
-            tempInput.select();
-            document.execCommand('copy');
-            document.body.removeChild(tempInput);
-            
-            showToast('密码已复制到剪贴板', 'success');
-            
-            // 可选：更改按钮图标表示已复制
-            const btn = event.target.closest('button');
-            const icon = btn.querySelector('i');
-            icon.className = 'bi bi-check';
-            setTimeout(() => {
-                icon.className = 'bi bi-clipboard';
-            }, 2000);
-        }
     </script>
 </body>
 </html>
 EOF
 
-# --------- Systemd服务 ---------
-cat > /etc/systemd/system/squid-web.service <<EOF
+# --------- Systemd服务启动 ---------
+cat > /etc/systemd/system/3proxy-web.service <<EOF
 [Unit]
-Description=Squid Web管理后台
-After=network.target redis-server.service squid.service
+Description=3proxy Web管理后台
+After=network.target redis-server.service
 
 [Service]
 Type=simple
@@ -2949,19 +2986,52 @@ LimitNPROC=2000000
 WantedBy=multi-user.target
 EOF
 
-# 确保Squid服务配置正确
-mkdir -p /etc/systemd/system/squid.service.d
-cat > /etc/systemd/system/squid.service.d/override.conf <<EOF
+cat > /etc/systemd/system/3proxy-autostart.service <<EOF
+[Unit]
+Description=3proxy代理服务
+After=network.target
+
 [Service]
+Type=forking
+ExecStart=/usr/local/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
+Restart=always
+RestartSec=5
+User=root
 LimitNOFILE=2000000
 LimitNPROC=2000000
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
-# 初始化数据库
+# 初始化数据库和启动3proxy
 cd $WORKDIR
 export ADMINUSER
 export ADMINPASS
 $WORKDIR/venv/bin/python3 init_db.py
+
+# 创建日志目录和文件
+mkdir -p /usr/local/etc/3proxy
+touch /usr/local/etc/3proxy/3proxy.log
+chmod 666 /usr/local/etc/3proxy/3proxy.log
+
+# 生成初始配置（即使没有代理也生成基础配置）
+cat > $PROXYCFG_PATH <<EOF
+daemon
+maxconn 200000
+nserver 8.8.8.8
+nserver 1.1.1.1
+nserver 8.8.4.4
+nscache 65536
+nscache6 65536
+stacksize 6291456
+timeouts 1 5 30 60 180 1800 15 60
+auth none
+proxy -p3128
+log $LOGFILE D
+rotate 30
+archiver gz /usr/bin/gzip %F
+EOF
 
 # 保存登录凭据
 cat > $CREDS_FILE <<EOF
@@ -2972,26 +3042,30 @@ Web管理地址: http://$(get_local_ip):${PORT}
 EOF
 chmod 600 $CREDS_FILE
 
-# 启动服务
 systemctl daemon-reload
-systemctl enable squid
-systemctl enable squid-web
+systemctl enable 3proxy-web
+systemctl enable 3proxy-autostart
 
-# 停止旧服务
-systemctl stop squid 2>/dev/null || true
-systemctl stop squid-web 2>/dev/null || true
+# 先停止旧服务
+systemctl stop 3proxy-autostart 2>/dev/null || true
+systemctl stop 3proxy-web 2>/dev/null || true
 
-# 启动Squid和Web服务
-systemctl start squid
+# 杀死所有3proxy进程
+pkill -9 3proxy 2>/dev/null || true
 sleep 2
-systemctl start squid-web
 
-# 验证服务状态
+# 启动服务
+systemctl start 3proxy-autostart
+sleep 2
+systemctl start 3proxy-web
+
+# 验证3proxy是否运行
 sleep 3
-if pgrep squid > /dev/null; then
-    echo -e "\033[32mSquid 已成功启动\033[0m"
+if pgrep 3proxy > /dev/null; then
+    echo -e "\033[32m3proxy 已成功启动\033[0m"
 else
-    echo -e "\033[31m警告: Squid 未能启动，请检查配置\033[0m"
+    echo -e "\033[31m警告: 3proxy 未能启动，尝试手动启动...\033[0m"
+    $THREEPROXY_PATH $PROXYCFG_PATH &
 fi
 
 echo -e "\n========= 部署完成！========="
@@ -3000,18 +3074,17 @@ echo -e "浏览器访问：\n  \033[36mhttp://$MYIP:${PORT}\033[0m"
 echo "Web管理用户名: $ADMINUSER"
 echo "Web管理密码:  $ADMINPASS"
 echo -e "\n功能说明："
-echo "1. 基于 Squid 实现，性能更强大"
-echo "2. 支持每个代理独立的IP和端口"
-echo "3. 动态生成ACL规则，精确控制访问"
-echo "4. 支持万级代理规模"
-echo -e "\nSquid 优势："
-echo "- 更强大的缓存功能"
-echo "- 更好的性能和稳定性"
-echo "- 更丰富的访问控制"
-echo "- 企业级特性支持"
+echo "1. 代理组采用卡片式设计，点击查看详情"
+echo "2. 系统监控实时显示CPU、内存、磁盘使用情况"
+echo "3. 自动备份每天凌晨2点执行"
+echo "4. 系统已自动优化内核参数"
+echo -e "\n架构优化说明："
+echo "- 使用数据库连接池提升并发性能"
+echo "- Redis缓存减少数据库查询"
+echo "- 异步任务队列处理配置重载"
+echo "- 批量操作优化，支持万级代理"
+echo "- Gevent异步服务器提升并发能力"
 echo -e "\n常用命令："
 echo "查看登录信息: bash $0 show"
 echo "卸载系统: bash $0 uninstall"
 echo "重新安装: bash $0 reinstall"
-echo "查看Squid状态: systemctl status squid"
-echo "查看Squid日志: tail -f /var/log/squid/access.log"
