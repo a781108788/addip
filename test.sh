@@ -46,7 +46,7 @@ function optimize_system() {
     fi
     
     # 优化内核参数 - 支持百万级并发
-    cat >> /etc/sysctl.conf <<EOF
+    cat >> /etc/sysctl.conf << 'SYSCTLEOF'
 
 # 3proxy 性能优化 - 支持百万级并发
 # 基础网络优化
@@ -125,7 +125,7 @@ vm.overcommit_memory = 1
 net.core.rps_sock_flow_entries = 32768
 net.core.netdev_budget = 600
 net.core.netdev_budget_usecs = 20000
-EOF
+SYSCTLEOF
     
     # 立即应用
     sysctl -p >/dev/null 2>&1
@@ -135,7 +135,7 @@ EOF
     
     # 优化文件描述符限制
     if ! grep -q "# 3proxy limits" /etc/security/limits.conf 2>/dev/null; then
-        cat >> /etc/security/limits.conf <<EOF
+        cat >> /etc/security/limits.conf << 'LIMITSEOF'
 
 # 3proxy limits
 * soft nofile 10000000
@@ -146,7 +146,7 @@ root soft nofile 10000000
 root hard nofile 10000000
 root soft nproc 10000000
 root hard nproc 10000000
-EOF
+LIMITSEOF
     fi
     
     # 优化 systemd 限制
@@ -157,7 +157,7 @@ EOF
     fi
     
     # 创建优化脚本（保留但不在systemd中使用）
-    cat > /usr/local/bin/3proxy-optimize.sh <<'EOF'
+    cat > /usr/local/bin/3proxy-optimize.sh << 'OPTIMIZEEOF'
 #!/bin/bash
 # 运行时优化
 ulimit -n 10000000
@@ -180,7 +180,7 @@ done
 
 # 启动 3proxy
 /usr/local/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
-EOF
+OPTIMIZEEOF
     
     chmod +x /usr/local/bin/3proxy-optimize.sh
     
@@ -205,7 +205,7 @@ function setup_backup() {
     mkdir -p $WORKDIR/backups
     
     # 创建备份脚本
-    cat > $WORKDIR/backup.sh <<'EOF'
+    cat > $WORKDIR/backup.sh << 'BACKUPEOF'
 #!/bin/bash
 BACKUP_DIR="/opt/3proxy-web/backups"
 DB_FILE="/opt/3proxy-web/3proxy.db"
@@ -230,7 +230,7 @@ find "$BACKUP_DIR" -name "backup_*.tar.gz" -mtime +7 -delete 2>/dev/null || true
 tar -czf "backup_$DATE.tar.gz" "$DB_FILE" "$CONFIG_FILE" 2>/dev/null || true
 
 echo "Backup completed: backup_$DATE.tar.gz"
-EOF
+BACKUPEOF
     
     chmod +x $WORKDIR/backup.sh
     
@@ -321,7 +321,7 @@ proxy -p3128
 log $LOGFILE D
 rotate 30
 archiver gz /usr/bin/gzip %F
-EOF
+PROXYINITEOF
 fi
 
 # 日志轮转
@@ -350,7 +350,7 @@ else
 fi
 
 # ------------------- manage.py (主后端 - 优化版) -------------------
-cat > $WORKDIR/manage.py << 'EOF'
+cat > $WORKDIR/manage.py << 'PYEOF'
 import os, sqlite3, random, string, re, collections, json, psutil, datetime
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, send_file, Response
 from flask_login import LoginManager, login_user, login_required, logout_user, UserMixin
@@ -1179,10 +1179,10 @@ if __name__ == '__main__':
     print(f"Starting server on port {port}...")
     http_server = WSGIServer(('0.0.0.0', port), app, log=None, spawn=10000)  # 支持1万并发连接
     http_server.serve_forever()
-EOF
+PYEOF
 
 # --------- init_db.py（DB初始化 - 优化版） ---------
-cat > $WORKDIR/init_db.py << 'EOF'
+cat > $WORKDIR/init_db.py << 'INITDBEOF'
 import sqlite3
 from werkzeug.security import generate_password_hash
 import os
@@ -1233,10 +1233,10 @@ db.commit()
 
 print("WebAdmin: "+user)
 print("Webpassword:  "+passwd)
-EOF
+INITDBEOF
 
 # --------- config_gen.py（3proxy配置生成） ---------
-cat > $WORKDIR/config_gen.py << 'EOF'
+cat > $WORKDIR/config_gen.py << 'CONFIGGENEOF'
 import sqlite3
 
 # 连接数据库
@@ -1290,10 +1290,10 @@ with open("/usr/local/etc/3proxy/3proxy.cfg", "w") as f:
 
 db.close()
 print(f"Generated config with {len(proxy_configs)} proxies")
-EOF
+CONFIGGENEOF
 
 # 复制原有的HTML模板文件
-cat > $WORKDIR/templates/login.html << 'EOF'
+cat > $WORKDIR/templates/login.html << 'LOGINEOF'
 <!DOCTYPE html>
 <html lang="zh">
 <head>
@@ -1366,10 +1366,10 @@ cat > $WORKDIR/templates/login.html << 'EOF'
 </div>
 </body>
 </html>
-EOF
+LOGINEOF
 
 # 复制index.html（与原版相同）
-cat > $WORKDIR/templates/index.html << 'EOF'
+cat > $WORKDIR/templates/index.html << 'INDEXEOF'
 <!DOCTYPE html>
 <html lang="zh">
 <head>
@@ -2919,7 +2919,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
     </script>
 </body>
 </html>
-EOF
+INDEXEOF
 
 # --------- Systemd服务启动 ---------
 cat > /etc/systemd/system/3proxy-web.service <<SVCEOF
@@ -2973,7 +2973,7 @@ touch /usr/local/etc/3proxy/3proxy.log
 chmod 666 /usr/local/etc/3proxy/3proxy.log
 
 # 生成初始配置（即使没有代理也生成基础配置）
-cat > $PROXYCFG_PATH <<EOF
+cat > $PROXYCFG_PATH << PROXYINITEOF
 daemon
 maxconn 2000000
 nserver 8.8.8.8
@@ -2991,12 +2991,12 @@ archiver gz /usr/bin/gzip %F
 EOF
 
 # 保存登录凭据
-cat > $CREDS_FILE <<EOF
+cat > $CREDS_FILE << CREDSEOF
 Web管理地址: http://$(get_local_ip):${PORT}
 管理员用户名: $ADMINUSER
 管理员密码: $ADMINPASS
 安装时间: $(date)
-EOF
+CREDSEOF
 chmod 600 $CREDS_FILE
 
 systemctl daemon-reload
