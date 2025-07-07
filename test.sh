@@ -239,8 +239,10 @@ fi
 cat > $SQUID_CONFIG_PATH <<'EOF'
 # Squid 企业级配置
 # 基础设置
-http_port 3128
 visible_hostname proxy-server
+
+# 监听默认端口
+http_port 3128
 
 # 性能优化
 cache_mem 2048 MB
@@ -313,8 +315,7 @@ request_header_access Via deny all
 request_header_access Cache-Control deny all
 
 # 性能调优
-workers 8
-cpu_affinity_map process_numbers=1,2,3,4,5,6,7,8 cores=1,2,3,4,5,6,7,8
+workers 4
 
 # 关闭不需要的功能
 shutdown_lifetime 3 seconds
@@ -326,10 +327,14 @@ chmod 600 $SQUID_PASSWORD_FILE
 
 # 创建Squid目录
 mkdir -p /var/spool/squid
+mkdir -p /var/log/squid
 chown -R proxy:proxy /var/spool/squid
+chown -R proxy:proxy /var/log/squid
 
-# 初始化Squid缓存目录
-squid -z 2>/dev/null || true
+# 检查并初始化Squid缓存目录
+if [ ! -f /var/spool/squid/swap.state ]; then
+    squid -z 2>/dev/null || true
+fi
 
 # 执行系统优化
 optimize_system
@@ -458,69 +463,158 @@ def generate_squid_config():
         # 获取所有启用的代理
         cursor = conn.execute('SELECT DISTINCT ip, port FROM proxy WHERE enabled=1 ORDER BY ip, port')
         
-        # 基础配置
-        config_lines = []
+        # 读取原始配置模板
+        base_config = """# Squid 企业级配置
+# 基础设置
+visible_hostname proxy-server
+
+# 性能优化
+cache_mem 2048 MB
+maximum_object_size_in_memory 512 KB
+memory_pools on
+memory_pools_limit 2048 MB
+
+# 文件描述符
+max_filedescriptors 2000000
+
+# DNS优化
+dns_v4_first on
+positive_dns_ttl 6 hours
+negative_dns_ttl 1 minute
+dns_nameservers 8.8.8.8 1.1.1.1
+
+# 缓存设置（可选）
+cache_dir ufs /var/spool/squid 10000 16 256
+maximum_object_size 100 MB
+cache_swap_low 90
+cache_swap_high 95
+
+# 日志
+access_log /var/log/squid/access.log squid
+cache_log /var/log/squid/cache.log
+cache_store_log none
+
+# 核心转储
+coredump_dir /var/spool/squid
+
+# 刷新模式
+refresh_pattern ^ftp:           1440    20%     10080
+refresh_pattern ^gopher:        1440    0%      1440
+refresh_pattern -i (/cgi-bin/|\?) 0     0%      0
+refresh_pattern .               0       20%     4320
+
+# ACL定义
+acl SSL_ports port 443
+acl Safe_ports port 80          # http
+acl Safe_ports port 21          # ftp
+acl Safe_ports port 443         # https
+acl Safe_ports port 70          # gopher
+acl Safe_ports port 210         # wais
+acl Safe_ports port 1025-65535  # unregistered ports
+acl Safe_ports port 280         # http-mgmt
+acl Safe_ports port 488         # gss-http
+acl Safe_ports port 591         # filemaker
+acl Safe_ports port 777         # multiling http
+acl CONNECT method CONNECT
+
+# 安全限制
+http_access deny !Safe_ports
+http_access deny CONNECT !SSL_ports
+
+# 认证配置
+auth_param basic program /usr/lib/squid/basic_ncsa_auth /etc/squid/passwords
+auth_param basic children 100 startup=10 idle=5
+auth_param basic realm Squid proxy-caching web server
+auth_param basic credentialsttl 2 hours
+
+# 性能调优
+workers 4
+shutdown_lifetime 3 seconds
+
+"""
         
-        # 读取基础配置模板
-        with open('/etc/squid/squid.conf.original', 'r') as f:
-            base_config = f.read()
-        
-        # 添加多端口监听配置
+        # 添加监听端口配置
         port_configs = []
-        for ip, port in cursor:
-            # Squid的tcp_outgoing_address配置
-            # 为每个IP:端口组合创建监听
-            port_configs.append(f"http_port {ip}:{port} name=port_{port}")
+        proxies = []
         
-        # 获取所有用户的ACL
-        cursor2 = conn.execute('SELECT DISTINCT username, ip, port FROM proxy WHERE enabled=1')
+        for ip, port in cursor:
+            port_configs.append(f"http_port {ip}:{port} name=port{port}")
+            proxies.append((ip, port))
+        
+        # 如果没有代理，添加默认端口
+        if not port_configs:
+            port_configs.append("http_port 3128")
+        
+        # 生成ACL和访问控制规则
         acl_configs = []
         access_configs = []
         
+        # 获取所有用户和对应的代理
+        cursor2 = conn.execute('''
+            SELECT DISTINCT username, ip, port 
+            FROM proxy 
+            WHERE enabled=1 
+            ORDER BY username, ip, port
+        ''')
+        
+        user_proxies = {}
         for username, ip, port in cursor2:
-            # 创建用户ACL
-            acl_name = f"user_{username}_{port}"
-            acl_configs.append(f"acl {acl_name} proxy_auth {username}")
-            # 创建端口ACL
-            port_acl = f"port_{port}_acl"
-            acl_configs.append(f"acl {port_acl} myportname port_{port}")
-            # 允许特定用户从特定端口访问
-            access_configs.append(f"http_access allow {acl_name} {port_acl}")
-            # 设置出口IP
-            access_configs.append(f"tcp_outgoing_address {ip} {acl_name}")
+            if username not in user_proxies:
+                user_proxies[username] = []
+            user_proxies[username].append((ip, port))
         
-        # 组合配置
-        final_config = base_config.replace("http_port 3128", "\n".join(port_configs))
-        
-        # 在认证后添加ACL和访问控制
-        auth_index = final_config.find("http_access allow authenticated")
-        if auth_index != -1:
-            # 替换默认的认证规则
-            before = final_config[:auth_index]
-            after = final_config[auth_index:].replace("http_access allow authenticated", "# Default auth disabled")
+        # 为每个用户生成ACL
+        for username, proxy_list in user_proxies.items():
+            # 用户认证ACL
+            acl_configs.append(f"acl {username}_user proxy_auth {username}")
             
-            # 插入新的ACL和访问规则
-            final_config = before + "\n# 动态生成的ACL\n" + "\n".join(acl_configs) + "\n\n# 访问控制\n" + "\n".join(access_configs) + "\n" + after
+            # 为该用户的每个代理创建规则
+            for ip, port in proxy_list:
+                port_acl = f"port{port}"
+                acl_configs.append(f"acl {port_acl} myportname port{port}")
+                access_configs.append(f"http_access allow {username}_user {port_acl}")
+                access_configs.append(f"tcp_outgoing_address {ip} {username}_user {port_acl}")
+        
+        # 如果没有用户配置，允许所有认证用户
+        if not access_configs:
+            access_configs.append("acl authenticated proxy_auth REQUIRED")
+            access_configs.append("http_access allow authenticated")
+        
+        # 最后拒绝所有
+        access_configs.append("http_access deny all")
+        
+        # 组合最终配置
+        final_config = base_config + "\n# 监听端口\n" + "\n".join(port_configs) + "\n"
+        
+        if acl_configs:
+            final_config += "\n# 动态生成的ACL\n" + "\n".join(acl_configs) + "\n"
+        
+        final_config += "\n# 访问控制规则\n" + "\n".join(access_configs) + "\n"
         
         # 写入配置文件
         with open(SQUID_CONFIG_PATH, 'w') as f:
             f.write(final_config)
+        
+        # 备份原始配置
+        if not os.path.exists(SQUID_CONFIG_PATH + '.template'):
+            with open(SQUID_CONFIG_PATH + '.template', 'w') as f:
+                f.write(base_config)
 
 def generate_squid_passwords():
     """生成Squid密码文件"""
     with db_pool.get_connection() as conn:
         cursor = conn.execute('SELECT DISTINCT username, password FROM proxy WHERE enabled=1')
         
-        passwords = []
-        for username, password in cursor:
-            # 使用htpasswd格式（Apache格式）
-            # Squid的basic_ncsa_auth使用这种格式
-            hashed = sha256_crypt.hash(password)
-            passwords.append(f"{username}:{hashed}")
+        # 使用 htpasswd 命令生成密码文件
+        # 先清空密码文件
+        open(SQUID_PASSWORD_FILE, 'w').close()
         
-        # 写入密码文件
-        with open(SQUID_PASSWORD_FILE, 'w') as f:
-            f.write('\n'.join(passwords))
+        for username, password in cursor:
+            # 使用 htpasswd 命令添加用户
+            # -b: 批处理模式，从命令行获取密码
+            # -c: 创建新文件（只在第一个用户时使用）
+            cmd = f"htpasswd -b {SQUID_PASSWORD_FILE} {username} {password}"
+            os.system(cmd + " 2>/dev/null")
         
         # 设置权限
         os.chmod(SQUID_PASSWORD_FILE, 0o600)
@@ -1102,59 +1196,81 @@ def export_selected_proxy():
 @app.route('/add_ip_config', methods=['POST'])
 @login_required
 def add_ip_config():
-    ip_input = request.form.get('ip_input', '').strip()
-    iface = request.form.get('iface', detect_nic())
-    mode = request.form.get('mode', 'perm')
-    pattern_full = re.match(r"^(\d+\.\d+\.\d+\.)(\d+)-(\d+)$", ip_input)
-    pattern_short = re.match(r"^(\d+)-(\d+)$", ip_input)
-    
-    if pattern_full:
-        base = pattern_full.group(1)
-        start = int(pattern_full.group(2))
-        end = int(pattern_full.group(3))
-        ip_range = f"{base}{{{start}..{end}}}"
-        ip_list = [f"{base}{i}" for i in range(start, end+1)]
-    elif pattern_short:
-        base = "192.168.1."
-        start = int(pattern_short.group(1))
-        end = int(pattern_short.group(2))
-        ip_range = f"{base}{{{start}..{end}}}"
-        ip_list = [f"{base}{i}" for i in range(start, end+1)]
-    elif '{' in ip_input and '..' in ip_input:
-        ip_range = ip_input
-        match = re.match(r"(\d+\.\d+\.\d+\.?)\{(\d+)\.\.(\d+)\}", ip_input)
-        if match:
-            base = match.group(1)
-            s = int(match.group(2))
-            e = int(match.group(3))
-            ip_list = [f"{base}{i}" for i in range(s, e+1)]
+    try:
+        ip_input = request.form.get('ip_input', '').strip()
+        iface = request.form.get('iface', detect_nic())
+        mode = request.form.get('mode', 'perm')
+        pattern_full = re.match(r"^(\d+\.\d+\.\d+\.)(\d+)-(\d+)$", ip_input)
+        pattern_short = re.match(r"^(\d+)-(\d+)$", ip_input)
+        
+        if pattern_full:
+            base = pattern_full.group(1)
+            start = int(pattern_full.group(2))
+            end = int(pattern_full.group(3))
+            ip_range = f"{base}{{{start}..{end}}}"
+            ip_list = [f"{base}{i}" for i in range(start, end+1)]
+        elif pattern_short:
+            base = "192.168.1."
+            start = int(pattern_short.group(1))
+            end = int(pattern_short.group(2))
+            ip_range = f"{base}{{{start}..{end}}}"
+            ip_list = [f"{base}{i}" for i in range(start, end+1)]
+        elif '{' in ip_input and '..' in ip_input:
+            ip_range = ip_input
+            match = re.match(r"(\d+\.\d+\.\d+\.?)\{(\d+)\.\.(\d+)\}", ip_input)
+            if match:
+                base = match.group(1)
+                s = int(match.group(2))
+                e = int(match.group(3))
+                ip_list = [f"{base}{i}" for i in range(s, e+1)]
+            else:
+                ip_list = []
         else:
-            ip_list = []
-    else:
-        ip_range = ip_input
-        ip_list = [ip.strip() for ip in re.split(r'[,\s]+', ip_input) if ip.strip()]
-    
-    with db_pool.get_connection() as conn:
-        conn.execute('INSERT INTO ip_config (ip_str, type, iface, created) VALUES (?,?,?,datetime("now"))', (ip_range, 'range', iface))
-        conn.commit()
-    
-    # 批量添加IP
-    for i, ip in enumerate(ip_list):
-        os.system(f"ip addr add {ip}/32 dev {iface} 2>/dev/null")
-        os.system(f"ip route add {ip}/32 dev {iface} 2>/dev/null")
-    
-    # 永久添加
-    if mode == 'perm':
-        with open(INTERFACES_FILE, 'a+') as f:
-            f.write(f"\n# Squid IP配置 - {ip_range}\n")
-            for ip in ip_list:
-                f.write(f"up ip addr add {ip}/32 dev {iface} 2>/dev/null || true\n")
-                f.write(f"down ip addr del {ip}/32 dev {iface} 2>/dev/null || true\n")
-    
-    # 刷新ARP缓存
-    os.system("ip neigh flush all")
-    
-    return jsonify({'status': 'success', 'message': '已添加IP配置'})
+            ip_range = ip_input
+            ip_list = [ip.strip() for ip in re.split(r'[,\s]+', ip_input) if ip.strip()]
+        
+        with db_pool.get_connection() as conn:
+            conn.execute('INSERT INTO ip_config (ip_str, type, iface, created) VALUES (?,?,?,datetime("now"))', (ip_range, 'range', iface))
+            conn.commit()
+        
+        # 批量添加IP - 优化命令执行
+        success_count = 0
+        for ip in ip_list:
+            # 检查IP是否已存在
+            result = os.system(f"ip addr show dev {iface} | grep -q ' {ip}/'")
+            if result != 0:  # IP不存在，添加它
+                # 添加IP地址
+                if os.system(f"ip addr add {ip}/32 dev {iface} 2>/dev/null") == 0:
+                    success_count += 1
+                # 添加路由
+                os.system(f"ip route add {ip}/32 dev {iface} 2>/dev/null")
+        
+        # 永久添加
+        if mode == 'perm' and success_count > 0:
+            with open(INTERFACES_FILE, 'a+') as f:
+                f.write(f"\n# Squid IP配置 - {ip_range}\n")
+                for ip in ip_list:
+                    f.write(f"up ip addr add {ip}/32 dev {iface} 2>/dev/null || true\n")
+                    f.write(f"down ip addr del {ip}/32 dev {iface} 2>/dev/null || true\n")
+        
+        # 刷新网络设置
+        os.system(f"ip link set {iface} up")
+        
+        # 重载Squid配置（如果有代理使用这些IP）
+        with db_pool.get_connection() as conn:
+            affected = conn.execute('SELECT COUNT(*) FROM proxy WHERE ip IN ({})'.format(
+                ','.join(['?'] * len(ip_list))
+            ), ip_list).fetchone()[0]
+            
+            if affected > 0:
+                reload_squid_async()
+        
+        return jsonify({
+            'status': 'success', 
+            'message': f'已添加IP配置，成功添加 {success_count}/{len(ip_list)} 个IP'
+        })
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
 
 if __name__ == '__main__':
     import sys
