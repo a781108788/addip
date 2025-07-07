@@ -2199,61 +2199,61 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                 const createdAt = group.created_at ? new Date(group.created_at).toLocaleString('zh-CN') : '未知';
                 const expireAt = group.expire_at ? new Date(group.expire_at).toLocaleString('zh-CN') : '永久';
                 
-                card.innerHTML = `
-                    <div class="row align-items-center">
-                        <div class="col-md-7">
-                            <h6 class="mb-2 d-flex align-items-center">
-                                <input type="checkbox" class="form-check-input me-2" 
-                                       data-group="${group.c_segment}" onclick="event.stopPropagation();">
-                                <i class="bi bi-hdd-network text-primary me-2"></i>
-                                <strong>${group.c_segment}.x</strong>
-                            </h6>
-                            <div class="d-flex flex-wrap gap-2 mb-2">
-                                <span class="badge rounded-pill bg-primary">
-                                    <i class="bi bi-layers"></i> ${group.total} 个
-                                </span>
-                                <span class="badge rounded-pill bg-success">
-                                    <i class="bi bi-check-circle"></i> ${group.enabled} 启用
-                                </span>
-                            </div>
-                            <small class="text-muted d-block">
-                                ${group.ip_range ? `<i class="bi bi-diagram-3"></i> ${group.ip_range}` : ''}
-                                ${group.port_range ? `<i class="bi bi-ethernet"></i> ${group.port_range}` : ''}
-                                ${group.user_prefix ? `<i class="bi bi-person"></i> ${group.user_prefix}` : ''}
-                            </small>
-                            <div class="time-info">
-                                <i class="bi bi-clock"></i> 创建: ${createdAt}
-                                ${group.expire_at ? `<br><i class="bi bi-calendar-x"></i> 过期: ${expireAt}` : ''}
-                            </div>
-                        </div>
-                        <div class="col-md-5 text-end">
-                            <div class="btn-toolbar justify-content-end" role="toolbar">
-                                <div class="btn-group btn-group-sm" role="group">
-                                    <button class="btn btn-primary" 
-                                            onclick="event.stopPropagation(); viewProxyGroup('${group.c_segment}')"
-                                            title="查看详情">
-                                        <i class="bi bi-eye"></i> 查看
-                                    </button>
-                                    <button class="btn btn-success" 
-                                            onclick="event.stopPropagation(); toggleGroup('${group.c_segment}', 'enable')"
-                                            title="启用全部">
-                                        <i class="bi bi-play-circle"></i> 启用
-                                    </button>
-                                    <button class="btn btn-warning" 
-                                            onclick="event.stopPropagation(); toggleGroup('${group.c_segment}', 'disable')"
-                                            title="禁用全部">
-                                        <i class="bi bi-pause-circle"></i> 禁用
-                                    </button>
-                                    <button class="btn btn-danger" 
-                                            onclick="event.stopPropagation(); deleteGroup('${group.c_segment}')"
-                                            title="删除整组">
-                                        <i class="bi bi-trash"></i> 删除
-                                    </button>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-                `;
+                // 构建HTML内容 - 避免模板字符串中的特殊字符问题
+                let cardHTML = '<div class="row align-items-center">';
+                cardHTML += '<div class="col-md-7">';
+                cardHTML += '<h6 class="mb-2 d-flex align-items-center">';
+                cardHTML += '<input type="checkbox" class="form-check-input me-2" data-group="' + group.c_segment + '" onclick="event.stopPropagation();">';
+                cardHTML += '<i class="bi bi-hdd-network text-primary me-2"></i>';
+                cardHTML += '<strong>' + group.c_segment + '.x</strong>';
+                cardHTML += '</h6>';
+                cardHTML += '<div class="d-flex flex-wrap gap-2 mb-2">';
+                cardHTML += '<span class="badge rounded-pill bg-primary">';
+                cardHTML += '<i class="bi bi-layers"></i> ' + group.total + ' 个';
+                cardHTML += '</span>';
+                cardHTML += '<span class="badge rounded-pill bg-success">';
+                cardHTML += '<i class="bi bi-check-circle"></i> ' + group.enabled + ' 启用';
+                cardHTML += '</span>';
+                cardHTML += '</div>';
+                cardHTML += '<small class="text-muted d-block">';
+                if (group.ip_range) {
+                    cardHTML += '<i class="bi bi-diagram-3"></i> ' + group.ip_range + ' ';
+                }
+                if (group.port_range) {
+                    cardHTML += '<i class="bi bi-ethernet"></i> ' + group.port_range + ' ';
+                }
+                if (group.user_prefix) {
+                    cardHTML += '<i class="bi bi-person"></i> ' + group.user_prefix;
+                }
+                cardHTML += '</small>';
+                cardHTML += '<div class="time-info">';
+                cardHTML += '<i class="bi bi-clock"></i> 创建: ' + createdAt;
+                if (group.expire_at) {
+                    cardHTML += '<br><i class="bi bi-calendar-x"></i> 过期: ' + expireAt;
+                }
+                cardHTML += '</div>';
+                cardHTML += '</div>';
+                cardHTML += '<div class="col-md-5 text-end">';
+                cardHTML += '<div class="btn-toolbar justify-content-end" role="toolbar">';
+                cardHTML += '<div class="btn-group btn-group-sm" role="group">';
+                cardHTML += '<button class="btn btn-primary" onclick="event.stopPropagation(); viewProxyGroup(\'' + group.c_segment + '\')" title="查看详情">';
+                cardHTML += '<i class="bi bi-eye"></i> 查看';
+                cardHTML += '</button>';
+                cardHTML += '<button class="btn btn-success" onclick="event.stopPropagation(); toggleGroup(\'' + group.c_segment + '\', \'enable\')" title="启用全部">';
+                cardHTML += '<i class="bi bi-play-circle"></i> 启用';
+                cardHTML += '</button>';
+                cardHTML += '<button class="btn btn-warning" onclick="event.stopPropagation(); toggleGroup(\'' + group.c_segment + '\', \'disable\')" title="禁用全部">';
+                cardHTML += '<i class="bi bi-pause-circle"></i> 禁用';
+                cardHTML += '</button>';
+                cardHTML += '<button class="btn btn-danger" onclick="event.stopPropagation(); deleteGroup(\'' + group.c_segment + '\')" title="删除整组">';
+                cardHTML += '<i class="bi bi-trash"></i> 删除';
+                cardHTML += '</button>';
+                cardHTML += '</div>';
+                cardHTML += '</div>';
+                cardHTML += '</div>';
+                cardHTML += '</div>';
+                
+                card.innerHTML = cardHTML;
                 
                 // 点击卡片切换选中状态
                 card.addEventListener('click', (e) => {
