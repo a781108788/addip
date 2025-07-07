@@ -323,7 +323,8 @@ EOF
 
 # 创建密码文件
 touch $SQUID_PASSWORD_FILE
-chmod 600 $SQUID_PASSWORD_FILE
+chmod 644 $SQUID_PASSWORD_FILE
+chown proxy:proxy $SQUID_PASSWORD_FILE
 
 # 创建Squid目录
 mkdir -p /var/spool/squid
@@ -451,11 +452,22 @@ def reload_squid():
     """同步重载Squid配置"""
     generate_squid_config()
     generate_squid_passwords()
+    
+    # 测试配置文件是否有效
+    result = os.system('squid -k parse 2>/dev/null')
+    if result != 0:
+        print("Squid configuration error, using fallback config")
+        # 使用备份配置
+        os.system('cp /etc/squid/squid.conf.template /etc/squid/squid.conf 2>/dev/null')
+    
     # Squid使用 -k reconfigure 进行平滑重载
     result = os.system('squid -k reconfigure 2>/dev/null')
     if result != 0:
         # 如果重载失败，尝试重启
         os.system('systemctl restart squid')
+    
+    # 等待 Squid 启动
+    time.sleep(2)
 
 def generate_squid_config():
     """生成Squid配置文件"""
@@ -616,8 +628,9 @@ def generate_squid_passwords():
             cmd = f"htpasswd -b {SQUID_PASSWORD_FILE} {username} {password}"
             os.system(cmd + " 2>/dev/null")
         
-        # 设置权限
-        os.chmod(SQUID_PASSWORD_FILE, 0o600)
+        # 设置权限 - 必须让 Squid (proxy用户) 能读取
+        os.chmod(SQUID_PASSWORD_FILE, 0o644)
+        os.system(f'chown proxy:proxy {SQUID_PASSWORD_FILE}')
 
 # 后台任务处理线程
 def task_worker():
@@ -812,17 +825,33 @@ def api_system_status():
     
     # 获取Squid进程信息
     proxy_info = {'running': False, 'pid': None, 'memory': 0, 'connections': 0}
-    for proc in psutil.process_iter(['pid', 'name']):
-        if proc.info['name'] == 'squid':
-            proxy_info['running'] = True
-            proxy_info['pid'] = proc.info['pid']
-            try:
-                p = psutil.Process(proc.info['pid'])
-                proxy_info['memory'] = p.memory_info().rss / 1024 / 1024  # MB
-                proxy_info['connections'] = len(p.connections())
-            except:
-                pass
-            break
+    squid_found = False
+    
+    for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+        try:
+            # Squid 可能显示为 squid 或 (squid-1)
+            if 'squid' in proc.info['name'].lower():
+                if not squid_found:  # 只统计主进程
+                    proxy_info['running'] = True
+                    proxy_info['pid'] = proc.info['pid']
+                    squid_found = True
+                    try:
+                        p = psutil.Process(proc.info['pid'])
+                        proxy_info['memory'] = p.memory_info().rss / 1024 / 1024  # MB
+                        # 统计所有 squid 相关进程的连接数
+                        connections = 0
+                        for squid_proc in psutil.process_iter(['name']):
+                            if 'squid' in squid_proc.info['name'].lower():
+                                try:
+                                    sp = psutil.Process(squid_proc.pid)
+                                    connections += len(sp.connections(kind='inet'))
+                                except:
+                                    pass
+                        proxy_info['connections'] = connections
+                    except Exception as e:
+                        print(f"Error getting process info: {e}")
+        except:
+            pass
     
     result = {
         'cpu': cpu_percent,
