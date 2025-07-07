@@ -2195,9 +2195,6 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                         <span class="badge rounded-pill bg-success">
                                             <i class="bi bi-check-circle"></i> ${group.enabled} 启用
                                         </span>
-                                        <span class="badge rounded-pill bg-info">
-                                            <i class="bi bi-arrow-down-up"></i> ${group.traffic} MB
-                                        </span>
                                     </div>
                                     <small class="text-muted d-block">
                                         ${group.ip_range ? `<i class="bi bi-diagram-3"></i> ${group.ip_range}` : ''}
