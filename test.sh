@@ -2922,7 +2922,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
 EOF
 
 # --------- Systemd服务启动 ---------
-cat > /etc/systemd/system/3proxy-web.service <<EOF
+cat > /etc/systemd/system/3proxy-web.service <<SVCEOF
 [Unit]
 Description=3proxy Web管理后台
 After=network.target redis-server.service
@@ -2940,9 +2940,9 @@ TasksMax=infinity
 
 [Install]
 WantedBy=multi-user.target
-EOF
+SVCEOF
 
-cat > /etc/systemd/system/3proxy-autostart.service <<EOF
+cat > /etc/systemd/system/3proxy-autostart.service <<AUTOSVCEOF
 [Unit]
 Description=3proxy代理服务
 After=network.target
@@ -2959,7 +2959,7 @@ TasksMax=infinity
 
 [Install]
 WantedBy=multi-user.target
-EOF
+AUTOSVCEOF
 
 # 初始化数据库和启动3proxy
 cd $WORKDIR
