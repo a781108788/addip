@@ -621,65 +621,86 @@ def api_proxy_groups():
         return jsonify(pickle.loads(cached))
     
     with db_pool.get_connection() as conn:
-        # 优化查询：使用聚合查询减少数据传输
-        groups_data = conn.execute('''
-            SELECT 
-                substr(ip, 1, instr(ip||'.', '.', 1, 3)-1) as c_seg,
-                COUNT(*) as total,
-                SUM(CASE WHEN enabled = 1 THEN 1 ELSE 0 END) as enabled,
-                MIN(ip_range) as ip_range,
-                MIN(port_range) as port_range,
-                MIN(user_prefix) as user_prefix,
-                MIN(created_at) as created_at,
-                MIN(expire_at) as expire_at
+        # 获取所有代理信息
+        proxies = conn.execute('''
+            SELECT ip, port, username, password, enabled, ip_range, port_range, user_prefix,
+                   created_at, expire_at
             FROM proxy
-            GROUP BY c_seg
-            ORDER BY c_seg
+            ORDER BY ip
         ''').fetchall()
     
+    # 按C段分组
+    groups = collections.defaultdict(lambda: {
+        'proxies': [],
+        'total': 0,
+        'enabled': 0,
+        'ip_range': '',
+        'port_range': '',
+        'user_prefix': '',
+        'created_at': None,
+        'expire_at': None
+    })
+    
+    for row in proxies:
+        ip = row[0]
+        c_seg = '.'.join(ip.split('.')[:3])
+        group = groups[c_seg]
+        
+        group['proxies'].append({
+            'ip': row[0],
+            'port': row[1],
+            'enabled': row[4]
+        })
+        group['total'] += 1
+        if row[4]:  # enabled
+            group['enabled'] += 1
+        
+        # 保存第一个代理的元信息
+        if not group['ip_range']:
+            group['ip_range'] = row[5]
+            group['port_range'] = row[6]
+            group['user_prefix'] = row[7]
+            group['created_at'] = row[8]
+            group['expire_at'] = row[9]
+    
     result = []
-    for row in groups_data:
-        c_seg = row[0]
-        
+    for c_seg, group_data in groups.items():
         # 计算实际的IP范围和端口范围
-        with db_pool.get_connection() as conn:
-            ip_ports = conn.execute('''
-                SELECT MIN(CAST(substr(ip, instr(ip||'.', '.', 1, 3)+1) AS INTEGER)),
-                       MAX(CAST(substr(ip, instr(ip||'.', '.', 1, 3)+1) AS INTEGER)),
-                       MIN(port), MAX(port)
-                FROM proxy
-                WHERE ip LIKE ?
-            ''', (c_seg + '.%',)).fetchone()
-        
-        if ip_ports[0] and ip_ports[1]:
-            if ip_ports[1] - ip_ports[0] == row[1] - 1:
-                actual_ip_range = f"{c_seg}.{ip_ports[0]}-{ip_ports[1]}"
+        proxies_list = group_data['proxies']
+        if proxies_list:
+            # IP范围
+            ip_nums = sorted([int(p['ip'].split('.')[-1]) for p in proxies_list])
+            if len(ip_nums) > 1 and ip_nums[-1] - ip_nums[0] == len(ip_nums) - 1:
+                actual_ip_range = f"{c_seg}.{ip_nums[0]}-{ip_nums[-1]}"
             else:
-                actual_ip_range = f"{c_seg}.x ({row[1]} IPs)"
-        else:
-            actual_ip_range = row[3] or ''
-        
-        if ip_ports[2] and ip_ports[3]:
-            if ip_ports[2] == ip_ports[3]:
-                actual_port_range = str(ip_ports[2])
+                actual_ip_range = f"{c_seg}.x ({len(ip_nums)} IPs)"
+            
+            # 端口范围
+            ports = sorted([p['port'] for p in proxies_list])
+            if len(ports) == 1:
+                actual_port_range = str(ports[0])
             else:
-                actual_port_range = f"{ip_ports[2]}-{ip_ports[3]}"
+                actual_port_range = f"{ports[0]}-{ports[-1]}"
         else:
-            actual_port_range = row[4] or ''
+            actual_ip_range = group_data['ip_range'] or ''
+            actual_port_range = group_data['port_range'] or ''
         
         result.append({
             'c_segment': c_seg,
-            'total': row[1],
-            'enabled': row[2],
+            'total': group_data['total'],
+            'enabled': group_data['enabled'],
             'traffic': 0,  # 移除流量统计
             'ip_range': actual_ip_range,
             'port_range': actual_port_range,
-            'user_prefix': row[5] or '',
-            'created_at': row[6],
-            'expire_at': row[7]
+            'user_prefix': group_data['user_prefix'] or '',
+            'created_at': group_data['created_at'],
+            'expire_at': group_data['expire_at']
         })
     
-    # 缓存10秒（增加缓存时间）
+    # 按C段排序
+    result.sort(key=lambda x: x['c_segment'])
+    
+    # 缓存10秒
     redis_client.setex('proxy_groups', 10, pickle.dumps(result))
     
     return jsonify(result)
@@ -1278,7 +1299,6 @@ db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_ip ON proxy(ip)')
 db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_enabled ON proxy(enabled)')
 db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_port ON proxy(port)')
 db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_expire ON proxy(expire_at)')
-db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_cseg ON proxy(substr(ip, 1, instr(ip||".", ".", 1, 3)-1))')
 
 db.execute('''CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
