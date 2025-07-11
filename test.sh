@@ -1230,6 +1230,24 @@ db.execute('''CREATE TABLE IF NOT EXISTS proxy (
     expire_at DATETIME
 )''')
 
+# 检查并升级旧表结构
+cursor = db.execute("PRAGMA table_info(proxy)")
+columns = [col[1] for col in cursor.fetchall()]
+
+# 如果没有created_at列，添加它
+if 'created_at' not in columns:
+    db.execute('ALTER TABLE proxy ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP')
+    print("Added created_at column to proxy table")
+
+# 如果没有expire_at列，添加它
+if 'expire_at' not in columns:
+    db.execute('ALTER TABLE proxy ADD COLUMN expire_at DATETIME')
+    print("Added expire_at column to proxy table")
+
+# 更新现有记录的created_at（如果为空）
+db.execute("UPDATE proxy SET created_at = datetime('now') WHERE created_at IS NULL")
+db.commit()
+
 # 创建索引以提升查询性能
 db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_ip ON proxy(ip)')
 db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_enabled ON proxy(enabled)')
