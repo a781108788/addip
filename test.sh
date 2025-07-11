@@ -40,7 +40,7 @@ function optimize_system() {
     # 优化内核参数 - 支持大规模代理
     cat >> /etc/sysctl.conf <<EOF
 
-# 3proxy 性能优化 - 支持十万级并发
+# 3proxy 性能优化 - 支持万级并发
 # 基础网络优化
 net.ipv4.ip_forward = 1
 net.ipv4.conf.all.forwarding = 1
@@ -50,39 +50,37 @@ net.ipv4.conf.default.forwarding = 1
 net.ipv4.tcp_syncookies = 1
 net.ipv4.tcp_tw_reuse = 1
 net.ipv4.tcp_tw_recycle = 0
-net.ipv4.tcp_fin_timeout = 10
+net.ipv4.tcp_fin_timeout = 15
 net.ipv4.tcp_keepalive_time = 300
 net.ipv4.tcp_keepalive_probes = 3
 net.ipv4.tcp_keepalive_intvl = 30
-net.ipv4.tcp_max_syn_backlog = 262144
-net.ipv4.tcp_max_tw_buckets = 2000000
+net.ipv4.tcp_max_syn_backlog = 65536
+net.ipv4.tcp_max_tw_buckets = 65536
 net.ipv4.tcp_timestamps = 1
 net.ipv4.tcp_slow_start_after_idle = 0
-net.ipv4.tcp_retries2 = 5
 
 # 端口范围
 net.ipv4.ip_local_port_range = 1024 65535
 
-# 连接跟踪优化 - 支持500万并发
-net.netfilter.nf_conntrack_max = 5000000
-net.netfilter.nf_conntrack_tcp_timeout_established = 600
-net.netfilter.nf_conntrack_tcp_timeout_time_wait = 60
-net.netfilter.nf_conntrack_tcp_timeout_close_wait = 30
-net.netfilter.nf_conntrack_tcp_timeout_fin_wait = 60
-net.netfilter.nf_conntrack_buckets = 1250000
+# 连接跟踪优化
+net.netfilter.nf_conntrack_max = 4000000
+net.netfilter.nf_conntrack_tcp_timeout_established = 1200
+net.netfilter.nf_conntrack_tcp_timeout_time_wait = 120
+net.netfilter.nf_conntrack_tcp_timeout_close_wait = 60
+net.netfilter.nf_conntrack_tcp_timeout_fin_wait = 120
 
 # 套接字优化
-net.core.somaxconn = 262144
-net.core.netdev_max_backlog = 262144
-net.core.optmem_max = 67108864
-net.ipv4.tcp_mem = 1048576 2097152 4194304
-net.ipv4.udp_mem = 1048576 2097152 4194304
-net.ipv4.tcp_rmem = 4096 131072 134217728
-net.ipv4.tcp_wmem = 4096 131072 134217728
+net.core.somaxconn = 65535
+net.core.netdev_max_backlog = 65536
+net.core.optmem_max = 25165824
+net.ipv4.tcp_mem = 786432 1048576 26777216
+net.ipv4.udp_mem = 65536 131072 262144
+net.ipv4.tcp_rmem = 4096 87380 67108864
+net.ipv4.tcp_wmem = 4096 65536 67108864
 net.core.rmem_max = 134217728
 net.core.wmem_max = 134217728
-net.core.rmem_default = 524288
-net.core.wmem_default = 524288
+net.core.rmem_default = 262144
+net.core.wmem_default = 262144
 
 # TCP 拥塞控制
 net.ipv4.tcp_congestion_control = bbr
@@ -98,8 +96,8 @@ net.ipv4.icmp_ratelimit = 100
 net.ipv4.icmp_ratemask = 88089
 
 # 文件句柄
-fs.file-max = 10000000
-fs.nr_open = 10000000
+fs.file-max = 4000000
+fs.nr_open = 4000000
 
 # 其他优化
 net.ipv4.tcp_no_metrics_save = 1
@@ -114,10 +112,6 @@ vm.swappiness = 10
 vm.dirty_ratio = 40
 vm.dirty_background_ratio = 10
 vm.overcommit_memory = 1
-
-# 网络栈优化
-net.core.netdev_budget = 600
-net.core.netdev_budget_usecs = 20000
 EOF
     
     # 立即应用
@@ -131,39 +125,39 @@ EOF
         cat >> /etc/security/limits.conf <<EOF
 
 # 3proxy limits
-* soft nofile 5000000
-* hard nofile 5000000
-* soft nproc 5000000
-* hard nproc 5000000
-root soft nofile 5000000
-root hard nofile 5000000
-root soft nproc 5000000
-root hard nproc 5000000
+* soft nofile 2000000
+* hard nofile 2000000
+* soft nproc 2000000
+* hard nproc 2000000
+root soft nofile 2000000
+root hard nofile 2000000
+root soft nproc 2000000
+root hard nproc 2000000
 EOF
     fi
     
     # 优化 systemd 限制
     if [ -f /etc/systemd/system.conf ]; then
-        sed -i 's/^#DefaultLimitNOFILE=.*/DefaultLimitNOFILE=5000000/' /etc/systemd/system.conf
-        sed -i 's/^#DefaultLimitNPROC=.*/DefaultLimitNPROC=5000000/' /etc/systemd/system.conf
+        sed -i 's/^#DefaultLimitNOFILE=.*/DefaultLimitNOFILE=2000000/' /etc/systemd/system.conf
+        sed -i 's/^#DefaultLimitNPROC=.*/DefaultLimitNPROC=2000000/' /etc/systemd/system.conf
     fi
     
     # 创建优化脚本（保留但不在systemd中使用）
     cat > /usr/local/bin/3proxy-optimize.sh <<'EOF'
 #!/bin/bash
 # 运行时优化
-ulimit -n 5000000
-ulimit -u 5000000
+ulimit -n 2000000
+ulimit -u 2000000
 
 # 清理 TIME_WAIT 连接
 echo 1 > /proc/sys/net/ipv4/tcp_tw_reuse 2>/dev/null || true
 
 # 优化网络缓冲区
-echo 134217728 > /proc/sys/net/core/rmem_max 2>/dev/null || true
-echo 134217728 > /proc/sys/net/core/wmem_max 2>/dev/null || true
+echo 67108864 > /proc/sys/net/core/rmem_max 2>/dev/null || true
+echo 67108864 > /proc/sys/net/core/wmem_max 2>/dev/null || true
 
 # 增加连接跟踪表大小
-echo 5000000 > /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || true
+echo 4000000 > /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || true
 
 # 禁用反向路径过滤（如果需要）
 for i in /proc/sys/net/ipv4/conf/*/rp_filter; do
@@ -177,16 +171,14 @@ EOF
     chmod +x /usr/local/bin/3proxy-optimize.sh
     
     # 更新 3proxy 配置以支持更多连接
-    sed -i 's/maxconn 2000/maxconn 500000/g' $PROXYCFG_PATH 2>/dev/null || true
-    sed -i 's/maxconn 10000/maxconn 500000/g' $PROXYCFG_PATH 2>/dev/null || true
-    sed -i 's/maxconn 200000/maxconn 500000/g' $PROXYCFG_PATH 2>/dev/null || true
+    sed -i 's/maxconn 2000/maxconn 400000/g' $PROXYCFG_PATH 2>/dev/null || true
+    sed -i 's/maxconn 10000/maxconn 200000/g' $PROXYCFG_PATH 2>/dev/null || true
     
-    echo -e "\033[32m系统优化完成！支持十万级代理并发\033[0m"
-    echo -e "\033[33m注意：如果代理数量超过10万，建议：\033[0m"
-    echo -e "1. 使用更高配置的服务器（至少32核128G内存）"
+    echo -e "\033[32m系统优化完成！支持万级代理并发\033[0m"
+    echo -e "\033[33m注意：如果代理数量超过5000，建议：\033[0m"
+    echo -e "1. 使用更高配置的服务器（至少8核16G内存）"
     echo -e "2. 考虑使用多台服务器分布式部署"
     echo -e "3. 定期监控系统资源使用情况"
-    echo -e "4. 开启NUMA优化和CPU亲和性绑定"
 }
 
 function setup_backup() {
@@ -300,7 +292,7 @@ fi
 if [ ! -f "$PROXYCFG_PATH" ]; then
 cat > $PROXYCFG_PATH <<EOF
 daemon
-maxconn 500000
+maxconn 200000
 nserver 8.8.8.8
 nserver 1.1.1.1
 nserver 8.8.4.4
@@ -392,7 +384,7 @@ class DatabasePool:
             self.pool.put(conn)
 
 # 初始化数据库池
-db_pool = DatabasePool(DB, pool_size=50)
+db_pool = DatabasePool(DB)
 
 # Redis连接
 redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=False)
@@ -447,7 +439,7 @@ def generate_config_optimized():
         
         cfg = [
             "daemon",
-            "maxconn 500000",
+            "maxconn 400000",
             "nserver 8.8.8.8",
             "nserver 1.1.1.1", 
             "nserver 8.8.4.4",
@@ -509,7 +501,24 @@ def task_worker():
 worker_thread = threading.Thread(target=task_worker, daemon=True)
 worker_thread.start()
 
-# 过期代理检查
+# 初始启动3proxy（如果还没启动）
+def ensure_3proxy_running():
+    """确保3proxy正在运行"""
+    try:
+        # 检查3proxy是否运行
+        result = subprocess.run(['pgrep', '3proxy'], capture_output=True)
+        if result.returncode != 0:
+            # 3proxy未运行，生成配置并启动
+            generate_config_optimized()
+            os.system(f'/usr/local/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg')
+            print("3proxy started")
+    except Exception as e:
+        print(f"Error checking 3proxy: {e}")
+
+# 在启动时确保3proxy运行
+ensure_3proxy_running()
+
+# 过期代理检查线程
 def check_expired_proxies():
     """每天检查并禁用过期代理"""
     while True:
@@ -535,34 +544,12 @@ def check_expired_proxies():
         except Exception as e:
             print(f"Error checking expired proxies: {e}")
         
-        # 每天凌晨3点检查一次
-        next_check = datetime.datetime.now().replace(hour=3, minute=0, second=0, microsecond=0)
-        if next_check < datetime.datetime.now():
-            next_check += datetime.timedelta(days=1)
-        
-        sleep_seconds = (next_check - datetime.datetime.now()).total_seconds()
-        time.sleep(sleep_seconds)
+        # 每天检查一次（86400秒）
+        time.sleep(86400)
 
 # 启动过期检查线程
 expire_thread = threading.Thread(target=check_expired_proxies, daemon=True)
 expire_thread.start()
-
-# 初始启动3proxy（如果还没启动）
-def ensure_3proxy_running():
-    """确保3proxy正在运行"""
-    try:
-        # 检查3proxy是否运行
-        result = subprocess.run(['pgrep', '3proxy'], capture_output=True)
-        if result.returncode != 0:
-            # 3proxy未运行，生成配置并启动
-            generate_config_optimized()
-            os.system(f'/usr/local/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg')
-            print("3proxy started")
-    except Exception as e:
-        print(f"Error checking 3proxy: {e}")
-
-# 在启动时确保3proxy运行
-ensure_3proxy_running()
 
 @app.route('/login', methods=['GET','POST'])
 def login():
@@ -646,10 +633,6 @@ def api_proxy_groups():
         else:
             actual_port_range = proxies[0]['port_range'] if proxies else ''
         
-        # 获取最早创建时间和最近过期时间
-        created_times = [p['created_at'] for p in proxies if p['created_at']]
-        expire_times = [p['expire_at'] for p in proxies if p['expire_at']]
-        
         result.append({
             'c_segment': c_seg,
             'total': len(proxies),
@@ -658,8 +641,7 @@ def api_proxy_groups():
             'ip_range': actual_ip_range,
             'port_range': actual_port_range,
             'user_prefix': proxies[0]['user_prefix'] if proxies else '',
-            'created_at': min(created_times) if created_times else None,
-            'expire_at': min(expire_times) if expire_times else None
+            'created_at': proxies[0]['created_at'] if proxies else None
         })
     
     sorted_result = sorted(result, key=lambda x: x['c_segment'])
@@ -692,23 +674,6 @@ def api_proxy_group_detail(c_segment):
         })
     
     return jsonify(result)
-
-@app.route('/api/set_expire/<c_segment>', methods=['POST'])
-@login_required
-def api_set_expire(c_segment):
-    expire_date = request.form.get('expire_date')
-    
-    with db_pool.get_connection() as conn:
-        if expire_date:
-            conn.execute('UPDATE proxy SET expire_at = ? WHERE ip LIKE ?', 
-                        (expire_date, c_segment + '.%'))
-        else:
-            conn.execute('UPDATE proxy SET expire_at = NULL WHERE ip LIKE ?', 
-                        (c_segment + '.%',))
-        conn.commit()
-    
-    redis_client.delete('proxy_groups')
-    return jsonify({'status': 'success'})
 
 @app.route('/api/delete_group/<c_segment>', methods=['POST'])
 @login_required
@@ -847,7 +812,7 @@ def addproxy():
     user_prefix = request.form.get('userprefix','')
     
     with db_pool.get_connection() as conn:
-        conn.execute('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix, created_at) VALUES (?,?,?,?,1,?,?,?,datetime("now"))', 
+        conn.execute('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix) VALUES (?,?,?,?,1,?,?,?)', 
             (ip, port, username, password, ip, port, user_prefix))
         conn.commit()
     
@@ -861,6 +826,7 @@ def batchaddproxy():
     iprange = request.form.get('iprange')
     portrange = request.form.get('portrange')
     userprefix = request.form.get('userprefix')
+    expire_days = request.form.get('expire_days', type=int)  # 新增：过期天数
     
     if iprange and userprefix:
         # 解析IP范围
@@ -906,6 +872,11 @@ def batchaddproxy():
             # 计算实际使用的端口范围
             actual_port_range = f"{selected_ports[0]}-{selected_ports[-1]}"
             
+            # 计算过期时间
+            expire_at = None
+            if expire_days and expire_days > 0:
+                expire_at = f"datetime('now', '+{expire_days} days')"
+            
             # 批量插入数据
             batch_data = []
             for i, ip in enumerate(ips):
@@ -915,8 +886,16 @@ def batchaddproxy():
                 batch_data.append((ip, port, uname, pw, 1, iprange, actual_port_range, userprefix))
             
             # 批量插入
-            conn.executemany('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix, created_at) VALUES (?,?,?,?,?,?,?,?,datetime("now"))', 
-                           batch_data)
+            if expire_at:
+                conn.executemany('''INSERT INTO proxy 
+                    (ip, port, username, password, enabled, ip_range, port_range, user_prefix, created_at, expire_at) 
+                    VALUES (?,?,?,?,?,?,?,?, datetime('now'), datetime('now', '+{} days'))'''.format(expire_days), 
+                    batch_data)
+            else:
+                conn.executemany('''INSERT INTO proxy 
+                    (ip, port, username, password, enabled, ip_range, port_range, user_prefix, created_at) 
+                    VALUES (?,?,?,?,?,?,?,?, datetime('now'))''', 
+                    batch_data)
             conn.commit()
             count = len(batch_data)
         
@@ -963,7 +942,7 @@ def batchaddproxy():
             count += 1
         
         if batch_insert:
-            conn.executemany('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix, created_at) VALUES (?,?,?,?,?,?,?,?,datetime("now"))',
+            conn.executemany('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix) VALUES (?,?,?,?,?,?,?,?)',
                            batch_insert)
             conn.commit()
     
@@ -1059,6 +1038,31 @@ def deluser(uid):
     with db_pool.get_connection() as conn:
         conn.execute('DELETE FROM users WHERE id=?', (uid,))
         conn.commit()
+    return jsonify({'status': 'success'})
+
+@app.route('/api/set_expire/<c_segment>', methods=['POST'])
+@login_required
+def api_set_expire(c_segment):
+    """设置C段代理的过期时间"""
+    expire_days = request.form.get('expire_days', type=int)
+    
+    with db_pool.get_connection() as conn:
+        if expire_days and expire_days > 0:
+            conn.execute('''
+                UPDATE proxy 
+                SET expire_at = datetime('now', '+{} days')
+                WHERE ip LIKE ?
+            '''.format(expire_days), (c_segment + '.%',))
+        else:
+            # 如果expire_days为0或空，清除过期时间
+            conn.execute('''
+                UPDATE proxy 
+                SET expire_at = NULL
+                WHERE ip LIKE ?
+            ''', (c_segment + '.%',))
+        conn.commit()
+    
+    redis_client.delete('proxy_groups')
     return jsonify({'status': 'success'})
 
 @app.route('/export_selected', methods=['POST'])
@@ -1258,7 +1262,7 @@ cursor = db.execute('SELECT ip, port, username, password FROM proxy WHERE enable
 # 基础配置
 cfg = [
     "daemon",
-    "maxconn 500000",
+    "maxconn 200000",
     "nserver 8.8.8.8",
     "nserver 1.1.1.1",
     "nserver 8.8.4.4",
@@ -1905,6 +1909,10 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                         <label class="form-label">用户名前缀</label>
                                         <input type="text" class="form-control" name="userprefix" placeholder="user">
                                     </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">过期天数（可选）</label>
+                                        <input type="number" class="form-control" name="expire_days" placeholder="留空为永久" min="0">
+                                    </div>
                                     <button type="submit" class="btn btn-gradient w-100">
                                         <i class="bi bi-cloud-upload"></i> 批量添加
                                     </button>
@@ -2166,10 +2174,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                         ${group.ip_range ? `<i class="bi bi-diagram-3"></i> ${group.ip_range}` : ''}
                                         ${group.port_range ? `<i class="bi bi-ethernet"></i> ${group.port_range}` : ''}
                                         ${group.user_prefix ? `<i class="bi bi-person"></i> ${group.user_prefix}` : ''}
-                                    </small>
-                                    <small class="text-muted d-block mt-1">
-                                        ${group.created_at ? `<i class="bi bi-calendar-plus"></i> 创建: ${new Date(group.created_at).toLocaleString('zh-CN')}` : ''}
-                                        ${group.expire_at ? `<i class="bi bi-calendar-x"></i> 过期: ${new Date(group.expire_at).toLocaleString('zh-CN')}` : ''}
+                                        ${group.created_at ? `<i class="bi bi-calendar-plus"></i> ${new Date(group.created_at).toLocaleDateString('zh-CN')}` : ''}
                                     </small>
                                 </div>
                                 <div class="col-md-5 text-end">
@@ -2180,11 +2185,6 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                                     title="查看详情">
                                                 <i class="bi bi-eye"></i> 查看
                                             </button>
-                                            <button class="btn btn-info" 
-                                                    onclick="event.stopPropagation(); setGroupExpire('${group.c_segment}')"
-                                                    title="设置过期时间">
-                                                <i class="bi bi-calendar-check"></i> 过期
-                                            </button>
                                             <button class="btn btn-success" 
                                                     onclick="event.stopPropagation(); toggleGroup('${group.c_segment}', 'enable')"
                                                     title="启用全部">
@@ -2194,6 +2194,11 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                                     onclick="event.stopPropagation(); toggleGroup('${group.c_segment}', 'disable')"
                                                     title="禁用全部">
                                                 <i class="bi bi-pause-circle"></i> 禁用
+                                            </button>
+                                            <button class="btn btn-info" 
+                                                    onclick="event.stopPropagation(); setGroupExpire('${group.c_segment}')"
+                                                    title="设置过期">
+                                                <i class="bi bi-clock"></i> 过期
                                             </button>
                                             <button class="btn btn-danger" 
                                                     onclick="event.stopPropagation(); deleteGroup('${group.c_segment}')"
@@ -2275,6 +2280,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                 ${firstProxy.port_range ? `<span class="info-item"><i class="bi bi-ethernet"></i> 端口范围: <strong>${firstProxy.port_range}</strong></span>` : ''}
                                 ${firstProxy.user_prefix ? `<span class="info-item"><i class="bi bi-person"></i> 用户前缀: <strong>${firstProxy.user_prefix}</strong></span>` : ''}
                                 <span class="info-item"><i class="bi bi-list"></i> 代理总数: <strong>${proxies.length}</strong></span>
+                                ${firstProxy.created_at ? `<span class="info-item"><i class="bi bi-calendar-plus"></i> 创建时间: <strong>${new Date(firstProxy.created_at).toLocaleString('zh-CN')}</strong></span>` : ''}
                             </div>
                         </div>
                         
@@ -2315,6 +2321,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                         <th style="width: 120px;">用户名</th>
                                         <th style="width: 200px;">密码</th>
                                         <th style="width: 70px; text-align: center;">状态</th>
+                                        <th style="width: 120px; text-align: center;">过期时间</th>
                                         <th style="width: 100px; text-align: center;">操作</th>
                                     </tr>
                                 </thead>
@@ -2358,6 +2365,11 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                     ${proxy.enabled ? 
                                         '<span class="badge bg-success" style="font-size: 0.8rem;"><i class="bi bi-check-circle-fill me-1"></i>启用</span>' : 
                                         '<span class="badge bg-secondary" style="font-size: 0.8rem;"><i class="bi bi-x-circle-fill me-1"></i>禁用</span>'}
+                                </td>
+                                <td style="text-align: center; padding: 8px 4px;">
+                                    ${proxy.expire_at ? 
+                                        `<small class="${new Date(proxy.expire_at) < new Date() ? 'text-danger' : 'text-muted'}">${new Date(proxy.expire_at).toLocaleDateString('zh-CN')}</small>` : 
+                                        '<small class="text-success">永久</small>'}
                                 </td>
                                 <td style="text-align: center; padding: 8px 4px;">
                                     <button class="btn btn-sm ${proxy.enabled ? 'btn-warning' : 'btn-success'}" 
@@ -2419,35 +2431,6 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                 });
         }
 
-        // 复制密码功能
-        function copyPassword(password, proxyId) {
-            if (navigator.clipboard) {
-                navigator.clipboard.writeText(password).then(() => {
-                    showToast('密码已复制到剪贴板');
-                }).catch(() => {
-                    fallbackCopy(password);
-                });
-            } else {
-                fallbackCopy(password);
-            }
-        }
-
-        function fallbackCopy(text) {
-            const textarea = document.createElement('textarea');
-            textarea.value = text;
-            textarea.style.position = 'fixed';
-            textarea.style.opacity = '0';
-            document.body.appendChild(textarea);
-            textarea.select();
-            try {
-                document.execCommand('copy');
-                showToast('密码已复制到剪贴板');
-            } catch (err) {
-                showToast('复制失败，请手动复制', 'warning');
-            }
-            document.body.removeChild(textarea);
-        }
-
         // 更新选中数量
         function updateSelectedCount() {
             const count = document.querySelectorAll('.proxy-check:checked').length;
@@ -2466,27 +2449,22 @@ cat > $WORKDIR/templates/index.html << 'EOF'
 
         // 设置代理组过期时间
         function setGroupExpire(cSegment) {
-            const expireDate = prompt('设置过期时间 (格式: YYYY-MM-DD HH:MM:SS)，留空取消过期时间:');
-            if (expireDate !== null) {
+            const days = prompt(`设置 ${cSegment}.x 段代理过期天数（0或留空为永久）:`);
+            if (days !== null) {
                 const formData = new FormData();
-                formData.append('expire_date', expireDate);
+                formData.append('expire_days', days || '0');
                 
-                showLoading();
-                fetch(`/api/set_expire/${cSegment}`, { method: 'POST', body: formData })
-                    .then(res => res.json())
-                    .then(data => {
-                        hideLoading();
-                        if (data.status === 'success') {
-                            showToast(`已设置 ${cSegment}.x 段过期时间`);
-                            loadProxyGroups();
-                        } else {
-                            showToast('设置失败', 'danger');
-                        }
-                    })
-                    .catch(err => {
-                        hideLoading();
-                        showToast('设置失败: ' + err.message, 'danger');
-                    });
+                fetch(`/api/set_expire/${cSegment}`, { 
+                    method: 'POST', 
+                    body: formData 
+                })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        showToast(`已设置 ${cSegment}.x 段代理过期时间`);
+                        loadProxyGroups();
+                    }
+                });
             }
         }
 
@@ -2928,8 +2906,8 @@ ExecStart=$WORKDIR/venv/bin/python3 $WORKDIR/manage.py $PORT
 Restart=always
 User=root
 Environment="PYTHONUNBUFFERED=1"
-LimitNOFILE=5000000
-LimitNPROC=5000000
+LimitNOFILE=2000000
+LimitNPROC=2000000
 
 [Install]
 WantedBy=multi-user.target
@@ -2946,8 +2924,8 @@ ExecStart=/usr/local/bin/3proxy /usr/local/etc/3proxy/3proxy.cfg
 Restart=always
 RestartSec=5
 User=root
-LimitNOFILE=5000000
-LimitNPROC=5000000
+LimitNOFILE=2000000
+LimitNPROC=2000000
 
 [Install]
 WantedBy=multi-user.target
@@ -2967,7 +2945,7 @@ chmod 666 /usr/local/etc/3proxy/3proxy.log
 # 生成初始配置（即使没有代理也生成基础配置）
 cat > $PROXYCFG_PATH <<EOF
 daemon
-maxconn 500000
+maxconn 200000
 nserver 8.8.8.8
 nserver 1.1.1.1
 nserver 8.8.4.4
@@ -3017,6 +2995,44 @@ else
     $THREEPROXY_PATH $PROXYCFG_PATH &
 fi
 
+# 设置过期检查的定时任务
+cat > /etc/cron.d/3proxy-expire-check <<EOF
+0 0 * * * root $WORKDIR/venv/bin/python3 $WORKDIR/check_expired.py > /dev/null 2>&1
+EOF
+
+# 创建过期检查脚本
+cat > $WORKDIR/check_expired.py <<'EOF'
+import sqlite3
+import os
+
+DB = '/opt/3proxy-web/3proxy.db'
+CONFIG_GEN = '/opt/3proxy-web/config_gen.py'
+
+# 连接数据库
+conn = sqlite3.connect(DB)
+
+# 禁用过期代理
+result = conn.execute('''
+    UPDATE proxy 
+    SET enabled = 0 
+    WHERE enabled = 1 
+    AND expire_at IS NOT NULL 
+    AND expire_at < datetime('now')
+''')
+
+expired_count = result.rowcount
+if expired_count > 0:
+    conn.commit()
+    print(f"Disabled {expired_count} expired proxies")
+    # 重新生成配置
+    os.system(f'python3 {CONFIG_GEN}')
+    os.system('pkill -HUP 3proxy')
+else:
+    print("No expired proxies found")
+
+conn.close()
+EOF
+
 echo -e "\n========= 部署完成！========="
 MYIP=$(get_local_ip)
 echo -e "浏览器访问：\n  \033[36mhttp://$MYIP:${PORT}\033[0m"
@@ -3031,16 +3047,8 @@ echo -e "\n架构优化说明："
 echo "- 使用数据库连接池提升并发性能"
 echo "- Redis缓存减少数据库查询"
 echo "- 异步任务队列处理配置重载"
-echo "- 批量操作优化，支持十万级代理"
+echo "- 批量操作优化，支持万级代理"
 echo "- Gevent异步服务器提升并发能力"
-echo "- 时间管理功能，支持代理过期自动禁用"
-echo "- 每天凌晨3点自动检查过期代理"
-echo -e "\n网络优化："
-echo "- 支持500万并发连接"
-echo "- TCP TIME_WAIT快速回收"
-echo "- 连接跟踪表扩展到500万"
-echo "- 文件句柄限制提升到1000万"
-echo "- 网络缓冲区优化到128MB"
 echo -e "\n常用命令："
 echo "查看登录信息: bash $0 show"
 echo "卸载系统: bash $0 uninstall"
