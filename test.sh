@@ -75,10 +75,10 @@ net.core.netdev_max_backlog = 65536
 net.core.optmem_max = 25165824
 net.ipv4.tcp_mem = 786432 1048576 26777216
 net.ipv4.udp_mem = 65536 131072 262144
-net.ipv4.tcp_rmem = 4096 87380 33554432
-net.ipv4.tcp_wmem = 4096 65536 33554432
-net.core.rmem_max = 67108864
-net.core.wmem_max = 67108864
+net.ipv4.tcp_rmem = 4096 87380 67108864
+net.ipv4.tcp_wmem = 4096 65536 67108864
+net.core.rmem_max = 134217728
+net.core.wmem_max = 134217728
 net.core.rmem_default = 262144
 net.core.wmem_default = 262144
 
@@ -171,7 +171,7 @@ EOF
     chmod +x /usr/local/bin/3proxy-optimize.sh
     
     # 更新 3proxy 配置以支持更多连接
-    sed -i 's/maxconn 2000/maxconn 400000/g' $PROXYCFG_PATH 2>/dev/null || true
+    sed -i 's/maxconn 2000/maxconn 200000/g' $PROXYCFG_PATH 2>/dev/null || true
     sed -i 's/maxconn 10000/maxconn 200000/g' $PROXYCFG_PATH 2>/dev/null || true
     
     echo -e "\033[32m系统优化完成！支持万级代理并发\033[0m"
@@ -292,7 +292,7 @@ fi
 if [ ! -f "$PROXYCFG_PATH" ]; then
 cat > $PROXYCFG_PATH <<EOF
 daemon
-maxconn 200000
+maxconn 400000
 nserver 8.8.8.8
 nserver 1.1.1.1
 nserver 8.8.4.4
@@ -439,7 +439,7 @@ def generate_config_optimized():
         
         cfg = [
             "daemon",
-            "maxconn 200000",
+            "maxconn 400000",
             "nserver 8.8.8.8",
             "nserver 1.1.1.1", 
             "nserver 8.8.4.4",
@@ -501,37 +501,6 @@ def task_worker():
 worker_thread = threading.Thread(target=task_worker, daemon=True)
 worker_thread.start()
 
-# 每天检查过期代理
-def check_expired_proxies():
-    """每天检查并禁用过期代理"""
-    while True:
-        try:
-            with db_pool.get_connection() as conn:
-                # 禁用过期代理
-                result = conn.execute('''
-                    UPDATE proxy 
-                    SET enabled = 0 
-                    WHERE enabled = 1 
-                    AND expire_at IS NOT NULL 
-                    AND expire_at < datetime('now')
-                ''')
-                
-                expired_count = result.rowcount
-                if expired_count > 0:
-                    conn.commit()
-                    print(f"Disabled {expired_count} expired proxies")
-                    reload_3proxy_async()
-                    
-        except Exception as e:
-            print(f"Error checking expired proxies: {e}")
-        
-        # 每天凌晨3点检查一次
-        time.sleep(86400)  # 24小时
-
-# 启动过期检查线程
-expire_thread = threading.Thread(target=check_expired_proxies, daemon=True)
-expire_thread.start()
-
 # 初始启动3proxy（如果还没启动）
 def ensure_3proxy_running():
     """确保3proxy正在运行"""
@@ -548,6 +517,42 @@ def ensure_3proxy_running():
 
 # 在启动时确保3proxy运行
 ensure_3proxy_running()
+
+# 过期检查函数
+def check_expired_proxies():
+    """每天检查并禁用过期代理"""
+    while True:
+        try:
+            with db_pool.get_connection() as conn:
+                # 禁用过期代理
+                result = conn.execute('''
+                    UPDATE proxy 
+                    SET enabled = 0 
+                    WHERE enabled = 1 
+                    AND expire_at IS NOT NULL 
+                    AND datetime(expire_at) < datetime('now')
+                ''')
+                
+                if result.rowcount > 0:
+                    conn.commit()
+                    print(f"Disabled {result.rowcount} expired proxies")
+                    redis_client.delete('proxy_groups')
+                    reload_3proxy_async()
+                    
+        except Exception as e:
+            print(f"Error checking expired proxies: {e}")
+        
+        # 每天凌晨3点检查一次
+        next_check = datetime.datetime.now().replace(hour=3, minute=0, second=0, microsecond=0)
+        if next_check < datetime.datetime.now():
+            next_check += datetime.timedelta(days=1)
+        
+        sleep_seconds = (next_check - datetime.datetime.now()).total_seconds()
+        time.sleep(sleep_seconds)
+
+# 启动过期检查线程
+expire_thread = threading.Thread(target=check_expired_proxies, daemon=True)
+expire_thread.start()
 
 @app.route('/login', methods=['GET','POST'])
 def login():
@@ -812,10 +817,11 @@ def addproxy():
     username = request.form['username']
     password = request.form['password'] or ''.join(random.choices(string.ascii_letters+string.digits, k=12))
     user_prefix = request.form.get('userprefix','')
+    expire_at = request.form.get('expire_at')
     
     with db_pool.get_connection() as conn:
-        conn.execute('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix, created_at) VALUES (?,?,?,?,1,?,?,?,datetime("now"))', 
-            (ip, port, username, password, ip, str(port), user_prefix))
+        conn.execute('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix, expire_at) VALUES (?,?,?,?,1,?,?,?,?)', 
+            (ip, port, username, password, ip, port, user_prefix, expire_at))
         conn.commit()
     
     redis_client.delete('proxy_groups')
@@ -828,6 +834,7 @@ def batchaddproxy():
     iprange = request.form.get('iprange')
     portrange = request.form.get('portrange')
     userprefix = request.form.get('userprefix')
+    expire_at = request.form.get('expire_at')
     
     if iprange and userprefix:
         # 解析IP范围
@@ -879,10 +886,10 @@ def batchaddproxy():
                 port = selected_ports[i]
                 uname = userprefix + ''.join(random.choices(string.ascii_lowercase+string.digits, k=4))
                 pw = ''.join(random.choices(string.ascii_letters+string.digits, k=12))
-                batch_data.append((ip, port, uname, pw, 1, iprange, actual_port_range, userprefix))
+                batch_data.append((ip, port, uname, pw, 1, iprange, actual_port_range, userprefix, expire_at))
             
-            # 批量插入（添加时间戳）
-            conn.executemany('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix, created_at) VALUES (?,?,?,?,?,?,?,?,datetime("now"))', 
+            # 批量插入
+            conn.executemany('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix, expire_at) VALUES (?,?,?,?,?,?,?,?,?)', 
                            batch_data)
             conn.commit()
             count = len(batch_data)
@@ -926,11 +933,11 @@ def batchaddproxy():
             else:
                 continue
             
-            batch_insert.append((ip, int(port), username, password, 1, ip, str(port), username[:4] if len(username) >= 4 else username))
+            batch_insert.append((ip, int(port), username, password, 1, ip, port, username, expire_at))
             count += 1
         
         if batch_insert:
-            conn.executemany('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix, created_at) VALUES (?,?,?,?,?,?,?,?,datetime("now"))',
+            conn.executemany('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix, expire_at) VALUES (?,?,?,?,?,?,?,?,?)',
                            batch_insert)
             conn.commit()
     
@@ -1186,17 +1193,18 @@ db.execute('''CREATE TABLE IF NOT EXISTS proxy (
     ip TEXT, port INTEGER, username TEXT, password TEXT, enabled INTEGER DEFAULT 1,
     ip_range TEXT, port_range TEXT, user_prefix TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    expire_at DATETIME,
-    UNIQUE(ip, port)
+    expire_at DATETIME
 )''')
 
-# 检查并添加时间字段（兼容旧版本）
-cursor = db.execute("PRAGMA table_info(proxy)")
-columns = [column[1] for column in cursor.fetchall()]
-if 'created_at' not in columns:
+# 检查并添加新字段（兼容旧版本）
+try:
     db.execute('ALTER TABLE proxy ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP')
-if 'expire_at' not in columns:
+except:
+    pass
+try:
     db.execute('ALTER TABLE proxy ADD COLUMN expire_at DATETIME')
+except:
+    pass
 
 # 创建索引以提升查询性能
 db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_ip ON proxy(ip)')
@@ -1881,6 +1889,10 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                         <label class="form-label">用户名前缀</label>
                                         <input type="text" class="form-control" name="userprefix" placeholder="user">
                                     </div>
+                                    <div class="mb-3">
+                                        <label class="form-label">过期时间（可选）</label>
+                                        <input type="datetime-local" class="form-control" name="expire_at">
+                                    </div>
                                     <button type="submit" class="btn btn-gradient w-100">
                                         <i class="bi bi-cloud-upload"></i> 批量添加
                                     </button>
@@ -2118,6 +2130,14 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                         if (selectedGroups.has(group.c_segment)) {
                             card.classList.add('selected');
                         }
+                        
+                        // 格式化创建时间
+                        let createdTimeStr = '';
+                        if (group.created_at) {
+                            const date = new Date(group.created_at);
+                            createdTimeStr = `<i class="bi bi-calendar-plus"></i> ${date.toLocaleDateString('zh-CN')} ${date.toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit'})}`;
+                        }
+                        
                         card.innerHTML = `
                             <div class="row align-items-center">
                                 <div class="col-md-7">
@@ -2142,7 +2162,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                         ${group.ip_range ? `<i class="bi bi-diagram-3"></i> ${group.ip_range}` : ''}
                                         ${group.port_range ? `<i class="bi bi-ethernet"></i> ${group.port_range}` : ''}
                                         ${group.user_prefix ? `<i class="bi bi-person"></i> ${group.user_prefix}` : ''}
-                                        ${group.created_at ? `<i class="bi bi-calendar-plus"></i> ${new Date(group.created_at).toLocaleDateString('zh-CN')}` : ''}
+                                        ${createdTimeStr}
                                     </small>
                                 </div>
                                 <div class="col-md-5 text-end">
