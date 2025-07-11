@@ -812,7 +812,9 @@ def addproxy():
     user_prefix = request.form.get('userprefix','')
     
     with db_pool.get_connection() as conn:
-        conn.execute('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix) VALUES (?,?,?,?,1,?,?,?)', 
+        conn.execute('''INSERT INTO proxy 
+            (ip, port, username, password, enabled, ip_range, port_range, user_prefix, created_at) 
+            VALUES (?,?,?,?,1,?,?,?, datetime('now'))''', 
             (ip, port, username, password, ip, port, user_prefix))
         conn.commit()
     
@@ -942,8 +944,10 @@ def batchaddproxy():
             count += 1
         
         if batch_insert:
-            conn.executemany('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix) VALUES (?,?,?,?,?,?,?,?)',
-                           batch_insert)
+            conn.executemany('''INSERT INTO proxy 
+                (ip, port, username, password, enabled, ip_range, port_range, user_prefix, created_at) 
+                VALUES (?,?,?,?,?,?,?,?, datetime('now'))''',
+                batch_insert)
             conn.commit()
     
     if count:
