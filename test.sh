@@ -812,7 +812,9 @@ def addproxy():
     user_prefix = request.form.get('userprefix','')
     
     with db_pool.get_connection() as conn:
-        conn.execute('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix) VALUES (?,?,?,?,1,?,?,?)', 
+        conn.execute('''INSERT INTO proxy 
+            (ip, port, username, password, enabled, ip_range, port_range, user_prefix, created_at) 
+            VALUES (?,?,?,?,1,?,?,?, datetime('now'))''', 
             (ip, port, username, password, ip, port, user_prefix))
         conn.commit()
     
@@ -942,8 +944,10 @@ def batchaddproxy():
             count += 1
         
         if batch_insert:
-            conn.executemany('INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix) VALUES (?,?,?,?,?,?,?,?)',
-                           batch_insert)
+            conn.executemany('''INSERT INTO proxy 
+                (ip, port, username, password, enabled, ip_range, port_range, user_prefix, created_at) 
+                VALUES (?,?,?,?,?,?,?,?, datetime('now'))''',
+                batch_insert)
             conn.commit()
     
     if count:
@@ -2708,10 +2712,6 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     } else {
                         showToast(data.message, 'danger');
                     }
-                })
-                .catch(err => {
-                    hideLoading();
-                    showToast('添加失败: ' + err.message, 'danger');
                 });
         });
 
@@ -2719,9 +2719,21 @@ cat > $WORKDIR/templates/index.html << 'EOF'
             e.preventDefault();
             const formData = new FormData(e.target);
             
+            // 检查输入是否为空
+            const batchData = formData.get('batchproxy');
+            if (!batchData || !batchData.trim()) {
+                showToast('请输入代理数据', 'warning');
+                return;
+            }
+            
             showLoading();
             fetch('/batchaddproxy', { method: 'POST', body: formData })
-                .then(res => res.json())
+                .then(res => {
+                    if (!res.ok) {
+                        throw new Error('Network response was not ok');
+                    }
+                    return res.json();
+                })
                 .then(data => {
                     hideLoading();
                     if (data.status === 'success') {
@@ -2729,11 +2741,12 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                         e.target.reset();
                         loadProxyGroups();
                     } else {
-                        showToast(data.message, 'danger');
+                        showToast(data.message || '添加失败', 'danger');
                     }
                 })
                 .catch(err => {
                     hideLoading();
+                    console.error('Error:', err);
                     showToast('添加失败: ' + err.message, 'danger');
                 });
         });
