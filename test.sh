@@ -1,18 +1,4 @@
-// 复制密码功能
-        function copyPassword(password, proxyId) {
-            navigator.clipboard.writeText(password).then(() => {
-                showToast('密码已复制到剪贴板', 'success');
-            }).catch(err => {
-                // 降级方案
-                const textArea = document.createElement('textarea');
-                textArea.value = password;
-                document.body.appendChild(textArea);
-                textArea.select();
-                document.execCommand('copy');
-                document.body.removeChild(textArea);
-                showToast('密码已复制', 'success');
-            });
-        }#!/bin/bash
+#!/bin/bash
 set -e
 
 WORKDIR=/opt/3proxy-web
@@ -77,7 +63,7 @@ net.ipv4.tcp_slow_start_after_idle = 0
 net.ipv4.ip_local_port_range = 1024 65535
 
 # 连接跟踪优化
-net.netfilter.nf_conntrack_max = 2000000
+net.netfilter.nf_conntrack_max = 4000000
 net.netfilter.nf_conntrack_tcp_timeout_established = 1200
 net.netfilter.nf_conntrack_tcp_timeout_time_wait = 120
 net.netfilter.nf_conntrack_tcp_timeout_close_wait = 60
@@ -171,7 +157,7 @@ echo 67108864 > /proc/sys/net/core/rmem_max 2>/dev/null || true
 echo 67108864 > /proc/sys/net/core/wmem_max 2>/dev/null || true
 
 # 增加连接跟踪表大小
-echo 2000000 > /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || true
+echo 4000000 > /proc/sys/net/netfilter/nf_conntrack_max 2>/dev/null || true
 
 # 禁用反向路径过滤（如果需要）
 for i in /proc/sys/net/ipv4/conf/*/rp_filter; do
@@ -253,38 +239,7 @@ function uninstall_3proxy_web() {
     rm -rf /usr/local/etc/3proxy
     rm -f /etc/cron.d/3proxy-logrotate
     rm -f /etc/cron.d/3proxy-backup
-    # 启动服务前检查数据库升级
-cat > /tmp/check_db_upgrade.py << 'EOF'
-import sqlite3
-
-db = sqlite3.connect('/opt/3proxy-web/3proxy.db')
-cursor = db.cursor()
-
-# 检查是否需要添加新字段
-cursor.execute("PRAGMA table_info(proxy)")
-columns = [column[1] for column in cursor.fetchall()]
-
-if 'created_at' not in columns:
-    print("Upgrading database...")
-    cursor.execute('ALTER TABLE proxy ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP')
-    cursor.execute('ALTER TABLE proxy ADD COLUMN expire_days INTEGER DEFAULT 0')
-    cursor.execute('ALTER TABLE proxy ADD COLUMN expire_at DATETIME')
-    cursor.execute('CREATE INDEX IF NOT EXISTS idx_proxy_expire ON proxy(expire_at)')
-    db.commit()
-    print("Database upgraded successfully")
-else:
-    print("Database is up to date")
-
-db.close()
-EOF
-
-# 如果数据库已存在，检查是否需要升级
-if [ -f "$WORKDIR/3proxy.db" ]; then
-    $WORKDIR/venv/bin/python3 /tmp/check_db_upgrade.py
-fi
-rm -f /tmp/check_db_upgrade.py
-
-systemctl daemon-reload
+    systemctl daemon-reload
     echo -e "\033[31m3proxy Web管理及全部相关内容已卸载。\033[0m"
 }
 
@@ -337,7 +292,7 @@ fi
 if [ ! -f "$PROXYCFG_PATH" ]; then
 cat > $PROXYCFG_PATH <<EOF
 daemon
-maxconn 200000
+maxconn 400000
 nserver 8.8.8.8
 nserver 1.1.1.1
 nserver 8.8.4.4
@@ -484,7 +439,7 @@ def generate_config_optimized():
         
         cfg = [
             "daemon",
-            "maxconn 200000",
+            "maxconn 400000",
             "nserver 8.8.8.8",
             "nserver 1.1.1.1", 
             "nserver 8.8.4.4",
@@ -546,9 +501,9 @@ def task_worker():
 worker_thread = threading.Thread(target=task_worker, daemon=True)
 worker_thread.start()
 
-# 过期代理检查线程
+# 过期检查线程
 def check_expired_proxies():
-    """每天检查一次过期代理"""
+    """每天检查并禁用过期代理"""
     while True:
         try:
             with db_pool.get_connection() as conn:
@@ -558,21 +513,19 @@ def check_expired_proxies():
                     SET enabled = 0 
                     WHERE enabled = 1 
                     AND expire_at IS NOT NULL 
-                    AND expire_at < datetime('now')
+                    AND datetime(expire_at) < datetime('now')
                 ''')
                 
                 expired_count = result.rowcount
                 if expired_count > 0:
                     conn.commit()
                     print(f"Disabled {expired_count} expired proxies")
-                    # 清除缓存并重载配置
-                    redis_client.delete('proxy_groups')
                     reload_3proxy_async()
-                
+                    
         except Exception as e:
             print(f"Error checking expired proxies: {e}")
         
-        # 每天检查一次（24小时）
+        # 每天检查一次（86400秒）
         time.sleep(86400)
 
 # 启动过期检查线程
@@ -631,7 +584,7 @@ def api_proxy_groups():
     with db_pool.get_connection() as conn:
         proxies = conn.execute('''
             SELECT id,ip,port,username,password,enabled,ip_range,port_range,user_prefix,
-                   created_at,expire_days,expire_at 
+                   created_at,expire_at,expire_days 
             FROM proxy ORDER BY ip
         ''').fetchall()
     
@@ -649,8 +602,8 @@ def api_proxy_groups():
             'port_range': p[7],
             'user_prefix': p[8],
             'created_at': p[9],
-            'expire_days': p[10],
-            'expire_at': p[11]
+            'expire_at': p[10],
+            'expire_days': p[11]
         })
     
     # 获取流量统计
@@ -684,8 +637,8 @@ def api_proxy_groups():
             actual_port_range = proxies[0]['port_range'] if proxies else ''
         
         # 获取最早创建时间
-        created_dates = [p['created_at'] for p in proxies if p['created_at']]
-        earliest_created = min(created_dates) if created_dates else None
+        created_times = [p['created_at'] for p in proxies if p['created_at']]
+        earliest_created = min(created_times) if created_times else None
         
         result.append({
             'c_segment': c_seg,
@@ -695,7 +648,8 @@ def api_proxy_groups():
             'ip_range': actual_ip_range,
             'port_range': actual_port_range,
             'user_prefix': proxies[0]['user_prefix'] if proxies else '',
-            'created_at': earliest_created
+            'created_at': earliest_created,
+            'expire_days': proxies[0]['expire_days'] if proxies else 0
         })
     
     sorted_result = sorted(result, key=lambda x: x['c_segment'])
@@ -708,11 +662,8 @@ def api_proxy_groups():
 @login_required
 def api_proxy_group_detail(c_segment):
     with db_pool.get_connection() as conn:
-        proxies = conn.execute('''
-            SELECT id,ip,port,username,password,enabled,ip_range,port_range,user_prefix,
-                   created_at,expire_days,expire_at 
-            FROM proxy WHERE ip LIKE ? ORDER BY ip,port
-        ''', (c_segment + '.%',)).fetchall()
+        proxies = conn.execute('SELECT id,ip,port,username,password,enabled,ip_range,port_range,user_prefix FROM proxy WHERE ip LIKE ? ORDER BY ip,port', 
+                            (c_segment + '.%',)).fetchall()
     
     result = []
     for p in proxies:
@@ -725,10 +676,7 @@ def api_proxy_group_detail(c_segment):
             'enabled': p[5],
             'ip_range': p[6],
             'port_range': p[7],
-            'user_prefix': p[8],
-            'created_at': p[9],
-            'expire_days': p[10],
-            'expire_at': p[11]
+            'user_prefix': p[8]
         })
     
     return jsonify(result)
@@ -933,8 +881,7 @@ def batchaddproxy():
             # 计算过期时间
             expire_at = None
             if expire_days > 0:
-                expire_at = datetime.datetime.now() + datetime.timedelta(days=expire_days)
-                expire_at = expire_at.strftime('%Y-%m-%d %H:%M:%S')
+                expire_at = f"datetime('now', '+{expire_days} days')"
             
             # 批量插入数据
             batch_data = []
@@ -942,15 +889,21 @@ def batchaddproxy():
                 port = selected_ports[i]
                 uname = userprefix + ''.join(random.choices(string.ascii_lowercase+string.digits, k=4))
                 pw = ''.join(random.choices(string.ascii_letters+string.digits, k=12))
-                batch_data.append((ip, port, uname, pw, 1, iprange, actual_port_range, userprefix, expire_days, expire_at))
+                
+                if expire_at:
+                    # 使用SQL表达式计算过期时间
+                    conn.execute('''
+                        INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix, expire_days, expire_at) 
+                        VALUES (?,?,?,?,1,?,?,?,?, datetime('now', '+' || ? || ' days'))
+                    ''', (ip, port, uname, pw, iprange, actual_port_range, userprefix, expire_days, expire_days))
+                else:
+                    conn.execute('''
+                        INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix, expire_days) 
+                        VALUES (?,?,?,?,1,?,?,?,?)
+                    ''', (ip, port, uname, pw, iprange, actual_port_range, userprefix, expire_days))
             
-            # 批量插入
-            conn.executemany('''
-                INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix, expire_days, expire_at) 
-                VALUES (?,?,?,?,?,?,?,?,?,?)
-            ''', batch_data)
             conn.commit()
-            count = len(batch_data)
+            count = len(ips)
         
         redis_client.delete('proxy_groups')
         reload_3proxy_async()
@@ -991,13 +944,13 @@ def batchaddproxy():
             else:
                 continue
             
-            batch_insert.append((ip, int(port), username, password, 1, ip, port, username, 0, None))
+            batch_insert.append((ip, int(port), username, password, 1, ip, port, username, 0))
             count += 1
         
         if batch_insert:
             conn.executemany('''
-                INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix, expire_days, expire_at) 
-                VALUES (?,?,?,?,?,?,?,?,?,?)
+                INSERT INTO proxy (ip, port, username, password, enabled, ip_range, port_range, user_prefix, expire_days) 
+                VALUES (?,?,?,?,?,?,?,?,?)
             ''', batch_insert)
             conn.commit()
     
@@ -1247,15 +1200,29 @@ db.execute('PRAGMA synchronous=NORMAL')
 db.execute('PRAGMA cache_size=10000')
 db.execute('PRAGMA temp_store=MEMORY')
 
-# 创建表
+# 创建表（添加时间管理字段）
 db.execute('''CREATE TABLE IF NOT EXISTS proxy (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ip TEXT, port INTEGER, username TEXT, password TEXT, enabled INTEGER DEFAULT 1,
     ip_range TEXT, port_range TEXT, user_prefix TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    expire_days INTEGER DEFAULT 0,
-    expire_at DATETIME
+    expire_at DATETIME,
+    expire_days INTEGER DEFAULT 0
 )''')
+
+# 为现有表添加时间字段（如果升级）
+try:
+    db.execute('ALTER TABLE proxy ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP')
+except:
+    pass
+try:
+    db.execute('ALTER TABLE proxy ADD COLUMN expire_at DATETIME')
+except:
+    pass
+try:
+    db.execute('ALTER TABLE proxy ADD COLUMN expire_days INTEGER DEFAULT 0')
+except:
+    pass
 
 # 创建索引以提升查询性能
 db.execute('CREATE INDEX IF NOT EXISTS idx_proxy_ip ON proxy(ip)')
@@ -1943,7 +1910,7 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                     </div>
                                     <div class="mb-3">
                                         <label class="form-label">使用天数 (0=永久)</label>
-                                        <input type="number" class="form-control" name="expire_days" min="0" value="0" placeholder="0">
+                                        <input type="number" class="form-control" name="expire_days" value="0" min="0">
                                     </div>
                                     <button type="submit" class="btn btn-gradient w-100">
                                         <i class="bi bi-cloud-upload"></i> 批量添加
@@ -2206,7 +2173,10 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                         ${group.ip_range ? `<i class="bi bi-diagram-3"></i> ${group.ip_range}` : ''}
                                         ${group.port_range ? `<i class="bi bi-ethernet"></i> ${group.port_range}` : ''}
                                         ${group.user_prefix ? `<i class="bi bi-person"></i> ${group.user_prefix}` : ''}
-                                        ${group.created_at ? `<i class="bi bi-calendar-plus"></i> ${new Date(group.created_at).toLocaleDateString('zh-CN')}` : ''}
+                                    </small>
+                                    <small class="text-muted d-block mt-1">
+                                        ${group.created_at ? `<i class="bi bi-calendar-plus"></i> 添加时间: ${new Date(group.created_at).toLocaleString('zh-CN')}` : ''}
+                                        ${group.expire_days > 0 ? `<i class="bi bi-hourglass-split"></i> 使用期限: ${group.expire_days}天` : ''}
                                     </small>
                                 </div>
                                 <div class="col-md-5 text-end">
@@ -2345,9 +2315,8 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                         <th style="width: 120px;">IP地址</th>
                                         <th style="width: 80px; text-align: center;">端口</th>
                                         <th style="width: 120px;">用户名</th>
-                                        <th style="width: 180px;">密码</th>
+                                        <th style="width: 200px;">密码</th>
                                         <th style="width: 70px; text-align: center;">状态</th>
-                                        <th style="width: 90px; text-align: center;">过期时间</th>
                                         <th style="width: 100px; text-align: center;">操作</th>
                                     </tr>
                                 </thead>
@@ -2356,19 +2325,6 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                     // 逐行构建表格内容
                     proxies.forEach((proxy, index) => {
                         const rowClass = index % 2 === 0 ? 'table-light' : '';
-                        // 格式化过期时间
-                        let expireDisplay = '永久';
-                        if (proxy.expire_at) {
-                            const expireDate = new Date(proxy.expire_at);
-                            const now = new Date();
-                            if (expireDate < now) {
-                                expireDisplay = '<span class="text-danger">已过期</span>';
-                            } else {
-                                const days = Math.ceil((expireDate - now) / (1000 * 60 * 60 * 24));
-                                expireDisplay = `<span class="text-warning">${days}天</span>`;
-                            }
-                        }
-                        
                         html += `
                             <tr class="proxy-row ${rowClass}">
                                 <td style="text-align: center; padding: 8px 4px;">
@@ -2404,9 +2360,6 @@ cat > $WORKDIR/templates/index.html << 'EOF'
                                     ${proxy.enabled ? 
                                         '<span class="badge bg-success" style="font-size: 0.8rem;"><i class="bi bi-check-circle-fill me-1"></i>启用</span>' : 
                                         '<span class="badge bg-secondary" style="font-size: 0.8rem;"><i class="bi bi-x-circle-fill me-1"></i>禁用</span>'}
-                                </td>
-                                <td style="text-align: center; padding: 8px 4px; font-size: 0.85rem;">
-                                    ${expireDisplay}
                                 </td>
                                 <td style="text-align: center; padding: 8px 4px;">
                                     <button class="btn btn-sm ${proxy.enabled ? 'btn-warning' : 'btn-success'}" 
